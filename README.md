@@ -12,5 +12,6 @@ npm run dev
 npm run lint && npm run format:check && npm run type-check && npm test && npm run build
 ```
 
-Pushes to `main` deploy to production on Vercel (`lexabus-projects/airport-disruption-index`); pull
-requests get preview deployments.
+Deploys go to Vercel (`lexabus-projects/airport-disruption-index`) through the Vercel CLI until the
+Vercel GitHub app is installed: `vercel deploy --prod` from `main` after merge, `vercel deploy` from
+a branch for a preview.
