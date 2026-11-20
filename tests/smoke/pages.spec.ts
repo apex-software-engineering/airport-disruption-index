@@ -34,10 +34,12 @@ test('/ shows the running value with its chart, or says plainly there is none', 
 	page,
 }) => {
 	await page.goto('/');
-	const runningValue = page.getByText('ADI, running', { exact: true });
+	const runningValue = page.getByRole('group', { name: 'ADI, running' });
 	const emptyState = page.getByText(/No valid round has been recorded for \d{4}-\d{2}-\d{2} yet/);
 	await expect(runningValue.or(emptyState)).toBeVisible();
 	if (await runningValue.isVisible()) {
+		// A whole number of airport-minutes, zero included, e.g. "0" or "1,234".
+		await expect(runningValue.getByText(/^\d{1,3}(,\d{3})*$/)).toBeVisible();
 		await expect(page.getByRole('img', { name: /Airport-minutes per UTC hour/ })).toBeVisible();
 	}
 });

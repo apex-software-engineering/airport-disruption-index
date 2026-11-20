@@ -49,7 +49,9 @@ export default async function ApiDocsPage() {
 	const methodology: unknown = await getMethodology().json();
 	const sampleRoundId = current.lastRound?.roundId ?? '{id}';
 	const roundPath = `${API_BASE}/rounds/${sampleRoundId}`;
-	const rawSha256 = receipt === null ? null : receipt.rawSha256;
+	// Only a valid receipt is immutable, so only its body hash is a stable example.
+	const rawSha256 =
+		receipt !== null && receipt.observation.status === 'valid' ? receipt.rawSha256 : null;
 
 	return (
 		<>
@@ -94,18 +96,18 @@ export default async function ApiDocsPage() {
 
 			<Endpoint
 				path={`${API_BASE}/rounds/{id}`}
-				cache={`${CACHE.immutable} once the receipt is final; ${CACHE.none} before`}
+				cache={`${CACHE.immutable} for a valid receipt; ${CACHE.none} for an invalid one`}
 				curl={`curl -s ${origin}${roundPath}`}
 				sample={receipt}>
 				The receipt for one round. The id is the slot start in UTC at minute precision, e.g.{' '}
 				<Mono>2026-11-17T20:45Z</Mono>. It records the fetch, the HTTP status, the sha256 of the raw
-				body, the parsed observation and the receipt hash. A valid receipt is final when written; an
-				invalid one becomes final 60 seconds after its slot ends.
+				body, the parsed observation and the receipt hash. A valid receipt is never replaced; an
+				invalid one stands only until a valid round in the same slot replaces it.
 			</Endpoint>
 
 			<Endpoint
 				path={`${API_BASE}/rounds/{id}/raw`}
-				cache={`${CACHE.immutable} once the receipt is final; ${CACHE.none} before`}
+				cache={`${CACHE.immutable} for a valid receipt; ${CACHE.none} for an invalid one`}
 				curl={
 					rawSha256 === null
 						? `curl -fsS -o raw.xml ${origin}${API_BASE}/rounds/{id}/raw`

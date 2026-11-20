@@ -10,6 +10,8 @@ import {
 	SETTLED_TONE,
 } from '@/components/index-data';
 import { Facts, Mono, Notice, PageTitle, Section, StatusLabel } from '@/components/ui';
+import type { RoundReceipt } from '@/lib/index/schemas';
+import { roundUrl } from '@/server/views';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,7 +20,6 @@ export const metadata: Metadata = { title: 'Status' };
 export default async function StatusPage() {
 	const now = new Date();
 	const { current, recent } = await readSiteData(now);
-	const { lastRound } = current;
 	const receipt = await readLastReceipt(current);
 	const coverage = describeCoverage(current.coverage);
 	const lastPrint = recent[0];
@@ -28,40 +29,10 @@ export default async function StatusPage() {
 			<PageTitle title='Status' lede={`As of ${formatUtc(current.asOf)}.`} />
 
 			<Section title='Last round'>
-				{lastRound === null ? (
+				{receipt === null ? (
 					<Notice>No round has been recorded for {current.date} (UTC) yet.</Notice>
 				) : (
-					<Facts
-						rows={[
-							{ term: 'Round id', detail: <Mono>{lastRound.roundId}</Mono> },
-							{ term: 'Fetched', detail: formatUtc(lastRound.fetchedAt) },
-							{
-								term: 'Validity',
-								detail: (
-									<StatusLabel tone={lastRound.status === 'valid' ? 'good' : 'bad'}>
-										{lastRound.status}
-									</StatusLabel>
-								),
-							},
-							{ term: 'Receipt hash', detail: <Mono>{lastRound.receiptHash}</Mono> },
-							{
-								term: 'Receipt',
-								detail: (
-									<>
-										<a href={lastRound.url}>{lastRound.url}</a>
-										{receipt === null || receipt.rawSha256 === null ? (
-											' (no source body was received)'
-										) : (
-											<>
-												{' '}
-												(<a href={`${lastRound.url}/raw`}>raw source body</a>)
-											</>
-										)}
-									</>
-								),
-							},
-						]}
-					/>
+					<LastRound receipt={receipt} />
 				)}
 			</Section>
 
@@ -132,5 +103,47 @@ export default async function StatusPage() {
 				)}
 			</Section>
 		</>
+	);
+}
+
+/** Every fact here comes from the one receipt read, so they cannot disagree. */
+function LastRound({ receipt }: { receipt: RoundReceipt }) {
+	const url = roundUrl(receipt.roundId);
+	const { observation } = receipt;
+	return (
+		<Facts
+			rows={[
+				{ term: 'Round id', detail: <Mono>{receipt.roundId}</Mono> },
+				{ term: 'Fetched', detail: formatUtc(receipt.fetchedAt) },
+				{
+					term: 'Validity',
+					detail:
+						observation.status === 'valid' ? (
+							<StatusLabel tone='good'>valid</StatusLabel>
+						) : (
+							<>
+								<StatusLabel tone='bad'>invalid</StatusLabel> ({observation.reason})
+							</>
+						),
+				},
+				{ term: 'Receipt hash', detail: <Mono>{receipt.receiptHash}</Mono> },
+				{
+					term: 'Receipt',
+					detail: (
+						<>
+							<a href={url}>{url}</a>
+							{receipt.rawSha256 === null ? (
+								' (no source body was received)'
+							) : (
+								<>
+									{' '}
+									(<a href={`${url}/raw`}>raw source body</a>)
+								</>
+							)}
+						</>
+					),
+				},
+			]}
+		/>
 	);
 }

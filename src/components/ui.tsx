@@ -30,7 +30,7 @@ export function Section({
 /** A labelled figure. `value` is already formatted; `note` explains it in a line. */
 export function Figure({ label, value, note }: { label: string; value: string; note?: string }) {
 	return (
-		<div className='border-line border-l-2 pl-4'>
+		<div role='group' aria-label={label} className='border-line border-l-2 pl-4'>
 			<p className='text-ink-subtle text-xs tracking-wide uppercase'>{label}</p>
 			<p className='mt-1 font-mono text-3xl font-semibold tabular-nums'>{value}</p>
 			{note === undefined ? null : <p className='text-ink-muted mt-1 text-sm'>{note}</p>}
