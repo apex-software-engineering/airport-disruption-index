@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<AIRPORT_STATUS_INFORMATION>
+  <Update_Time>Tue Nov 17 20:43:54 2026 GMT</Update_Time>
+  <Dtd_File>http://www.fly.faa.gov/AirportStatus.dtd</Dtd_File>
+  <Delay_type>
+    <Name>Ground Stop Programs</Name>
+    <Ground_Stop_List>
+      <Program>
+        <ARPT>ATL</ARPT>
+        <Reason>thunderstorms</Reason>
+        <End_Time>6:00 pm EST.</End_Time>
+      </Program>
+    </Ground_Stop_List>
+  </Delay_type>
+  <Delay_type>
+    <Name>Ground Stop Programs</Name>
+    <Ground_Stop_List>
+      <Ground_Stop>
+        <ARPT>EWR</ARPT>
+        <Reason>weather</Reason>
+        <End_Time>0200Z</End_Time>
+      </Ground_Stop>
+      <Program>
+        <ARPT>ATL</ARPT>
+      </Program>
+    </Ground_Stop_List>
+  </Delay_type>
+  <Delay_type>
+    <Name>Ground Delay Programs</Name>
+    <Ground_Delay_List/>
+  </Delay_type>
+  <Delay_type>
+    <Ground_Delay_List>
+      <Ground_Delay>
+        <ARPT>BOS</ARPT>
+        <Reason>WX / LOW CEILINGS</Reason>
+        <Avg>46 minutes</Avg>
+        <Max>0 minutes</Max>
+      </Ground_Delay>
+    </Ground_Delay_List>
+  </Delay_type>
+  <Delay_type>
+    <Name>General Arrival/Departure Delay Info</Name>
+    <Arrival_Departure_Delay_List>
+      <Delay>
+        <ARPT>MCO</ARPT>
+        <Reason>RWY:Disabled Aircraft</Reason>
+        <Arrival_Departure Type="Departure">
+          <Min>16 minutes</Min>
+          <Max>30 minutes</Max>
+          <Trend>Increasing</Trend>
+        </Arrival_Departure>
+      </Delay>
+      <Delay>
+        <ARPT>LAS</ARPT>
+        <Reason>WX:Thunderstorms</Reason>
+        <Arrival_Departure Type="Arrival">
+          <Min>16 minutes</Min>
+          <Max>30 minutes</Max>
+          <Trend>Decreasing</Trend>
+        </Arrival_Departure>
+      </Delay>
+    </Arrival_Departure_Delay_List>
+  </Delay_type>
+  <Delay_type>
+    <Name>Deicing</Name>
+    <Deicing_List>
+      <Airport><ARPT>PIT</ARPT></Airport>
+    </Deicing_List>
+  </Delay_type>
+  <Delay_type>
+    <Name>Empty block</Name>
+  </Delay_type>
+</AIRPORT_STATUS_INFORMATION>
