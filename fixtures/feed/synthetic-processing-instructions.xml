@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="airport-status.xsl"?>
+<AIRPORT_STATUS_INFORMATION>
+  <Update_Time>Tue Nov 17 20:43:54 2026 GMT</Update_Time>
+  <Delay_type>
+    <Name>Ground Stop Programs</Name>
+    <Ground_Stop_List>
+      <?generator nas-status?>
+      <Program>
+        <ARPT>ORD</ARPT>
+        <Reason>thunderstorms</Reason>
+        <End_Time>4:15 pm CST</End_Time>
+      </Program>
+    </Ground_Stop_List>
+  </Delay_type>
+</AIRPORT_STATUS_INFORMATION>
