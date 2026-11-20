@@ -97,12 +97,14 @@ is stored for a slot it is never replaced, and any later round in that slot is a
 dropped. An invalid receipt stands only until a valid round is written in the same slot, which
 replaces it. Precedence is the order of writes to the archive, not fetch times.
 
-**Admission deadline.** A round is admitted to the archive only if it is stored within **60 seconds
-after its slot ends**; after that the slot is closed and nothing in it can change. The last slot of
-day D (23:55Z) closes at D+1 00:01Z, 29 minutes before the 00:30Z settlement cutoff, so every
-receipt a print reads is already final. The API serves a valid receipt and its raw body with
-immutable cache headers, because a valid receipt is never replaced, and an invalid one (or the 404
-for its missing body) with `no-store`.
+**Admission deadline.** Before any storage I/O, the collector checks that it is earlier than **60
+seconds after the end** of the round's slot; a round that fails this check is not stored. The check
+is on admission, so an admitted write can finish later: the collect function runs for at most 60 s,
+so the last admitted write of day D (slot 23:55Z, admitted until D+1 00:01Z) is done by about
+00:02Z, at least 28 minutes before the 00:30Z settlement cutoff. Every receipt a print reads is
+therefore final. The API serves a valid receipt and its raw body with immutable cache headers,
+because a valid receipt is never replaced, and an invalid one (or the 404 for its missing body) with
+`no-store`.
 
 ## Airport-minutes
 

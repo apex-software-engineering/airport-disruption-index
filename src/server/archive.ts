@@ -185,9 +185,10 @@ type IndexSync =
 /**
  * The one owner of the day index, which it keeps in line with the stored receipts.
  * - On collect: one listing of the day's receipts. The round just resolved is re-read from its
- *   persisted receipt (inside the conditional write, so a stale writer retries), and up to
- *   READ_CONCURRENCY listed receipts missing from the index are read and patched in. An index
- *   that does not decode is rebuilt from every listed receipt.
+ *   persisted receipt (inside the conditional write, so a stale writer retries). Up to
+ *   READ_CONCURRENCY - 1 more are re-read and patched: listed receipts missing from the index
+ *   first, then rounds the index holds as invalid, the only kind a later write can replace. An
+ *   index that does not decode is rebuilt from every listed receipt plus the round just resolved.
  * - On settle: rebuilt from the receipts settle already read.
  * A rebuild ignores the old content and uses only its version.
  */
@@ -201,11 +202,18 @@ async function syncDayIndex(store: ObjectStore, date: UtcDate, sync: IndexSync):
 		if (sync.kind === 'settle') {
 			rounds = sync.receipts.map(summarizeReceipt);
 		} else if (current === null) {
-			rounds = (await readReceipts(store, date, listed)).map(summarizeReceipt);
+			// The listing can lag the write that just happened, so the own round is always read.
+			const all = [sync.refresh, ...listed.filter((id) => id !== sync.refresh)];
+			rounds = (await readReceipts(store, date, all)).map(summarizeReceipt);
 		} else {
+			// Only an invalid receipt can change (a valid one may replace it), so invalid entries
+			// are re-read too, after missing ones, within the same budget.
 			const indexed = new Set(current.rounds.map((r) => r.roundId));
 			const missing = listed.filter((id) => !indexed.has(id) && id !== sync.refresh);
-			const toRead = [sync.refresh, ...missing.slice(0, READ_CONCURRENCY - 1)];
+			const invalid = current.rounds
+				.filter((r) => r.observation.status === 'invalid' && r.roundId !== sync.refresh)
+				.map((r) => r.roundId);
+			const toRead = [sync.refresh, ...[...missing, ...invalid].slice(0, READ_CONCURRENCY - 1)];
 			const reread = new Set(toRead);
 			rounds = [
 				...current.rounds.filter((r) => !reread.has(r.roundId)),

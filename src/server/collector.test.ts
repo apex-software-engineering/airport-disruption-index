@@ -224,14 +224,47 @@ describe('archive write rules', () => {
 		expect(roundCache(invalid)).toBe('no-store');
 	});
 
-	it('lists once and reads no other receipt when the index is complete', async () => {
-		await collect('2026-11-17T20:35:03Z');
-		await collect('2026-11-17T20:40:03Z');
+	it('lists once and reads no other receipt when the index is complete and valid', async () => {
+		await collect('2026-11-17T20:44:03Z');
+		await collect('2026-11-17T20:50:03Z');
 		const counting = new CountingStore(root);
 		await recordRound(counting, valid, feedFixture('synthetic-gs-gdp.xml'), now);
 		expect(counting.lists).toBe(1);
 		expect(counting.receiptReads.filter((key) => !key.includes(valid.roundId))).toEqual([]);
 		expect((await readDayIndex(store, '2026-11-17')).rounds).toHaveLength(3);
+	});
+
+	it('heals a supersede whose index patch failed, on the next collect', async () => {
+		await collect('2026-11-17T20:45:01Z', 'synthetic-gs-gdp.xml', 503);
+		const failing = new FailingIndexStore(root);
+		await expect(
+			collectRound(
+				failing,
+				fixtureAt('2026-11-17T20:45:30Z'),
+				() => new Date('2026-11-17T20:45:31Z'),
+			),
+		).rejects.toThrow(/index write failed/);
+		expect((await readReceipt(store, '2026-11-17T20:45Z'))?.observation.status).toBe('valid');
+		expect((await readDayIndex(store, '2026-11-17')).rounds[0]?.observation.status).toBe('invalid');
+		await collect('2026-11-17T20:50:03Z');
+		expect(
+			(await readDayIndex(store, '2026-11-17')).rounds.map((r) => r.observation.status),
+		).toEqual(['valid', 'valid']);
+	});
+
+	it('includes its own round when rebuilding a malformed index from a lagging listing', async () => {
+		await collect('2026-11-17T20:40:03Z');
+		await overwriteDayIndex('not json');
+		const lagging = new LaggingListStore(root, '2026-11-17T20:45Z');
+		await collectRound(
+			lagging,
+			fixtureAt('2026-11-17T20:45:03Z'),
+			() => new Date('2026-11-17T20:45:04Z'),
+		);
+		expect((await readDayIndex(store, '2026-11-17')).rounds.map((r) => r.roundId)).toEqual([
+			'2026-11-17T20:40Z',
+			'2026-11-17T20:45Z',
+		]);
 	});
 
 	it('heals a round whose index patch was missed, on the next collect in another slot', async () => {
@@ -278,6 +311,32 @@ class CountingStore extends FileStore {
 	override async read(key: string) {
 		if (key.startsWith('rounds/') && key.endsWith('.json')) this.receiptReads.push(key);
 		return super.read(key);
+	}
+}
+
+/** A store whose day index writes fail, as if the function died after the receipt write. */
+class FailingIndexStore extends FileStore {
+	override async write(
+		key: string,
+		body: Uint8Array,
+		contentType: string,
+		condition: WriteCondition,
+	) {
+		if (key.startsWith('days/')) throw new Error('index write failed');
+		return super.write(key, body, contentType, condition);
+	}
+}
+
+/** A store whose listing has not caught up with one round's receipt yet. */
+class LaggingListStore extends FileStore {
+	constructor(
+		root: string,
+		private readonly hidden: string,
+	) {
+		super(root);
+	}
+	override async list(prefix: string) {
+		return (await super.list(prefix)).filter((key) => !key.includes(this.hidden));
 	}
 }
 
