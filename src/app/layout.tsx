@@ -24,11 +24,14 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
 			<body className='bg-page text-ink flex min-h-dvh flex-col antialiased'>
 				<header className='border-line border-b'>
 					<nav className='mx-auto flex max-w-4xl flex-wrap items-baseline gap-x-6 gap-y-2 px-6 py-4 text-sm'>
-						<Link href='/' className='text-ink mr-auto font-semibold'>
+						<Link href='/' className='text-ink mr-auto font-semibold no-underline'>
 							{site.name}
 						</Link>
 						{NAV.map((item) => (
-							<Link key={item.href} href={item.href} className='text-ink-muted'>
+							<Link
+								key={item.href}
+								href={item.href}
+								className='text-ink-muted no-underline hover:underline'>
 								{item.label}
 							</Link>
 						))}

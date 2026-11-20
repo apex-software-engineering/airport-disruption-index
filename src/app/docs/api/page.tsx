@@ -2,14 +2,12 @@ import type { Metadata } from 'next';
 import { headers } from 'next/headers';
 import type { ReactNode } from 'react';
 
-import { readSiteData } from '@/components/index-data';
+import { readLastReceipt, readSiteData } from '@/components/index-data';
 import { Mono, Notice, PageTitle, Section } from '@/components/ui';
-import { addDays, utcDateOf } from '@/lib/index/time';
 import { GET as getMethodology } from '@/app/api/v1/methodology/route';
-import { readReceipt } from '@/server/archive';
 import { CACHE } from '@/server/http';
 import { storeFromEnv } from '@/server/storage';
-import { API_BASE, dayView, historyView } from '@/server/views';
+import { API_BASE, dayView } from '@/server/views';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,23 +38,18 @@ async function requestOrigin(): Promise<string> {
 }
 
 export default async function ApiDocsPage() {
-	const now = new Date();
-	const today = utcDateOf(now);
-	const store = storeFromEnv();
 	const origin = await requestOrigin();
-	const { current, recent } = await readSiteData(now);
-	const historyFrom = addDays(today, -7);
-	const historyTo = addDays(today, -1);
-	const sampleDate = recent[0]?.date ?? historyTo;
-	const [history, day, receipt] = await Promise.all([
-		historyView(store, historyFrom, historyTo),
-		dayView(store, sampleDate),
-		current.lastRound === null ? null : readReceipt(store, current.lastRound.roundId),
+	const { current, history, recent } = await readSiteData(new Date());
+	const sampleDate = recent[0]?.date ?? history.to;
+	const [day, receipt] = await Promise.all([
+		dayView(storeFromEnv(), sampleDate),
+		readLastReceipt(current),
 	]);
 	// The route's own response, so the sample cannot drift from what the endpoint serves.
 	const methodology: unknown = await getMethodology().json();
 	const sampleRoundId = current.lastRound?.roundId ?? '{id}';
 	const roundPath = `${API_BASE}/rounds/${sampleRoundId}`;
+	const rawSha256 = receipt === null ? null : receipt.rawSha256;
 
 	return (
 		<>
@@ -83,7 +76,7 @@ export default async function ApiDocsPage() {
 			<Endpoint
 				path={`${API_BASE}/history?from=YYYY-MM-DD&to=YYYY-MM-DD`}
 				cache={CACHE.daily}
-				curl={`curl -s '${origin}${API_BASE}/history?from=${historyFrom}&to=${historyTo}'`}
+				curl={`curl -s '${origin}${API_BASE}/history?from=${history.from}&to=${history.to}'`}
 				sample={history}>
 				Settled days in a date range, oldest first: status, value, GS-only value, coverage and print
 				hash, each with its print URL. Defaults to the 30 days ending yesterday; at most 366 days.
@@ -101,20 +94,29 @@ export default async function ApiDocsPage() {
 
 			<Endpoint
 				path={`${API_BASE}/rounds/{id}`}
-				cache={`${CACHE.immutable} once the slot has ended; ${CACHE.none} before`}
+				cache={`${CACHE.immutable} once the receipt is final; ${CACHE.none} before`}
 				curl={`curl -s ${origin}${roundPath}`}
 				sample={receipt}>
 				The receipt for one round. The id is the slot start in UTC at minute precision, e.g.{' '}
 				<Mono>2026-11-17T20:45Z</Mono>. It records the fetch, the HTTP status, the sha256 of the raw
-				body, the parsed observation and the receipt hash.
+				body, the parsed observation and the receipt hash. A valid receipt is final when written; an
+				invalid one becomes final 60 seconds after its slot ends.
 			</Endpoint>
 
 			<Endpoint
 				path={`${API_BASE}/rounds/{id}/raw`}
-				cache={`${CACHE.immutable} once the slot has ended`}
-				curl={`curl -s ${origin}${roundPath}/raw | shasum -a 256`}
+				cache={`${CACHE.immutable} once the receipt is final; ${CACHE.none} before`}
+				curl={
+					rawSha256 === null
+						? `curl -fsS -o raw.xml ${origin}${API_BASE}/rounds/{id}/raw`
+						: `curl -fsS -o raw.xml ${origin}${roundPath}/raw && shasum -a 256 raw.xml`
+				}
 				sample={null}
-				sampleNote='The source response body byte for byte (XML for HTTP 200). Its sha256 equals the receipt’s rawSha256.'>
+				sampleNote={
+					rawSha256 === null
+						? 'The source response body byte for byte (XML for HTTP 200). A round that received no response has no body and returns 404.'
+						: `The source response body byte for byte. For ${sampleRoundId} the hash must print ${rawSha256}, the receipt’s rawSha256.`
+				}>
 				The FAA feed body exactly as the collector received it. Served sandboxed, with{' '}
 				<Mono>X-Content-Type-Options: nosniff</Mono>.
 			</Endpoint>

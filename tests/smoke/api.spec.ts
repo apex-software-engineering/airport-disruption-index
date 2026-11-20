@@ -24,8 +24,13 @@ const currentSchema = z.object({
 	hourly: z.array(z.object({ hourStart: z.iso.datetime() })).length(24),
 	coverage: z.object({ validRounds: z.number(), elapsedSlots: z.number() }),
 	latestSlot: z.unknown(),
-	lastRound: z.object({ roundId: z.string(), url: z.string() }).nullable(),
+	lastRound: z
+		.object({ roundId: z.string(), fetchedAt: z.iso.datetime(), url: z.string() })
+		.nullable(),
 });
+
+/** The collector runs every 5 minutes; 20 minutes allows for a late cron and the edge cache. */
+const MAX_ROUND_AGE_MS = 20 * 60_000;
 
 async function getJson(request: APIRequestContext, url: string): Promise<unknown> {
 	const response = await request.get(url);
@@ -38,11 +43,15 @@ test('/api/v1/methodology returns the parameters and their hash', async ({ reque
 	methodologySchema.parse(await getJson(request, '/api/v1/methodology'));
 });
 
-test('/api/v1/current links a receipt for one of today’s rounds', async ({ request }) => {
+test('/api/v1/current links a recent round’s receipt', async ({ request }) => {
 	const current = currentSchema.parse(await getJson(request, '/api/v1/current'));
-	// The collector runs every 5 minutes, so a live deployment always has a round today.
 	expect(current.lastRound, 'no round has been recorded today').not.toBeNull();
 	if (current.lastRound === null) return;
+	const age = Date.now() - Date.parse(current.lastRound.fetchedAt);
+	expect(
+		age,
+		`last round ${current.lastRound.roundId} is stale: is the collector running?`,
+	).toBeLessThan(MAX_ROUND_AGE_MS);
 
 	const receipt = receiptSchema.parse(await getJson(request, current.lastRound.url));
 	expect(receipt.roundId).toBe(current.lastRound.roundId);

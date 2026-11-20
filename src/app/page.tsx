@@ -1,5 +1,6 @@
 import Link from 'next/link';
 
+import { describeCoverage } from '@/components/coverage';
 import { formatInteger, formatPercent, formatUtc } from '@/components/format';
 import { HourlyChart } from '@/components/hourly-chart';
 import {
@@ -55,7 +56,8 @@ export default async function HomePage() {
 }
 
 function Today({ current }: { current: Current }) {
-	const { coverage, lastRound } = current;
+	const { lastRound } = current;
+	const coverage = describeCoverage(current.coverage);
 	return (
 		<Section title={`Today, ${current.date} (UTC)`}>
 			{hasValidRound(current) ? (
@@ -72,8 +74,8 @@ function Today({ current }: { current: Current }) {
 					/>
 					<Figure
 						label='Coverage'
-						value={formatPercent(coverage.percent)}
-						note={`${coverage.validRounds} of ${coverage.elapsedSlots} ended slots observed`}
+						value={coverage.percent}
+						note={`${coverage.observed}; ${coverage.ended}`}
 					/>
 				</div>
 			) : (

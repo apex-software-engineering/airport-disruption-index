@@ -29,3 +29,15 @@ for (const page of PAGES) {
 		}
 	});
 }
+
+test('/ shows the running value with its chart, or says plainly there is none', async ({
+	page,
+}) => {
+	await page.goto('/');
+	const runningValue = page.getByText('ADI, running', { exact: true });
+	const emptyState = page.getByText(/No valid round has been recorded for \d{4}-\d{2}-\d{2} yet/);
+	await expect(runningValue.or(emptyState)).toBeVisible();
+	if (await runningValue.isVisible()) {
+		await expect(page.getByRole('img', { name: /Airport-minutes per UTC hour/ })).toBeVisible();
+	}
+});

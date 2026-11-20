@@ -83,7 +83,8 @@ export function HourlyChart({ hourly }: { hourly: readonly HourBucket[] }) {
 	const slotWidth = plotWidth / bars.length;
 	const barWidth = slotWidth - GAP;
 	const yOf = (minutes: number) => PLOT.top + plotHeight * (1 - minutes / top);
-	const ticks = [0, top / 2, top];
+	// A mid gridline only where it lands on a whole number of airport-minutes.
+	const ticks = top % 2 === 0 ? [0, top / 2, top] : [0, top];
 
 	return (
 		<figure>
@@ -145,14 +146,7 @@ export function HourlyChart({ hourly }: { hourly: readonly HourBucket[] }) {
 							) : null}
 							{bar.gdpOnly > 0 ? (
 								<path
-									d={segmentPath(
-										x,
-										totalTop,
-										barWidth,
-										// Leave a 2px surface gap above the GS segment when both are drawn.
-										Math.max(0, gsTop - totalTop - (bar.groundStop > 0 ? GAP : 0)),
-										true,
-									)}
+									d={segmentPath(x, totalTop, barWidth, gsTop - totalTop, true)}
 									className='fill-series-gdp'
 								/>
 							) : null}

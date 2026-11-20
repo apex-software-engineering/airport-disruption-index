@@ -1,8 +1,10 @@
 import type { Metadata } from 'next';
 
+import { describeCoverage } from '@/components/coverage';
 import { formatInteger, formatPercent, formatUtc } from '@/components/format';
 import {
 	hasValidRound,
+	readLastReceipt,
 	readSiteData,
 	RECENT_PRINT_DAYS,
 	SETTLED_TONE,
@@ -16,7 +18,9 @@ export const metadata: Metadata = { title: 'Status' };
 export default async function StatusPage() {
 	const now = new Date();
 	const { current, recent } = await readSiteData(now);
-	const { lastRound, coverage } = current;
+	const { lastRound } = current;
+	const receipt = await readLastReceipt(current);
+	const coverage = describeCoverage(current.coverage);
 	const lastPrint = recent[0];
 
 	return (
@@ -44,8 +48,15 @@ export default async function StatusPage() {
 								term: 'Receipt',
 								detail: (
 									<>
-										<a href={lastRound.url}>{lastRound.url}</a> (
-										<a href={`${lastRound.url}/raw`}>raw source body</a>)
+										<a href={lastRound.url}>{lastRound.url}</a>
+										{receipt === null || receipt.rawSha256 === null ? (
+											' (no source body was received)'
+										) : (
+											<>
+												{' '}
+												(<a href={`${lastRound.url}/raw`}>raw source body</a>)
+											</>
+										)}
 									</>
 								),
 							},
@@ -68,13 +79,10 @@ export default async function StatusPage() {
 						},
 						{
 							term: 'Coverage',
-							detail: `${formatPercent(coverage.percent)} of the day (${coverage.validRounds} of ${coverage.slotsPerDay} slots observed)`,
+							detail: `${coverage.percent} of the day (${coverage.observed})`,
 						},
-						{
-							term: 'Ended slots',
-							detail: `${coverage.elapsedSlots}: ${coverage.validRounds} observed, ${coverage.carriedSlots} carried, ${coverage.missingSlots} missing`,
-						},
-						{ term: 'Pending slots', detail: String(coverage.pendingSlots) },
+						{ term: 'Slots', detail: coverage.slots },
+						{ term: 'Ended', detail: coverage.ended },
 						{
 							term: 'Running value',
 							detail: hasValidRound(current)
