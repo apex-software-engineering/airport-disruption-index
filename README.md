@@ -2,6 +2,15 @@
 
 Airport Disruption Index: settlement-grade FAA ground-stop index (airports.apexsofteng.com)
 
+## Source and reproducing
+
+The source is public. Every number on the site can be reproduced from it; see the
+[methodology](docs/methodology.md#reproducing).
+
+```sh
+git clone https://github.com/apex-software-engineering/airport-disruption-index && cd airport-disruption-index && npm ci
+```
+
 ## Development
 
 Node 24 and npm.

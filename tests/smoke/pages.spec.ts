@@ -1,8 +1,8 @@
 import path from 'node:path';
 
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
-import { site } from '@/lib/site';
+import { cloneCommand, site } from '@/lib/site';
 
 const PAGES = [
 	{ path: '/', name: 'home', heading: site.name },
@@ -20,7 +20,8 @@ for (const page of PAGES) {
 		const response = await browser.goto(page.path);
 		expect(response?.status(), `${page.path} status`).toBe(200);
 		await expect(browser.getByRole('heading', { level: 1 })).toHaveText(page.heading);
-		await expect(browser.locator('footer')).toHaveText(site.footer);
+		await expect(browser.locator('footer')).toContainText(site.footer);
+		await expect(browser.locator('footer').getByRole('link')).toHaveAttribute('href', site.repoUrl);
 		if (screenshotDir) {
 			await browser.screenshot({
 				path: path.join(screenshotDir, `${page.name}.png`),
@@ -29,6 +30,44 @@ for (const page of PAGES) {
 		}
 	});
 }
+
+/** The text of the reproduce section: `#reproduce` on the API page, the span between the
+ *  `#reproducing` heading and the next heading in the methodology. */
+async function reproduceText(page: Page, route: string): Promise<string> {
+	if (route === '/docs/api') return page.locator('#reproduce').innerText();
+	return page.locator('#reproducing').evaluate((heading) => {
+		const parts: string[] = [];
+		for (let el = heading.nextElementSibling; el && !/^H[1-6]$/.test(el.tagName);) {
+			parts.push((el as HTMLElement).innerText);
+			el = el.nextElementSibling;
+		}
+		return parts.join('\n');
+	});
+}
+
+// /docs/api shows an example only when the thing it names exists, so the first reproduce command
+// may be absent; wherever one is shown, the clone command must come first.
+for (const route of ['/docs/api', '/methodology'] as const) {
+	test(`${route} shows the clone command before the reproduce commands`, async ({ page }) => {
+		await page.goto(route);
+		const text = await reproduceText(page, route);
+		const clone = text.indexOf(cloneCommand);
+		expect(clone, 'clone command is shown').toBeGreaterThanOrEqual(0);
+		const reproduce = text.indexOf('npm run reproduce');
+		if (route === '/methodology')
+			expect(reproduce, 'reproduce command is shown').toBeGreaterThan(-1);
+		if (reproduce >= 0) expect(clone).toBeLessThan(reproduce);
+	});
+}
+
+test('/docs/api introduces the clone command in prose, with no placeholder text', async ({
+	page,
+}) => {
+	await page.goto('/docs/api');
+	await expect(page.locator('#reproduce')).toContainText(
+		'then rebuilds the print. With Node 24, clone the public source and run:',
+	);
+});
 
 test('/ shows the running value with its chart, or says plainly there is none', async ({
 	page,
