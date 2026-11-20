@@ -54,6 +54,20 @@ export default async function ApiDocsPage() {
 	const rawSha256 =
 		receipt !== null && receipt.observation.status === 'valid' ? receipt.rawSha256 : null;
 
+	// An example is shown only when it names something that exists, so every pasted command works.
+	const reproduceCommands: string[] = [];
+	const reproduceNotes: string[] = [];
+	if (receipt === null) {
+		reproduceNotes.push('No round has been recorded today yet, so there is no round to reproduce.');
+	} else {
+		reproduceCommands.push(`npm run reproduce -- ${sampleRoundId} --base-url ${origin}`);
+	}
+	if (day.status === 'settled') {
+		reproduceCommands.push(`npm run reproduce -- ${sampleDate} --base-url ${origin}`);
+	} else {
+		reproduceNotes.push('No day has settled yet, so there is no print to reproduce.');
+	}
+
 	return (
 		<>
 			<PageTitle
@@ -140,13 +154,12 @@ export default async function ApiDocsPage() {
 					does that for every round in the print, then rebuilds the print. With Node 24, clone the
 					public source and run:
 				</p>
-				<Code>
-					{[
-						cloneCommand,
-						`npm run reproduce -- ${sampleRoundId} --base-url ${origin}`,
-						`npm run reproduce -- ${sampleDate} --base-url ${origin}`,
-					].join('\n')}
-				</Code>
+				<Code>{[cloneCommand, ...reproduceCommands].join('\n')}</Code>
+				{reproduceNotes.map((note) => (
+					<p key={note} className='text-ink-muted mt-4 max-w-2xl'>
+						{note}
+					</p>
+				))}
 				<p className='text-ink-muted mt-4 max-w-2xl'>
 					It prints <Mono>MATCH</Mono> or <Mono>MISMATCH</Mono>. Exit code 0 is a match, 1 a
 					mismatch, 2 could not verify. Details are in the{' '}

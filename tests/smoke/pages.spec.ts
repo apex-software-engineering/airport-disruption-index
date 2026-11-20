@@ -31,12 +31,21 @@ for (const page of PAGES) {
 	});
 }
 
-for (const route of ['/docs/api', '/methodology']) {
+// /docs/api shows an example only when the thing it names exists, so the first reproduce command
+// may be absent; wherever one is shown, the clone command must come first.
+for (const { route, scope } of [
+	{ route: '/docs/api', scope: '#reproduce' },
+	{ route: '/methodology', scope: 'main' },
+] as const) {
 	test(`${route} shows the clone command before the reproduce commands`, async ({ page }) => {
 		await page.goto(route);
-		const section = page.locator('main');
-		await expect(section).toContainText(cloneCommand);
-		await expect(section).toContainText('npm run reproduce');
+		const text = await page.locator(scope).innerText();
+		const clone = text.indexOf(cloneCommand);
+		expect(clone, 'clone command is shown').toBeGreaterThanOrEqual(0);
+		const reproduce = text.indexOf('npm run reproduce');
+		if (route === '/methodology')
+			expect(reproduce, 'reproduce command is shown').toBeGreaterThan(-1);
+		if (reproduce >= 0) expect(clone).toBeLessThan(reproduce);
 	});
 }
 

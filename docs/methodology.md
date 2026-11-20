@@ -203,10 +203,13 @@ git clone https://github.com/apex-software-engineering/airport-disruption-index 
 Then, from the checkout:
 
 ```sh
-npm run reproduce -- 2026-11-17T20:45Z            # one round
-npm run reproduce -- 2026-11-17                   # a settled day: every round, then the print
-npm run reproduce -- <id> --base-url https://airports.apexsofteng.com
+ROUND_ID=2026-11-20T04:30Z
+npm run reproduce -- "$ROUND_ID" --base-url https://airports.apexsofteng.com   # one round
+npm run reproduce -- 2026-11-20 --base-url https://airports.apexsofteng.com    # a settled day: every round, then the print
 ```
+
+The day command works once 2026-11-20 settles, at 2026-11-21T00:30Z; before that it exits 2. Any
+round ID or settled date from the API works in place of these.
 
 For a round, the script fetches the receipt and raw body from the public API, checks `rawSha256` and
 `receiptHash`, re-parses the body, rebuilds the receipt with the same calculation code and compares
