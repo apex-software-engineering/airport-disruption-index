@@ -45,17 +45,26 @@ export class BlobStore implements ObjectStore {
 		return `${this.namespace}/${key}`;
 	}
 
+	/**
+	 * The version is the strong ETag from head(), which is what put({ ifMatch }) compares against
+	 * (the SDK documents head()'s etag for conditional writes). get() reports the HTTP response
+	 * ETag, which can arrive weakened (`W/"…"`) and then never matches. head() runs first, so a
+	 * write landing between the two calls can only make the version older than the body; a
+	 * conditional write with it then conflicts and retries instead of losing an update.
+	 */
 	async read(key: string): Promise<StoredObject | null> {
+		const version = await this.version(key);
+		if (version === null) return null;
 		const result = await get(this.path(key), {
 			access: 'private',
 			useCache: false,
 			token: this.token,
 		});
-		if (result === null) return null;
+		if (result === null) throw new Error(`blob ${key} vanished between head and get`);
 		if (result.statusCode !== 200)
 			throw new Error(`blob read ${key}: unexpected status ${result.statusCode}`);
 		const body = new Uint8Array(await new Response(result.stream).arrayBuffer());
-		return { body, version: result.blob.etag };
+		return { body, version };
 	}
 
 	async write(key: string, body: Uint8Array, contentType: string, condition: WriteCondition) {
@@ -72,18 +81,22 @@ export class BlobStore implements ObjectStore {
 		} catch (error) {
 			if (error instanceof BlobPreconditionFailedError) return 'conflict';
 			// An existing blob without allowOverwrite is a generic BlobError; confirm by looking.
-			if (condition.kind === 'if-absent' && error instanceof BlobError && (await this.exists(key)))
+			if (
+				condition.kind === 'if-absent' &&
+				error instanceof BlobError &&
+				(await this.version(key)) !== null
+			)
 				return 'conflict';
 			throw error;
 		}
 	}
 
-	private async exists(key: string): Promise<boolean> {
+	/** The blob's strong ETag, or null when it does not exist. */
+	private async version(key: string): Promise<string | null> {
 		try {
-			await head(this.path(key), { token: this.token });
-			return true;
+			return (await head(this.path(key), { token: this.token })).etag;
 		} catch (error) {
-			if (error instanceof BlobNotFoundError) return false;
+			if (error instanceof BlobNotFoundError) return null;
 			throw error;
 		}
 	}
