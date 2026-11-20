@@ -4,7 +4,7 @@ import { METHODOLOGY, PARAMETER_HASH } from '@/lib/index/methodology';
 import type { DailyPrint, RoundReceipt } from '@/lib/index/schemas';
 import { elapsedSlots, settlementCutoff, utcDateOf, type UtcDate } from '@/lib/index/time';
 
-import { readDayIndex, readHistory, readPrints, receiptIsFinal } from './archive';
+import { readDayIndex, readHistory, readPrints } from './archive';
 import { CACHE } from './http';
 import type { ObjectStore } from './storage';
 
@@ -75,7 +75,7 @@ export async function historyView(store: ObjectStore, from: UtcDate, to: UtcDate
 	};
 }
 
-/** Long-lived caching only for a receipt the archive can no longer replace. */
-export function roundCache(receipt: RoundReceipt, now: Date): string {
-	return receiptIsFinal(receipt, now) ? CACHE.immutable : CACHE.none;
+/** A valid receipt is never replaced, so it caches forever; an invalid one never caches. */
+export function roundCache(receipt: RoundReceipt): string {
+	return receipt.observation.status === 'valid' ? CACHE.immutable : CACHE.none;
 }

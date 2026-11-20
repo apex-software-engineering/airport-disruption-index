@@ -219,11 +219,78 @@ describe('archive write rules', () => {
 		).rejects.toThrow(/write window/);
 	});
 
-	it('caches a receipt as immutable only once nothing can replace it', () => {
-		expect(roundCache(valid, now)).toMatch(/immutable/);
-		expect(roundCache(invalid, now)).toBe('no-store');
-		expect(roundCache(invalid, new Date('2026-11-17T20:50:59Z'))).toBe('no-store');
-		expect(roundCache(invalid, new Date('2026-11-17T20:51:00Z'))).toMatch(/immutable/);
+	it('caches valid receipts forever and invalid ones never', () => {
+		expect(roundCache(valid)).toMatch(/immutable/);
+		expect(roundCache(invalid)).toBe('no-store');
+	});
+
+	it('updates the day index without listing or reading other receipts', async () => {
+		const counting = new CountingStore(root);
+		await recordRound(counting, valid, feedFixture('synthetic-gs-gdp.xml'), now);
+		expect(counting.lists).toBe(0);
+		expect((await readDayIndex(store, '2026-11-17')).rounds).toHaveLength(1);
+	});
+
+	it('persists the schema-parsed receipt, not extra fields the caller sent', async () => {
+		const withExtra = Object.assign({}, valid, { extra: 'not part of a receipt' });
+		await recordRound(store, withExtra, feedFixture('synthetic-gs-gdp.xml'), now);
+		const stored = await store.read(`rounds/2026-11-17/${valid.roundId}.json`);
+		expect(stored && JSON.parse(new TextDecoder().decode(stored.body))).not.toHaveProperty('extra');
+	});
+
+	it('refuses a receipt whose round id is not the slot of its fetch time', async () => {
+		await expect(
+			recordRound(store, { ...invalid, roundId: '2026-11-17T20:50Z' }, null, now),
+		).rejects.toThrow(/not in the slot/);
+	});
+});
+
+/** Counts list() calls. */
+class CountingStore extends FileStore {
+	lists = 0;
+	override async list(prefix: string) {
+		this.lists += 1;
+		return super.list(prefix);
+	}
+}
+
+/** A store where print writes always lose and prints never become readable. */
+class LostPrintStore extends FileStore {
+	override async write(
+		key: string,
+		body: Uint8Array,
+		contentType: string,
+		condition: WriteCondition,
+	) {
+		return key.startsWith('prints/2026-11-17/')
+			? 'conflict'
+			: super.write(key, body, contentType, condition);
+	}
+}
+
+describe('settlement', () => {
+	it('rebuilds the day index from receipts, ignoring whatever the old index held', async () => {
+		await collect('2026-11-17T20:45:03Z');
+		const index = await store.read('days/2026-11-17.json');
+		if (index === null) throw new Error('no day index');
+		await store.write(
+			'days/2026-11-17.json',
+			new TextEncoder().encode('not json'),
+			'application/json',
+			{
+				kind: 'if-version',
+				version: index.version,
+			},
+		);
+		await settleDay(store, '2026-11-17');
+		expect((await readDayIndex(store, '2026-11-17')).rounds).toHaveLength(1);
+	});
+
+	it('fails loudly, and does not loop, when a print conflicts but cannot be read', async () => {
+		await collect('2026-11-17T20:45:03Z');
+		await expect(settleDay(new LostPrintStore(root), '2026-11-17')).rejects.toThrow(
+			/could not be read/,
+		);
 	});
 });
 

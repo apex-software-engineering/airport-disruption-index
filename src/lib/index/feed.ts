@@ -3,12 +3,12 @@
  * (https://nasstatus.faa.gov/api/airport-status-information).
  *
  * Delay_type blocks are classified by the list element they hold, not by `Name`: the same Name
- * can repeat, and old recordings carry blocks without one. Ground stops and ground delay
+ * can repeat across blocks, and old recordings carry uncounted blocks without one. Ground stops and ground delay
  * programs become events. Known lists v1 does not count are recorded as `ignored`; anything
  * else is recorded as `unrecognized` and never fails the parse. A GS/GDP list that holds an
  * element we do not know does fail the parse, because skipping it could silently drop an event;
- * so does a GS/GDP list anywhere but directly in a Delay_type block, or in a block whose `Name`
- * says it is something else.
+ * so does a GS/GDP list anywhere but directly in a Delay_type block, or in a block without
+ * exactly one `Name` naming that list.
  */
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { z } from 'zod';
@@ -27,7 +27,7 @@ export type FeedParseResult = { ok: true; feed: ParsedFeed } | { ok: false; deta
 const ROOT = 'AIRPORT_STATUS_INFORMATION';
 const GROUND_STOP_LIST = 'Ground_Stop_List';
 const GROUND_DELAY_LIST = 'Ground_Delay_List';
-/** The `Name` a block holding each counted list must carry, when it has a Name at all. */
+/** The one `Name` a block holding each counted list must carry. */
 const PROGRAM_BLOCK_NAMES: Record<string, string> = {
 	[GROUND_STOP_LIST]: 'Ground Stop Programs',
 	[GROUND_DELAY_LIST]: 'Ground Delay Programs',
@@ -45,6 +45,9 @@ class FeedFormatError extends Error {}
 
 const parser = new XMLParser({
 	ignoreAttributes: true,
+	// The XML declaration and processing instructions carry no feed data; drop them everywhere.
+	ignoreDeclaration: true,
+	ignorePiTags: true,
 	parseTagValue: false,
 	trimValues: true,
 	// Delay_type blocks and the entries inside any list are always arrays, even when single.
@@ -91,7 +94,7 @@ export function parseFeed(xml: string): FeedParseResult {
 		return { ok: false, detail: `XML parser rejected the document: ${String(error)}` };
 	}
 	const document = documentSchema.safeParse(tree);
-	const roots = document.success ? Object.keys(document.data).filter((key) => key !== '?xml') : [];
+	const roots = document.success ? Object.keys(document.data) : [];
 	if (roots.length !== 1 || roots[0] !== ROOT) {
 		return { ok: false, detail: `expected exactly one ${ROOT} root, found [${roots.join(', ')}]` };
 	}
@@ -130,8 +133,11 @@ function readDelayType(
 		others.push({ disposition: 'unrecognized', name, element: null, entries: 0 });
 	for (const element of lists) {
 		const expectedName = PROGRAM_BLOCK_NAMES[element];
-		if (expectedName !== undefined && name !== null && name !== expectedName) {
-			throw new FeedFormatError(`${element} is in a Delay_type named "${name}"`);
+		// A counted list needs exactly one Name, the right one: absent, repeated or other fails.
+		if (expectedName !== undefined && block.Name !== expectedName) {
+			throw new FeedFormatError(
+				`${element} needs one Name "${expectedName}", found ${JSON.stringify(block.Name ?? null)}`,
+			);
 		}
 		const list = parseList(element, block[element]);
 		if (element === GROUND_STOP_LIST) {

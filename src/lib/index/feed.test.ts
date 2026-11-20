@@ -77,7 +77,7 @@ describe('parseFeed on synthetic GS/GDP payloads', () => {
 		expect(feed.otherDelayTypes).toEqual([
 			{
 				disposition: 'ignored',
-				name: 'General Arrival/Departure Delay Info',
+				name: null,
 				element: 'Arrival_Departure_Delay_List',
 				entries: 2,
 			},
@@ -85,6 +85,22 @@ describe('parseFeed on synthetic GS/GDP payloads', () => {
 			{ disposition: 'unrecognized', name: 'Empty block', element: null, entries: 0 },
 		]);
 	});
+});
+
+describe('parseFeed on markup that carries no data', () => {
+	it('ignores the XML declaration and processing instructions anywhere', () => {
+		expect(parseOk(feedFixtureText('synthetic-processing-instructions.xml')).events).toEqual([
+			{ program: 'ground_stop', airport: 'ORD', reason: 'thunderstorms', endTime: '4:15 pm CST' },
+		]);
+	});
+
+	it.each(['synthetic-gs-block-without-name.xml', 'synthetic-gdp-block-two-names.xml'])(
+		'rejects a counted block without exactly one matching Name (%s)',
+		(name) => {
+			const result = parseFeed(feedFixtureText(name));
+			expect(result).toMatchObject({ ok: false, detail: expect.stringMatching(/needs one Name/) });
+		},
+	);
 });
 
 describe('parseFeed failures', () => {

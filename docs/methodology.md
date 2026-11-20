@@ -45,12 +45,17 @@ One source: the FAA NAS Status airport feed,
 - A **ground delay program** is an entry in a `Ground_Delay_List` (`Ground_Delay` elements).
 - An airport is identified by the entry's `ARPT`, matched exactly against the panel codes.
 - `Delay_type` blocks are classified by the list element they contain, not by `Name`, because the
-  same `Name` can repeat and older payloads omit it. Every block is read.
+  same `Name` can repeat across blocks and older payloads omit it on uncounted blocks. Every block
+  is read. A block holding a GS or GDP list must carry exactly one `Name`, `Ground Stop Programs` or
+  `Ground Delay Programs` respectively; otherwise the round fails (`parse_error`). The XML
+  declaration and processing instructions are ignored.
 - Arrival/departure delays, airspace flow programs and airport closures are parsed and recorded in
   the receipt as `ignored`; they never count. Any other list is recorded as `unrecognized`; it never
   fails the round and never counts.
 - A GS or GDP list holding an element we do not know fails the round (`parse_error`). Skipping it
-  could silently drop an active program, which is worse than a visible gap.
+  could silently drop an active program, which is worse than a visible gap. So does a document
+  without exactly one `AIRPORT_STATUS_INFORMATION` root, or a GS/GDP list anywhere other than
+  directly inside a `Delay_type` block.
 
 The index is **sample-based**. The feed carries no start times, and its GS `End_Time` is
 airport-local text with no date. Neither is used: a program counts only in slots where a valid
@@ -92,9 +97,10 @@ is stored for a slot it is never replaced, and any later round in that slot is a
 dropped. An invalid receipt stands only until a valid round is written in the same slot, which
 replaces it. Precedence is the order of writes to the archive, not fetch times.
 
-A round can be stored until **60 seconds after its slot ends** (the write window). After that,
-nothing in the slot can change and its receipt is final; the API serves it with immutable cache
-headers. A valid receipt is final as soon as it is written.
+A round can be stored until **60 seconds after its slot ends** (the write window), never later.
+Settlement depends on this: no receipt can change after the day's print is built. The API serves a
+valid receipt and its raw body with immutable cache headers, because a valid receipt is never
+replaced, and an invalid one with `no-store`.
 
 ## Airport-minutes
 

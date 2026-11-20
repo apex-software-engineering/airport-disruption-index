@@ -9,15 +9,8 @@ import { buildReceipt, outcomeFromReceipt, receiptHashMatches, summarizeReceipt 
 import type { DailyPrint, RoundReceipt } from './schemas';
 
 /** Rebuilds a receipt from its archived body and compares every field. */
-export function verifyRound(
-	receipt: RoundReceipt,
-	raw: Uint8Array | null,
-	requestedId: string,
-): string[] {
+export function verifyRound(receipt: RoundReceipt, raw: Uint8Array | null): string[] {
 	const problems: string[] = [];
-	if (receipt.roundId !== requestedId) {
-		problems.push(`asked for round ${requestedId}, got a receipt for ${receipt.roundId}`);
-	}
 	if (!receiptHashMatches(receipt))
 		problems.push('receiptHash does not match the receipt contents');
 	if (receipt.rawSha256 !== null) {
@@ -39,15 +32,8 @@ export function verifyRound(
 }
 
 /** Rebuilds a print from the receipts it lists and compares every field. */
-export function verifyPrint(
-	print: DailyPrint,
-	receipts: readonly RoundReceipt[],
-	requestedDate: string,
-): string[] {
+export function verifyPrint(print: DailyPrint, receipts: readonly RoundReceipt[]): string[] {
 	const problems: string[] = [];
-	if (print.date !== requestedDate) {
-		problems.push(`asked for day ${requestedDate}, got a print for ${print.date}`);
-	}
 	if (!printHashMatches(print)) problems.push('printHash does not match the print contents');
 	const listed = new Map(print.rounds.map((r) => [r.roundId, r.receiptHash]));
 	for (const receipt of receipts) {
