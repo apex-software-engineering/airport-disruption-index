@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { headers } from 'next/headers';
 import type { ReactNode } from 'react';
 
-import { readLastReceipt, readSiteData } from '@/components/index-data';
+import { RECENT_PRINT_DAYS, readLastReceipt, readSiteData } from '@/components/index-data';
 import { Mono, Notice, PageTitle, Section } from '@/components/ui';
 import { GET as getMethodology } from '@/app/api/v1/methodology/route';
 import { cloneCommand } from '@/lib/site';
@@ -65,7 +65,9 @@ export default async function ApiDocsPage() {
 	if (day.status === 'settled') {
 		reproduceCommands.push(`npm run reproduce -- ${sampleDate} --base-url ${origin}`);
 	} else {
-		reproduceNotes.push('No day has settled yet, so there is no print to reproduce.');
+		reproduceNotes.push(
+			`No settled print is available in the last ${RECENT_PRINT_DAYS} days, so there is no print to reproduce.`,
+		);
 	}
 
 	return (

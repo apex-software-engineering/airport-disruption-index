@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 import { cloneCommand, site } from '@/lib/site';
 
@@ -31,15 +31,26 @@ for (const page of PAGES) {
 	});
 }
 
+/** The text of the reproduce section: `#reproduce` on the API page, the span between the
+ *  `#reproducing` heading and the next heading in the methodology. */
+async function reproduceText(page: Page, route: string): Promise<string> {
+	if (route === '/docs/api') return page.locator('#reproduce').innerText();
+	return page.locator('#reproducing').evaluate((heading) => {
+		const parts: string[] = [];
+		for (let el = heading.nextElementSibling; el && !/^H[1-6]$/.test(el.tagName);) {
+			parts.push((el as HTMLElement).innerText);
+			el = el.nextElementSibling;
+		}
+		return parts.join('\n');
+	});
+}
+
 // /docs/api shows an example only when the thing it names exists, so the first reproduce command
 // may be absent; wherever one is shown, the clone command must come first.
-for (const { route, scope } of [
-	{ route: '/docs/api', scope: '#reproduce' },
-	{ route: '/methodology', scope: 'main' },
-] as const) {
+for (const route of ['/docs/api', '/methodology'] as const) {
 	test(`${route} shows the clone command before the reproduce commands`, async ({ page }) => {
 		await page.goto(route);
-		const text = await page.locator(scope).innerText();
+		const text = await reproduceText(page, route);
 		const clone = text.indexOf(cloneCommand);
 		expect(clone, 'clone command is shown').toBeGreaterThanOrEqual(0);
 		const reproduce = text.indexOf('npm run reproduce');
