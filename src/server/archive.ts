@@ -187,7 +187,7 @@ type IndexSync =
  * - On collect: one listing of the day's receipts. The round just resolved is re-read from its
  *   persisted receipt (inside the conditional write, so a stale writer retries), plus at most 15
  *   others (READ_CONCURRENCY - 1): listed receipts missing from the index first, then rounds the
- *   index holds as invalid, the only kind a later write can replace. Another round's receipt that
+ *   index holds as invalid, newest slot first, the only kind a later write can replace. Another round's receipt that
  *   cannot be read is skipped and retried next time. An index that does not decode is rebuilt
  *   from every listed receipt plus the round just resolved.
  * - On settle: rebuilt from the receipts settle already read.
@@ -211,9 +211,11 @@ async function syncDayIndex(store: ObjectStore, date: UtcDate, sync: IndexSync):
 			// are re-read too, after missing ones, within the same budget.
 			const indexed = new Set(current.rounds.map((r) => r.roundId));
 			const missing = listed.filter((id) => !indexed.has(id) && id !== sync.refresh);
+			// Newest first: a supersede whose patch failed is always in a recent slot.
 			const invalid = current.rounds
 				.filter((r) => r.observation.status === 'invalid' && r.roundId !== sync.refresh)
-				.map((r) => r.roundId);
+				.map((r) => r.roundId)
+				.sort((x, y) => y.localeCompare(x));
 			const toRead = [sync.refresh, ...[...missing, ...invalid].slice(0, READ_CONCURRENCY - 1)];
 			const fresh = (await readCollected(store, date, sync.refresh, toRead)).map(summarizeReceipt);
 			const reread = new Set(fresh.map((r) => r.roundId));

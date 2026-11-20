@@ -266,6 +266,32 @@ describe('archive write rules', () => {
 		).toEqual(['valid', 'valid']);
 	});
 
+	it('heals a recent failed supersede even behind more than 15 older invalid rounds', async () => {
+		// 17 invalid rounds, 19:20Z to 20:40Z.
+		for (let minute = 19 * 60 + 20; minute <= 20 * 60 + 40; minute += 5) {
+			const slot = Date.parse('2026-11-17T00:00:00Z') + minute * 60_000;
+			const failed = buildReceipt({
+				fetchedAt: new Date(slot + 3000),
+				sourceUrl: valid.sourceUrl,
+				outcome: { kind: 'network_error', detail: 'ECONNRESET' },
+			});
+			await recordRound(store, failed, null, new Date(slot + 4000));
+		}
+		await collect('2026-11-17T20:45:01Z', 'synthetic-gs-gdp.xml', 503);
+		await expect(
+			collectRound(
+				new FailingIndexStore(root),
+				fixtureAt('2026-11-17T20:45:30Z'),
+				() => new Date('2026-11-17T20:45:31Z'),
+			),
+		).rejects.toThrow(/index write failed/);
+		await collect('2026-11-17T20:50:03Z');
+		const index = await readDayIndex(store, '2026-11-17');
+		expect(index.rounds.find((r) => r.roundId === '2026-11-17T20:45Z')?.observation.status).toBe(
+			'valid',
+		);
+	});
+
 	it('includes its own round when rebuilding a malformed index from a lagging listing', async () => {
 		await collect('2026-11-17T20:40:03Z');
 		await overwriteDayIndex('not json');
