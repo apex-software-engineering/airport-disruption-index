@@ -1,0 +1,46 @@
+name: Smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every 6 hours, off the hour so a round for the current UTC day already exists.
+    - cron: '17 */6 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke
+  cancel-in-progress: false
+
+env:
+  NEXT_TELEMETRY_DISABLED: '1'
+
+jobs:
+  smoke:
+    name: Smoke against production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      # The runner ships Google Chrome; the suite uses it (channel: chrome) with its sandbox on.
+      - name: Smoke
+        run: npm run test:smoke
+        env:
+          BASE_URL: https://airports.apexsofteng.com
+
+      - name: Upload report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report
+          path: playwright-report/smoke
+          retention-days: 14
