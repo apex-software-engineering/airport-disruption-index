@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
-import { site } from '@/lib/site';
+import { cloneCommand, site } from '@/lib/site';
 
 const PAGES = [
 	{ path: '/', name: 'home', heading: site.name },
@@ -30,6 +30,24 @@ for (const page of PAGES) {
 		}
 	});
 }
+
+for (const route of ['/docs/api', '/methodology']) {
+	test(`${route} shows the clone command before the reproduce commands`, async ({ page }) => {
+		await page.goto(route);
+		const section = page.locator('main');
+		await expect(section).toContainText(cloneCommand);
+		await expect(section).toContainText('npm run reproduce');
+	});
+}
+
+test('/docs/api introduces the clone command in prose, with no placeholder text', async ({
+	page,
+}) => {
+	await page.goto('/docs/api');
+	await expect(page.locator('#reproduce')).toContainText(
+		'then rebuilds the print. With Node 24, clone the public source and run:',
+	);
+});
 
 test('/ shows the running value with its chart, or says plainly there is none', async ({
 	page,

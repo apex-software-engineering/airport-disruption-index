@@ -137,7 +137,8 @@ export default async function ApiDocsPage() {
 				<p className='text-ink-muted mb-4 max-w-2xl'>
 					The reproduce script fetches a receipt and its raw body from this API, checks both hashes,
 					re-parses the body with the same calculation code and compares every field. For a day it
-					XX
+					does that for every round in the print, then rebuilds the print. With Node 24, clone the
+					public source and run:
 				</p>
 				<Code>
 					{[
