@@ -185,10 +185,11 @@ type IndexSync =
 /**
  * The one owner of the day index, which it keeps in line with the stored receipts.
  * - On collect: one listing of the day's receipts. The round just resolved is re-read from its
- *   persisted receipt (inside the conditional write, so a stale writer retries). Up to
- *   READ_CONCURRENCY - 1 more are re-read and patched: listed receipts missing from the index
- *   first, then rounds the index holds as invalid, the only kind a later write can replace. An
- *   index that does not decode is rebuilt from every listed receipt plus the round just resolved.
+ *   persisted receipt (inside the conditional write, so a stale writer retries), plus at most 15
+ *   others (READ_CONCURRENCY - 1): listed receipts missing from the index first, then rounds the
+ *   index holds as invalid, the only kind a later write can replace. Another round's receipt that
+ *   cannot be read is skipped and retried next time. An index that does not decode is rebuilt
+ *   from every listed receipt plus the round just resolved.
  * - On settle: rebuilt from the receipts settle already read.
  * A rebuild ignores the old content and uses only its version.
  */
@@ -204,7 +205,7 @@ async function syncDayIndex(store: ObjectStore, date: UtcDate, sync: IndexSync):
 		} else if (current === null) {
 			// The listing can lag the write that just happened, so the own round is always read.
 			const all = [sync.refresh, ...listed.filter((id) => id !== sync.refresh)];
-			rounds = (await readReceipts(store, date, all)).map(summarizeReceipt);
+			rounds = (await readCollected(store, date, sync.refresh, all)).map(summarizeReceipt);
 		} else {
 			// Only an invalid receipt can change (a valid one may replace it), so invalid entries
 			// are re-read too, after missing ones, within the same budget.
@@ -214,11 +215,9 @@ async function syncDayIndex(store: ObjectStore, date: UtcDate, sync: IndexSync):
 				.filter((r) => r.observation.status === 'invalid' && r.roundId !== sync.refresh)
 				.map((r) => r.roundId);
 			const toRead = [sync.refresh, ...[...missing, ...invalid].slice(0, READ_CONCURRENCY - 1)];
-			const reread = new Set(toRead);
-			rounds = [
-				...current.rounds.filter((r) => !reread.has(r.roundId)),
-				...(await readReceipts(store, date, toRead)).map(summarizeReceipt),
-			];
+			const fresh = (await readCollected(store, date, sync.refresh, toRead)).map(summarizeReceipt);
+			const reread = new Set(fresh.map((r) => r.roundId));
+			rounds = [...current.rounds.filter((r) => !reread.has(r.roundId)), ...fresh];
 		}
 		const next = encode({
 			...emptyDayIndex(date),
@@ -230,6 +229,24 @@ async function syncDayIndex(store: ObjectStore, date: UtcDate, sync: IndexSync):
 		if ((await store.write(key, next, JSON_TYPE, condition)) === 'written') return;
 	}
 	throw new Error(`${key}: gave up after ${MAX_CONDITIONAL_ATTEMPTS} conflicting writes`);
+}
+
+/**
+ * Reads for a collect's index sync. Another round's unreadable receipt is skipped, so it stays
+ * out of the index and is retried on the next collect instead of failing every collect; the
+ * round this collect just stored must be readable.
+ */
+async function readCollected(
+	store: ObjectStore,
+	date: UtcDate,
+	refresh: RoundId,
+	ids: readonly RoundId[],
+): Promise<RoundReceipt[]> {
+	const receipts = await readReceipts(store, date, ids, 'skip');
+	if (!receipts.some((r) => r.roundId === refresh)) {
+		throw new Error(`receipt ${refresh} could not be read after it was stored`);
+	}
+	return receipts;
 }
 
 /** The stored object decoded, or null when it is not valid JSON of that schema. */
@@ -269,30 +286,40 @@ async function listReceiptIds(store: ObjectStore, date: UtcDate): Promise<RoundI
 		.map((key) => key.slice(prefix.length, -'.json'.length));
 }
 
-/** The given rounds' receipts, read READ_CONCURRENCY at a time, each verified against its hash. */
+/**
+ * The given rounds' receipts, read READ_CONCURRENCY at a time, each verified against its hash.
+ * `unreadable: 'skip'` leaves out a receipt that cannot be read, decoded or verified; 'throw'
+ * fails on it.
+ */
 async function readReceipts(
 	store: ObjectStore,
 	date: UtcDate,
 	ids: readonly RoundId[],
+	unreadable: 'throw' | 'skip',
 ): Promise<RoundReceipt[]> {
 	const receipts: RoundReceipt[] = [];
 	for (let i = 0; i < ids.length; i += READ_CONCURRENCY) {
 		const batch = ids.slice(i, i + READ_CONCURRENCY).map(async (id) => {
 			const key = keys.receipt(date, id);
-			const receipt = await readJson(store, receiptSchema, key);
-			if (receipt === null) throw new Error(`receipt ${key} is listed but missing`);
-			if (!receiptHashMatches(receipt))
-				throw new Error(`receipt ${key} does not match its receiptHash`);
-			return receipt;
+			try {
+				const receipt = await readJson(store, receiptSchema, key);
+				if (receipt === null) throw new Error(`receipt ${key} is listed but could not be read`);
+				if (!receiptHashMatches(receipt))
+					throw new Error(`receipt ${key} does not match its receiptHash`);
+				return receipt;
+			} catch (error) {
+				if (unreadable === 'skip') return null;
+				throw error;
+			}
 		});
-		receipts.push(...(await Promise.all(batch)));
+		for (const receipt of await Promise.all(batch)) if (receipt !== null) receipts.push(receipt);
 	}
 	return receipts;
 }
 
 /** Every receipt stored for `date`, each verified against its own hash. */
 export async function readDayReceipts(store: ObjectStore, date: UtcDate): Promise<RoundReceipt[]> {
-	return readReceipts(store, date, await listReceiptIds(store, date));
+	return readReceipts(store, date, await listReceiptIds(store, date), 'throw');
 }
 
 /** All revisions of a day's print, oldest first. Empty when the day has not settled. */

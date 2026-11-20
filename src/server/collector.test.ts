@@ -234,6 +234,20 @@ describe('archive write rules', () => {
 		expect((await readDayIndex(store, '2026-11-17')).rounds).toHaveLength(3);
 	});
 
+	it('skips an unreadable receipt of another round on collect; settle still refuses it', async () => {
+		const garbage = new TextEncoder().encode('not a receipt');
+		await store.write('rounds/2026-11-17/2026-11-17T20:40Z.json', garbage, 'application/json', {
+			kind: 'if-absent',
+		});
+		expect((await collect('2026-11-17T20:45:03Z')).outcome).toBe('recorded');
+		expect((await collect('2026-11-17T20:50:03Z')).outcome).toBe('recorded');
+		expect((await readDayIndex(store, '2026-11-17')).rounds.map((r) => r.roundId)).toEqual([
+			'2026-11-17T20:45Z',
+			'2026-11-17T20:50Z',
+		]);
+		await expect(settleDay(store, '2026-11-17')).rejects.toThrow();
+	});
+
 	it('heals a supersede whose index patch failed, on the next collect', async () => {
 		await collect('2026-11-17T20:45:01Z', 'synthetic-gs-gdp.xml', 503);
 		const failing = new FailingIndexStore(root);
