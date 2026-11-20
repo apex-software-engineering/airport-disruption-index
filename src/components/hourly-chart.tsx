@@ -1,0 +1,195 @@
+/**
+ * The day's hourly series as one stacked bar per UTC hour: ground-stop minutes at the base and
+ * GDP-only minutes above them, so each bar's height is the headline value for that hour and its
+ * lower segment is the GS-only sub-index. Plain SVG, rendered on the server; each hour carries a
+ * native tooltip and the same numbers are in the table below the chart.
+ */
+import type { HourBucket } from '@/lib/index/schemas';
+
+import { formatInteger, formatUtcHour } from './format';
+import { Table } from './ui';
+
+const WIDTH = 720;
+const HEIGHT = 220;
+const PLOT = { left: 44, right: 8, top: 8, bottom: 24 } as const;
+const GAP = 2;
+const RADIUS = 4;
+
+type Bar = {
+	hour: HourBucket;
+	label: string;
+	groundStop: number;
+	gdpOnly: number;
+	/** No slot of this hour has ended yet. */
+	upcoming: boolean;
+};
+
+function barsOf(hourly: readonly HourBucket[]): Bar[] {
+	return hourly.map((hour) => {
+		const gdpOnly = hour.airportMinutes - hour.groundStopMinutes;
+		if (gdpOnly < 0) {
+			throw new Error(`hour ${hour.hourStart}: GS minutes exceed headline minutes`);
+		}
+		const ended = hour.observed + hour.carried + hour.missing;
+		return {
+			hour,
+			label: formatUtcHour(hour.hourStart),
+			groundStop: hour.groundStopMinutes,
+			gdpOnly,
+			upcoming: ended === 0,
+		};
+	});
+}
+
+/** Smallest 1/2/5 × 10^k at or above `value`, so the top gridline is a round number. */
+function niceCeiling(value: number): number {
+	if (value <= 0) return 60;
+	const magnitude = 10 ** Math.floor(Math.log10(value));
+	const step = [1, 2, 5, 10].find((m) => m * magnitude >= value);
+	if (step === undefined) throw new Error(`no nice ceiling for ${value}`);
+	return step * magnitude;
+}
+
+/** A bar segment with rounded top corners only (the data end), flat on the baseline side. */
+function segmentPath(x: number, y: number, width: number, height: number, rounded: boolean) {
+	const r = rounded ? Math.min(RADIUS, width / 2, height) : 0;
+	return [
+		`M${x},${y + height}`,
+		`V${y + r}`,
+		r > 0 ? `Q${x},${y} ${x + r},${y}` : '',
+		`H${x + width - r}`,
+		r > 0 ? `Q${x + width},${y} ${x + width},${y + r}` : '',
+		`V${y + height}`,
+		'Z',
+	].join(' ');
+}
+
+function tooltip(bar: Bar): string {
+	const { hour } = bar;
+	if (bar.upcoming) return `${bar.label} UTC: not yet ended`;
+	return [
+		`${bar.label} UTC`,
+		`ADI ${formatInteger(hour.airportMinutes)} airport-minutes`,
+		`ADI-GS ${formatInteger(hour.groundStopMinutes)}`,
+		`slots: ${hour.observed} observed, ${hour.carried} carried, ${hour.missing} missing, ${hour.pending} pending`,
+	].join('\n');
+}
+
+export function HourlyChart({ hourly }: { hourly: readonly HourBucket[] }) {
+	const bars = barsOf(hourly);
+	const top = niceCeiling(Math.max(...bars.map((b) => b.groundStop + b.gdpOnly)));
+	const plotWidth = WIDTH - PLOT.left - PLOT.right;
+	const plotHeight = HEIGHT - PLOT.top - PLOT.bottom;
+	const slotWidth = plotWidth / bars.length;
+	const barWidth = slotWidth - GAP;
+	const yOf = (minutes: number) => PLOT.top + plotHeight * (1 - minutes / top);
+	const ticks = [0, top / 2, top];
+
+	return (
+		<figure>
+			<div className='text-ink-muted mb-3 flex flex-wrap gap-x-6 gap-y-1 text-sm'>
+				<span className='flex items-center gap-2'>
+					<span aria-hidden className='bg-series-gs inline-block size-3 rounded-sm' />
+					Ground stop
+				</span>
+				<span className='flex items-center gap-2'>
+					<span aria-hidden className='bg-series-gdp inline-block size-3 rounded-sm' />
+					Ground delay program only
+				</span>
+			</div>
+			<svg
+				viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+				className='h-auto w-full'
+				role='img'
+				aria-label='Airport-minutes per UTC hour today, split into ground stop and GDP-only minutes'>
+				{ticks.map((tick) => (
+					<g key={tick}>
+						<line
+							x1={PLOT.left}
+							x2={WIDTH - PLOT.right}
+							y1={yOf(tick)}
+							y2={yOf(tick)}
+							className='stroke-line'
+							strokeWidth={1}
+						/>
+						<text
+							x={PLOT.left - 6}
+							y={yOf(tick)}
+							textAnchor='end'
+							dominantBaseline='middle'
+							className='fill-ink-subtle text-[11px]'>
+							{formatInteger(tick)}
+						</text>
+					</g>
+				))}
+				{bars.map((bar, index) => {
+					const x = PLOT.left + index * slotWidth + GAP / 2;
+					const gsTop = yOf(bar.groundStop);
+					const total = bar.groundStop + bar.gdpOnly;
+					const totalTop = yOf(total);
+					return (
+						<g key={bar.hour.hourStart}>
+							<title>{tooltip(bar)}</title>
+							<rect
+								x={x}
+								y={PLOT.top}
+								width={barWidth}
+								height={plotHeight}
+								className={bar.upcoming ? 'fill-panel' : 'fill-transparent'}
+							/>
+							{bar.groundStop > 0 ? (
+								<path
+									d={segmentPath(x, gsTop, barWidth, yOf(0) - gsTop, bar.gdpOnly === 0)}
+									className='fill-series-gs'
+								/>
+							) : null}
+							{bar.gdpOnly > 0 ? (
+								<path
+									d={segmentPath(
+										x,
+										totalTop,
+										barWidth,
+										// Leave a 2px surface gap above the GS segment when both are drawn.
+										Math.max(0, gsTop - totalTop - (bar.groundStop > 0 ? GAP : 0)),
+										true,
+									)}
+									className='fill-series-gdp'
+								/>
+							) : null}
+							{index % 3 === 0 ? (
+								<text
+									x={x + barWidth / 2}
+									y={HEIGHT - 8}
+									textAnchor='middle'
+									className='fill-ink-subtle text-[11px]'>
+									{bar.label}
+								</text>
+							) : null}
+						</g>
+					);
+				})}
+			</svg>
+			<figcaption className='text-ink-subtle mt-2 text-xs'>
+				Airport-minutes per UTC hour. Shaded hours have not ended yet.
+			</figcaption>
+			<details className='mt-4 text-sm'>
+				<summary className='text-ink-muted cursor-pointer'>Hourly table</summary>
+				<div className='mt-3'>
+					<Table
+						caption='Airport-minutes and slot coverage per UTC hour'
+						head={['Hour (UTC)', 'ADI', 'ADI-GS', 'Observed', 'Carried', 'Missing', 'Pending']}
+						rows={bars.map((bar) => [
+							bar.label,
+							formatInteger(bar.hour.airportMinutes),
+							formatInteger(bar.hour.groundStopMinutes),
+							bar.hour.observed,
+							bar.hour.carried,
+							bar.hour.missing,
+							bar.hour.pending,
+						])}
+					/>
+				</div>
+			</details>
+		</figure>
+	);
+}

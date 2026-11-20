@@ -11,7 +11,8 @@
 		"test": "vitest run",
 		"format": "prettier --write .",
 		"format:check": "prettier --check .",
-		"reproduce": "tsx scripts/reproduce.ts"
+		"reproduce": "tsx scripts/reproduce.ts",
+		"test:smoke": "playwright test -c playwright.smoke.config.ts"
 	},
 	"engines": {
 		"node": "24.x"
@@ -19,12 +20,14 @@
 	"dependencies": {
 		"@vercel/blob": "^2.9.0",
 		"fast-xml-parser": "^5.12.1",
+		"marked": "^17.0.6",
 		"next": "^16.4.6",
 		"react": "^19.3.1",
 		"react-dom": "^19.3.1",
 		"zod": "^4.6.7"
 	},
 	"devDependencies": {
+		"@playwright/test": "^1.65.1",
 		"@tailwindcss/postcss": "^4.3.5",
 		"@types/node": "^24.19.2",
 		"@types/react": "^19.3.0",

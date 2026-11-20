@@ -21,3 +21,7 @@ coverage/
 *.pem
 *.log
 .data/
+
+# playwright
+/test-results/
+/playwright-report/

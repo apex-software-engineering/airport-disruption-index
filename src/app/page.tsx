@@ -1,10 +1,160 @@
+import Link from 'next/link';
+
+import { formatInteger, formatPercent, formatUtc } from '@/components/format';
+import { HourlyChart } from '@/components/hourly-chart';
+import {
+	hasValidRound,
+	readSiteData,
+	RECENT_PRINT_DAYS,
+	SETTLED_TONE,
+	type Current,
+	type HistoryDay,
+} from '@/components/index-data';
+import { Figure, Notice, PageTitle, Section, StatusLabel, Table } from '@/components/ui';
+import { METHODOLOGY } from '@/lib/index/methodology';
 import { site } from '@/lib/site';
 
-export default function HomePage() {
+export const dynamic = 'force-dynamic';
+
+const MAX_DAILY_VALUE = METHODOLOGY.panel.length * 24 * 60;
+
+export default async function HomePage() {
+	const { current, recent } = await readSiteData(new Date());
 	return (
-		<section className='mx-auto max-w-3xl px-6 py-16'>
-			<h1 className='text-3xl font-semibold tracking-tight'>{site.name}</h1>
-			<p className='mt-4 text-neutral-600'>{site.description}</p>
-		</section>
+		<>
+			<PageTitle
+				title={site.name}
+				lede={`Airport-minutes under FAA ground stops and ground delay programs across ${METHODOLOGY.panel.length} US hub airports, per UTC day. Methodology v${METHODOLOGY.version}.`}
+			/>
+			<Today current={current} />
+			{hasValidRound(current) ? (
+				<>
+					<Section title='Hourly series'>
+						<HourlyChart hourly={current.hourly} />
+					</Section>
+					<Section title='By airport'>
+						<Table
+							caption={`Airport-minutes by panel airport for ${current.date}`}
+							head={['Airport', 'ADI', 'ADI-GS']}
+							rows={current.airports.map((row) => [
+								row.airport,
+								formatInteger(row.airportMinutes),
+								formatInteger(row.groundStopMinutes),
+							])}
+						/>
+						<p className='text-ink-subtle mt-2 text-xs'>
+							Panel order: CY2024 enplanement rank among the FAA Core 30.
+						</p>
+					</Section>
+				</>
+			) : null}
+			<RecentPrints days={recent} />
+			<WhatItMeasures />
+		</>
+	);
+}
+
+function Today({ current }: { current: Current }) {
+	const { coverage, lastRound } = current;
+	return (
+		<Section title={`Today, ${current.date} (UTC)`}>
+			{hasValidRound(current) ? (
+				<div className='grid gap-6 sm:grid-cols-3'>
+					<Figure
+						label='ADI, running'
+						value={formatInteger(current.value)}
+						note='airport-minutes, GS or GDP'
+					/>
+					<Figure
+						label='ADI-GS, running'
+						value={formatInteger(current.groundStopValue)}
+						note='airport-minutes, GS only'
+					/>
+					<Figure
+						label='Coverage'
+						value={formatPercent(coverage.percent)}
+						note={`${coverage.validRounds} of ${coverage.elapsedSlots} ended slots observed`}
+					/>
+				</div>
+			) : (
+				<Notice>
+					No valid round has been recorded for {current.date} yet, so there is no running value to
+					show. The index publishes no number until it has observed the source.
+				</Notice>
+			)}
+			<p className='text-ink-muted mt-6 text-sm'>
+				<StatusLabel tone='neutral'>Provisional.</StatusLabel> The running value can still change
+				until the day settles at {formatUtc(current.settlesAt)}.{' '}
+				{lastRound === null ? (
+					'No round has been recorded today.'
+				) : (
+					<>
+						Last round <a href={lastRound.url}>{lastRound.roundId}</a>, fetched{' '}
+						{formatUtc(lastRound.fetchedAt)}, {lastRound.status}.
+					</>
+				)}{' '}
+				<Link href='/status'>Status</Link>
+			</p>
+		</Section>
+	);
+}
+
+function RecentPrints({ days }: { days: readonly HistoryDay[] }) {
+	return (
+		<Section title='Daily settlement prints'>
+			{days.length === 0 ? (
+				<Notice>
+					No day has settled in the last {RECENT_PRINT_DAYS} days. A day&apos;s print is published{' '}
+					{METHODOLOGY.settlement.cutoffMinutesAfterDayEnd} minutes after the UTC day ends, and the
+					index is live-only from its first production round.
+				</Notice>
+			) : (
+				<Table
+					caption='Settled days, newest first'
+					head={['Date (UTC)', 'Status', 'ADI', 'ADI-GS', 'Coverage', 'Revision']}
+					rows={days.map((day) => [
+						<a key='date' href={day.url}>
+							{day.date}
+						</a>,
+						<StatusLabel key='status' tone={SETTLED_TONE[day.status]}>
+							{day.status}
+						</StatusLabel>,
+						day.value === null ? '—' : formatInteger(day.value),
+						day.groundStopValue === null ? '—' : formatInteger(day.groundStopValue),
+						formatPercent(day.coveragePercent),
+						day.revision,
+					])}
+				/>
+			)}
+		</Section>
+	);
+}
+
+function WhatItMeasures() {
+	const { slotMinutes, carry, coverage, settlement } = METHODOLOGY;
+	return (
+		<Section title='What it measures'>
+			<div className='text-ink-muted max-w-2xl space-y-3'>
+				<p>
+					Every {slotMinutes} minutes the collector reads the FAA NAS Status airport feed once. Each
+					panel airport under an active ground stop or ground delay program in that observation adds{' '}
+					{METHODOLOGY.minutesPerActiveSlot} airport-minutes to the day. The headline{' '}
+					<strong className='text-ink'>ADI</strong> counts either program; the{' '}
+					<strong className='text-ink'>ADI-GS</strong> sub-index counts ground stops only. A day
+					ranges from 0 to {formatInteger(MAX_DAILY_VALUE)}.
+				</p>
+				<p>
+					A missed observation carries the last valid state for at most {carry.maxCarriedSlots}{' '}
+					slots, then counts nothing. A day settles {settlement.cutoffMinutesAfterDayEnd} minutes
+					after it ends: final at {coverage.finalMinPercent}% coverage or more, degraded from{' '}
+					{coverage.degradedMinPercent}%, and suspended below that. Every round keeps the raw source
+					bytes and a hashed receipt, so anyone can recompute a published number.
+				</p>
+				<p>
+					<Link href='/methodology'>Methodology</Link> · <Link href='/docs/api'>API</Link> ·{' '}
+					<Link href='/sources'>Sources</Link>
+				</p>
+			</div>
+		</Section>
 	);
 }
