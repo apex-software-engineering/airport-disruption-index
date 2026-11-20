@@ -194,6 +194,14 @@ existing version.
 
 ## Reproducing
 
+With Node 24, clone the public source first:
+
+```sh
+git clone https://github.com/apex-software-engineering/airport-disruption-index && cd airport-disruption-index && npm ci
+```
+
+Then, from the checkout:
+
 ```sh
 npm run reproduce -- 2026-11-17T20:45Z            # one round
 npm run reproduce -- 2026-11-17                   # a settled day: every round, then the print

@@ -5,6 +5,7 @@ import type { ReactNode } from 'react';
 import { readLastReceipt, readSiteData } from '@/components/index-data';
 import { Mono, Notice, PageTitle, Section } from '@/components/ui';
 import { GET as getMethodology } from '@/app/api/v1/methodology/route';
+import { cloneCommand } from '@/lib/site';
 import { CACHE } from '@/server/http';
 import { storeFromEnv } from '@/server/storage';
 import { API_BASE, dayView } from '@/server/views';
@@ -136,12 +137,11 @@ export default async function ApiDocsPage() {
 				<p className='text-ink-muted mb-4 max-w-2xl'>
 					The reproduce script fetches a receipt and its raw body from this API, checks both hashes,
 					re-parses the body with the same calculation code and compares every field. For a day it
-					does that for every round in the print, then rebuilds the print. From a checkout of the
-					index source, with Node 24:
+					XX
 				</p>
 				<Code>
 					{[
-						'npm ci',
+						cloneCommand,
 						`npm run reproduce -- ${sampleRoundId} --base-url ${origin}`,
 						`npm run reproduce -- ${sampleDate} --base-url ${origin}`,
 					].join('\n')}

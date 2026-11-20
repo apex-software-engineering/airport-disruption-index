@@ -39,7 +39,9 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
 				</header>
 				<main className='mx-auto w-full max-w-4xl flex-1 px-6 py-10'>{children}</main>
 				<footer className='border-line text-ink-subtle border-t text-sm'>
-					<p className='mx-auto max-w-4xl px-6 py-4'>{site.footer}</p>
+					<p className='mx-auto max-w-4xl px-6 py-4'>
+						{site.footer} · <a href={site.repoUrl}>Source code</a>
+					</p>
 				</footer>
 			</body>
 		</html>

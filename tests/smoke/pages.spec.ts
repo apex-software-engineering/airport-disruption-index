@@ -20,7 +20,8 @@ for (const page of PAGES) {
 		const response = await browser.goto(page.path);
 		expect(response?.status(), `${page.path} status`).toBe(200);
 		await expect(browser.getByRole('heading', { level: 1 })).toHaveText(page.heading);
-		await expect(browser.locator('footer')).toHaveText(site.footer);
+		await expect(browser.locator('footer')).toContainText(site.footer);
+		await expect(browser.locator('footer').getByRole('link')).toHaveAttribute('href', site.repoUrl);
 		if (screenshotDir) {
 			await browser.screenshot({
 				path: path.join(screenshotDir, `${page.name}.png`),
