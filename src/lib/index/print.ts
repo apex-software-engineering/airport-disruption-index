@@ -5,7 +5,7 @@
 import { aggregateDay, settledStatus } from './day';
 import { hashJson } from './json';
 import { METHODOLOGY, PARAMETER_HASH } from './methodology';
-import type { DailyPrint, HistoryEntry, RoundSummary } from './schemas';
+import { printSchema, type DailyPrint, type HistoryEntry, type RoundSummary } from './schemas';
 import { dayStartMs, settlementCutoff, type UtcDate } from './time';
 
 export const PRINT_SCHEMA = 'adi.daily-print/1' as const;
@@ -19,9 +19,6 @@ export function buildPrint(
 	rounds: readonly RoundSummary[],
 	revision: PrintRevision,
 ): DailyPrint {
-	if ('reason' in revision && (revision.revision < 2 || revision.reason.trim() === '')) {
-		throw new Error('a correction print needs revision 2 or later and a stated reason');
-	}
 	const dayEnd = new Date(dayStartMs(date) + 86_400_000);
 	const day = aggregateDay(date, rounds, dayEnd);
 	const status = settledStatus(day.coverage.validRounds);
@@ -52,14 +49,15 @@ export function buildPrint(
 						hourly: day.hourly,
 					},
 		rounds: [...rounds]
-			.sort((a, b) => a.roundId.localeCompare(b.roundId) || a.fetchedAt.localeCompare(b.fetchedAt))
+			.sort((a, b) => a.roundId.localeCompare(b.roundId))
 			.map((round) => ({
 				roundId: round.roundId,
 				receiptHash: round.receiptHash,
 				status: round.observation.status,
 			})),
 	};
-	return { ...unsigned, printHash: hashJson(unsigned) };
+	// The schema owns the print's invariants (revision 1 ⇔ no correction, a stated reason).
+	return printSchema.parse({ ...unsigned, printHash: hashJson(unsigned) });
 }
 
 export function printHashMatches(print: DailyPrint): boolean {

@@ -16,5 +16,5 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
 	const raw = await readRaw(store, receipt);
 	if (raw === null) return problem(404, `round ${id} received no response body`);
 	const contentType = receipt.httpStatus === 200 ? 'application/xml' : 'application/octet-stream';
-	return untrustedBytes(raw, contentType, roundCache(id, new Date()));
+	return untrustedBytes(raw, contentType, roundCache(receipt, new Date()));
 }

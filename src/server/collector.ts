@@ -35,9 +35,10 @@ export const fetchSourceFeed: FeedFetcher = async () => {
 export async function collectRound(
 	store: ObjectStore,
 	fetchFeed: FeedFetcher,
+	clock: () => Date = () => new Date(),
 ): Promise<RecordResult> {
 	const { fetchedAt, outcome } = await fetchFeed();
 	const receipt = buildReceipt({ fetchedAt, sourceUrl: METHODOLOGY.source.url, outcome });
 	const body = outcome.kind === 'response' ? outcome.body : null;
-	return recordRound(store, receipt, body);
+	return recordRound(store, receipt, body, clock());
 }

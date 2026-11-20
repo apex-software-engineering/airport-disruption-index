@@ -87,9 +87,14 @@ is noted in [sources.md](sources.md) as a possible future cross-check; it is not
 
 ### One round per slot
 
-The **earliest-fetched valid round** in a slot is the slot's observation. Later rounds in the same
-slot are duplicates and are dropped. An invalid round stands only until a valid round arrives in the
-same slot; the valid one replaces it. Once a slot has ended, its receipt never changes.
+The archive keeps one receipt per slot. **The first valid round written wins**: once a valid receipt
+is stored for a slot it is never replaced, and any later round in that slot is a duplicate and is
+dropped. An invalid receipt stands only until a valid round is written in the same slot, which
+replaces it. Precedence is the order of writes to the archive, not fetch times.
+
+A round can be stored until **60 seconds after its slot ends** (the write window). After that,
+nothing in the slot can change and its receipt is final; the API serves it with immutable cache
+headers. A valid receipt is final as soon as it is written.
 
 ## Airport-minutes
 
@@ -134,9 +139,10 @@ count.
 
 - Day D settles at **D+1 00:30Z**. A daily cron builds the print then; it can be run again safely
   and never overwrites a print.
-- The print is built only from day D's stored receipts. Each one is checked against its own
-  `receiptHash` first. Rounds cannot be added after day D ends, because a round's slot is set by its
-  fetch time.
+- The print is built only from day D's stored receipts, each checked against its own `receiptHash`
+  first. The day index that serves the running value is a cache rebuilt from those receipts;
+  settlement never reads it. Rounds cannot be added after day D ends, because a round's slot is set
+  by its fetch time.
 - A **print** (`GET /api/v1/days/{date}`) contains: date, revision, correction (null on revision 1),
   methodology version, parameter hash, `settlesAt`, coverage, the result (status, value, GS-only
   value, per-airport minutes and hourly series, or for a suspended day only a reason), every round's

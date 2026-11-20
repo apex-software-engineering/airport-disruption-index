@@ -5,6 +5,8 @@
  */
 import type { z } from 'zod';
 
+import { sha256Hex } from '@/lib/index/json';
+import { METHODOLOGY } from '@/lib/index/methodology';
 import { buildPrint, historyEntryOf } from '@/lib/index/print';
 import { receiptHashMatches, summarizeReceipt } from '@/lib/index/round';
 import {
@@ -16,7 +18,6 @@ import {
 	type DayIndex,
 	type HistoryIndex,
 	type RoundReceipt,
-	type RoundSummary,
 } from '@/lib/index/schemas';
 import { parseRoundId, type RoundId, type UtcDate } from '@/lib/index/time';
 
@@ -77,46 +78,87 @@ export async function readRaw(
 	return object.body;
 }
 
+/**
+ * A round can be stored until this long after its slot ends. After it, nothing in the slot can
+ * change, so every receipt is final; before it, only an invalid receipt can still be replaced.
+ */
+const WRITE_WINDOW_AFTER_SLOT_MS = 60_000;
+
+function writeDeadline(id: RoundId): number {
+	const parsed = parseRoundId(id);
+	if (parsed === null) throw new Error(`invalid round id ${id}`);
+	return parsed.slotStart.getTime() + METHODOLOGY.slotMinutes * 60_000 + WRITE_WINDOW_AFTER_SLOT_MS;
+}
+
+/** A valid receipt is never replaced; an invalid one is final once its write window closes. */
+export function receiptIsFinal(receipt: RoundReceipt, now: Date): boolean {
+	return receipt.observation.status === 'valid' || now.getTime() >= writeDeadline(receipt.roundId);
+}
+
 export type RecordOutcome = 'recorded' | 'superseded_invalid' | 'duplicate';
 /** `receipt` is the one the archive holds afterwards, which for a duplicate is the earlier one. */
 export type RecordResult = { outcome: RecordOutcome; receipt: RoundReceipt };
 
 /**
- * Stores a round. The first valid round in a slot is final. An invalid round stands until a
- * valid one arrives in the same slot, which replaces it; any other second round is a duplicate
- * and is dropped.
+ * Stores a round. The first valid receipt written for a slot is final. An invalid receipt
+ * stands until a valid one is written in the same slot, which replaces it; any other second
+ * round is a duplicate and is dropped. A lost conditional write re-reads and re-applies the
+ * rule. The day index is rebuilt afterwards on every path, so a failed earlier rebuild heals.
  */
 export async function recordRound(
 	store: ObjectStore,
 	receipt: RoundReceipt,
 	body: Uint8Array | null,
+	now: Date,
 ): Promise<RecordResult> {
+	assertRecordable(receipt, body);
+	if (now.getTime() >= writeDeadline(receipt.roundId)) {
+		throw new Error(`round ${receipt.roundId} arrived after its write window closed`);
+	}
 	const date = dateOf(receipt.roundId);
 	const key = keys.receipt(date, receipt.roundId);
-	const stored = await store.read(key);
-	const existing = stored === null ? null : decode(receiptSchema, key, stored);
-	if (
-		existing !== null &&
-		(existing.observation.status === 'valid' || receipt.observation.status === 'invalid')
-	) {
-		return { outcome: 'duplicate', receipt: existing };
-	}
-	const condition: WriteCondition =
-		stored === null ? { kind: 'if-absent' } : { kind: 'if-version', version: stored.version };
 	if (body !== null && receipt.rawSha256 !== null) {
-		// An identical body may already be there from an earlier attempt; either way it is the same bytes.
-		const rawKey = keys.raw(date, receipt.roundId, receipt.rawSha256);
-		await store.write(rawKey, body, 'application/octet-stream', { kind: 'if-absent' });
+		// Content-addressed: an object already at this key holds these same bytes.
+		await store.write(
+			keys.raw(date, receipt.roundId, receipt.rawSha256),
+			body,
+			'application/octet-stream',
+			{
+				kind: 'if-absent',
+			},
+		);
 	}
-	const written = await store.write(key, encode(receipt), JSON_TYPE, condition);
-	if (written === 'conflict') {
-		const winner = await readReceipt(store, receipt.roundId);
-		if (winner === null)
-			throw new Error(`receipt ${receipt.roundId} conflicted but cannot be read`);
-		return { outcome: 'duplicate', receipt: winner };
+	for (let attempt = 0; attempt < MAX_CONDITIONAL_ATTEMPTS; attempt += 1) {
+		const stored = await store.read(key);
+		const existing = stored === null ? null : decode(receiptSchema, key, stored);
+		if (
+			existing !== null &&
+			(existing.observation.status === 'valid' || receipt.observation.status === 'invalid')
+		) {
+			await rebuildDayIndex(store, date);
+			return { outcome: 'duplicate', receipt: existing };
+		}
+		const condition: WriteCondition =
+			stored === null ? { kind: 'if-absent' } : { kind: 'if-version', version: stored.version };
+		if ((await store.write(key, encode(receipt), JSON_TYPE, condition)) === 'written') {
+			await rebuildDayIndex(store, date);
+			return { outcome: existing === null ? 'recorded' : 'superseded_invalid', receipt };
+		}
 	}
-	await updateDayIndex(store, date, summarizeReceipt(receipt));
-	return { outcome: existing === null ? 'recorded' : 'superseded_invalid', receipt };
+	throw new Error(`${key}: gave up after ${MAX_CONDITIONAL_ATTEMPTS} conflicting writes`);
+}
+
+/** Refuses anything that would fail verification later and so wedge settlement. */
+function assertRecordable(receipt: RoundReceipt, body: Uint8Array | null): void {
+	receiptSchema.parse(receipt);
+	if (!receiptHashMatches(receipt))
+		throw new Error(`receipt ${receipt.roundId} does not match its receiptHash`);
+	const bodyMatches =
+		body === null
+			? receipt.rawSha256 === null && receipt.rawBytes === null
+			: sha256Hex(body) === receipt.rawSha256 && body.byteLength === receipt.rawBytes;
+	if (!bodyMatches)
+		throw new Error(`receipt ${receipt.roundId} does not describe the body it came with`);
 }
 
 function emptyDayIndex(date: UtcDate): DayIndex {
@@ -128,16 +170,16 @@ export async function readDayIndex(store: ObjectStore, date: UtcDate): Promise<D
 	return (await readJson(store, dayIndexSchema, keys.dayIndex(date))) ?? emptyDayIndex(date);
 }
 
-async function updateDayIndex(
-	store: ObjectStore,
-	date: UtcDate,
-	summary: RoundSummary,
-): Promise<void> {
-	await updateJson(store, dayIndexSchema, keys.dayIndex(date), emptyDayIndex(date), (index) => ({
-		...index,
-		rounds: [...index.rounds.filter((r) => r.roundId !== summary.roundId), summary].sort((x, y) =>
-			x.roundId.localeCompare(y.roundId),
-		),
+/**
+ * Rewrites the day index from the stored receipts, so it can never drift from them. Settlement
+ * does not use the index at all; it recomputes from the receipts.
+ */
+async function rebuildDayIndex(store: ObjectStore, date: UtcDate): Promise<void> {
+	await updateJson(store, dayIndexSchema, keys.dayIndex(date), emptyDayIndex(date), async () => ({
+		...emptyDayIndex(date),
+		rounds: (await readDayReceipts(store, date))
+			.map(summarizeReceipt)
+			.sort((x, y) => x.roundId.localeCompare(y.roundId)),
 	}));
 }
 
@@ -147,15 +189,16 @@ async function updateJson<T>(
 	schema: z.ZodType<T>,
 	key: string,
 	empty: T,
-	change: (current: T) => T,
+	change: (current: T) => T | Promise<T>,
 ): Promise<void> {
 	for (let attempt = 0; attempt < MAX_CONDITIONAL_ATTEMPTS; attempt += 1) {
 		const object = await store.read(key);
 		const current = object === null ? empty : decode(schema, key, object);
+		const next = encode(await change(current));
+		if (object !== null && Buffer.from(next).equals(Buffer.from(object.body))) return;
 		const condition: WriteCondition =
 			object === null ? { kind: 'if-absent' } : { kind: 'if-version', version: object.version };
-		if ((await store.write(key, encode(change(current)), JSON_TYPE, condition)) === 'written')
-			return;
+		if ((await store.write(key, next, JSON_TYPE, condition)) === 'written') return;
 	}
 	throw new Error(`${key}: gave up after ${MAX_CONDITIONAL_ATTEMPTS} conflicting writes`);
 }
@@ -189,20 +232,22 @@ export async function readPrints(store: ObjectStore, date: UtcDate): Promise<Dai
 
 export type SettleOutcome = { status: 'settled' | 'already_settled'; print: DailyPrint };
 
-/** Builds and stores revision 1 of a day's print from its receipts. Never overwrites a print. */
+/**
+ * Builds and stores revision 1 of a day's print from its receipts. Never overwrites a print.
+ * Every path ends by pointing the history index at the day's latest revision.
+ */
 export async function settleDay(store: ObjectStore, date: UtcDate): Promise<SettleOutcome> {
-	const [existing] = await readPrints(store, date);
-	if (existing !== undefined) return { status: 'already_settled', print: existing };
+	const settled = (await readPrints(store, date)).at(-1);
+	if (settled !== undefined) {
+		await updateHistory(store, settled);
+		return { status: 'already_settled', print: settled };
+	}
 	const receipts = await readDayReceipts(store, date);
 	const print = buildPrint(date, receipts.map(summarizeReceipt), { revision: 1 });
 	const written = await store.write(keys.print(date, 1), encode(print), JSON_TYPE, {
 		kind: 'if-absent',
 	});
-	if (written === 'conflict') {
-		const [winner] = await readPrints(store, date);
-		if (winner === undefined) throw new Error(`print ${date} r1 conflicted but cannot be read`);
-		return { status: 'already_settled', print: winner };
-	}
+	if (written === 'conflict') return settleDay(store, date);
 	await updateHistory(store, print);
 	return { status: 'settled', print };
 }
@@ -215,10 +260,14 @@ export async function readHistory(store: ObjectStore): Promise<HistoryIndex> {
 
 async function updateHistory(store: ObjectStore, print: DailyPrint): Promise<void> {
 	const entry = historyEntryOf(print);
-	await updateJson(store, historyIndexSchema, keys.history(), EMPTY_HISTORY, (history) => ({
-		...history,
-		days: [...history.days.filter((d) => d.date !== entry.date), entry].sort((x, y) =>
-			x.date.localeCompare(y.date),
-		),
-	}));
+	await updateJson(store, historyIndexSchema, keys.history(), EMPTY_HISTORY, (history) => {
+		const listed = history.days.find((d) => d.date === entry.date);
+		if (listed !== undefined && listed.revision > entry.revision) return history; // never regress
+		return {
+			...history,
+			days: [...history.days.filter((d) => d.date !== entry.date), entry].sort((x, y) =>
+				x.date.localeCompare(y.date),
+			),
+		};
+	});
 }

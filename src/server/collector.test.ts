@@ -6,10 +6,21 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { feedFixture } from '@/test/fixtures';
 
-import { readDayIndex, readPrints, readRaw, readReceipt, settleDay } from './archive';
+import { buildPrint } from '@/lib/index/print';
+import { buildReceipt } from '@/lib/index/round';
+
+import {
+	readDayIndex,
+	readHistory,
+	readPrints,
+	readRaw,
+	readReceipt,
+	recordRound,
+	settleDay,
+} from './archive';
 import { collectRound, type FeedFetcher } from './collector';
-import { FileStore } from './storage';
-import { currentView, dayView, historyView } from './views';
+import { FileStore, type WriteCondition } from './storage';
+import { currentView, dayView, historyView, roundCache } from './views';
 
 let root: string;
 let store: FileStore;
@@ -32,9 +43,18 @@ function fixtureAt(
 	});
 }
 
+/** Collects with the archive's clock one second after the fetch. */
+function collect(fetchedAt: string, fixture?: string, httpStatus?: number) {
+	return collectRound(
+		store,
+		fixtureAt(fetchedAt, fixture, httpStatus),
+		() => new Date(Date.parse(fetchedAt) + 1000),
+	);
+}
+
 describe('collectRound', () => {
 	it('archives the receipt, the raw body and a day index entry', async () => {
-		const { outcome, receipt } = await collectRound(store, fixtureAt('2026-11-17T20:45:03Z'));
+		const { outcome, receipt } = await collect('2026-11-17T20:45:03Z');
 		expect(outcome).toBe('recorded');
 		expect(await readReceipt(store, '2026-11-17T20:45Z')).toEqual(receipt);
 		expect(await readRaw(store, receipt)).toEqual(feedFixture('synthetic-gs-gdp.xml'));
@@ -43,11 +63,8 @@ describe('collectRound', () => {
 	});
 
 	it('is idempotent within a slot: the first valid round wins', async () => {
-		const first = await collectRound(store, fixtureAt('2026-11-17T20:45:03Z'));
-		const second = await collectRound(
-			store,
-			fixtureAt('2026-11-17T20:46:00Z', 'live-2026-11-17T20-43-56Z.xml'),
-		);
+		const first = await collect('2026-11-17T20:45:03Z');
+		const second = await collect('2026-11-17T20:46:00Z', 'live-2026-11-17T20-43-56Z.xml');
 		expect(second.outcome).toBe('duplicate');
 		expect(second.receipt).toEqual(first.receipt);
 		expect((await readReceipt(store, '2026-11-17T20:45Z'))?.receiptHash).toBe(
@@ -57,18 +74,14 @@ describe('collectRound', () => {
 	});
 
 	it('lets a valid round replace an invalid one in the same slot, but not the reverse', async () => {
-		expect(
-			(await collectRound(store, fixtureAt('2026-11-17T20:45:01Z', 'synthetic-gs-gdp.xml', 503)))
-				.outcome,
-		).toBe('recorded');
-		expect(
-			(await collectRound(store, fixtureAt('2026-11-17T20:45:30Z', 'synthetic-gs-gdp.xml', 502)))
-				.outcome,
-		).toBe('duplicate');
-		expect((await readReceipt(store, '2026-11-17T20:45Z'))?.httpStatus).toBe(503);
-		expect((await collectRound(store, fixtureAt('2026-11-17T20:46:00Z'))).outcome).toBe(
-			'superseded_invalid',
+		expect((await collect('2026-11-17T20:45:01Z', 'synthetic-gs-gdp.xml', 503)).outcome).toBe(
+			'recorded',
 		);
+		expect((await collect('2026-11-17T20:45:30Z', 'synthetic-gs-gdp.xml', 502)).outcome).toBe(
+			'duplicate',
+		);
+		expect((await readReceipt(store, '2026-11-17T20:45Z'))?.httpStatus).toBe(503);
+		expect((await collect('2026-11-17T20:46:00Z')).outcome).toBe('superseded_invalid');
 		const index = await readDayIndex(store, '2026-11-17');
 		expect(index.rounds.map((r) => r.observation.status)).toEqual(['valid']);
 	});
@@ -78,7 +91,7 @@ describe('collectRound', () => {
 			fetchedAt: new Date('2026-11-17T20:50:02Z'),
 			outcome: { kind: 'network_error', detail: 'TimeoutError: timed out' },
 		});
-		const { receipt } = await collectRound(store, failing);
+		const { receipt } = await collectRound(store, failing, () => new Date('2026-11-17T20:50:03Z'));
 		expect(receipt.observation).toMatchObject({ status: 'invalid', reason: 'network_error' });
 		expect(await readRaw(store, receipt)).toBeNull();
 	});
@@ -86,8 +99,8 @@ describe('collectRound', () => {
 
 describe('views and settlement', () => {
 	it('serves the running value and settles a day once', async () => {
-		await collectRound(store, fixtureAt('2026-11-17T20:45:03Z'));
-		await collectRound(store, fixtureAt('2026-11-17T20:50:03Z'));
+		await collect('2026-11-17T20:45:03Z');
+		await collect('2026-11-17T20:50:03Z');
 		const current = await currentView(store, new Date('2026-11-17T20:56:00Z'));
 		// LGA (GS+GDP) and SFO (GDP) in the 20:45 and 20:50 slots; 20:55 has not ended, so it is pending.
 		expect(current).toMatchObject({
@@ -100,16 +113,22 @@ describe('views and settlement', () => {
 			roundId: '2026-11-17T20:50Z',
 			url: '/api/v1/rounds/2026-11-17T20:50Z',
 		});
-		expect(current.latestSlot).toMatchObject({ status: 'observed', roundId: '2026-11-17T20:50Z' });
+		// The open slot is 20:55: no round yet, so pending.
+		expect(current.latestSlot).toEqual({ status: 'pending' });
+		await collect('2026-11-17T20:55:03Z');
+		expect((await currentView(store, new Date('2026-11-17T20:56:00Z'))).latestSlot).toMatchObject({
+			status: 'observed',
+			roundId: '2026-11-17T20:55Z',
+		});
 
 		expect(await dayView(store, '2026-11-17')).toMatchObject({ status: 'unsettled' });
 		const settled = await settleDay(store, '2026-11-17');
 		expect(settled.status).toBe('settled');
 		expect(settled.print.result).toEqual({
 			status: 'suspended',
-			reason: 'coverage 2/288 valid rounds is below 80%',
+			reason: 'coverage 3/288 valid rounds is below 80%',
 		});
-		expect(settled.print.rounds).toHaveLength(2);
+		expect(settled.print.rounds).toHaveLength(3);
 		const again = await settleDay(store, '2026-11-17');
 		expect(again).toEqual({ status: 'already_settled', print: settled.print });
 		expect(await readPrints(store, '2026-11-17')).toHaveLength(1);
@@ -117,6 +136,121 @@ describe('views and settlement', () => {
 			days: [
 				{ date: '2026-11-17', status: 'suspended', value: null, url: '/api/v1/days/2026-11-17' },
 			],
+		});
+	});
+});
+
+/** A store where another writer lands an invalid receipt just before our first receipt write. */
+class RacingStore extends FileStore {
+	private raced = false;
+	constructor(
+		root: string,
+		private readonly racer: () => Promise<void>,
+	) {
+		super(root);
+	}
+	override async write(
+		key: string,
+		body: Uint8Array,
+		contentType: string,
+		condition: WriteCondition,
+	) {
+		if (!this.raced && key.endsWith('Z.json')) {
+			this.raced = true;
+			await this.racer();
+		}
+		return super.write(key, body, contentType, condition);
+	}
+}
+
+describe('archive write rules', () => {
+	const fetchedAt = new Date('2026-11-17T20:45:03Z');
+	const now = new Date('2026-11-17T20:45:04Z');
+	const valid = buildReceipt({
+		fetchedAt,
+		sourceUrl: 'https://nasstatus.faa.gov/api/airport-status-information',
+		outcome: { kind: 'response', httpStatus: 200, body: feedFixture('synthetic-gs-gdp.xml') },
+	});
+	const invalid = buildReceipt({
+		fetchedAt: new Date('2026-11-17T20:45:01Z'),
+		sourceUrl: valid.sourceUrl,
+		outcome: { kind: 'network_error', detail: 'ECONNRESET' },
+	});
+
+	it('re-applies the rule after losing a conditional write to an invalid receipt', async () => {
+		const racing = new RacingStore(root, async () => {
+			await recordRound(new FileStore(root), invalid, null, now);
+		});
+		const result = await recordRound(racing, valid, feedFixture('synthetic-gs-gdp.xml'), now);
+		expect(result.outcome).toBe('superseded_invalid');
+		expect((await readReceipt(store, valid.roundId))?.receiptHash).toBe(valid.receiptHash);
+	});
+
+	it('heals a day index that has drifted from the receipts on a duplicate retry', async () => {
+		await recordRound(store, valid, feedFixture('synthetic-gs-gdp.xml'), now);
+		const index = await store.read('days/2026-11-17.json');
+		if (index === null) throw new Error('no day index');
+		const empty = new TextEncoder().encode(
+			JSON.stringify({ schema: 'adi.day-index/1', date: '2026-11-17', rounds: [] }),
+		);
+		await store.write('days/2026-11-17.json', empty, 'application/json', {
+			kind: 'if-version',
+			version: index.version,
+		});
+		expect((await recordRound(store, invalid, null, now)).outcome).toBe('duplicate');
+		expect((await readDayIndex(store, '2026-11-17')).rounds.map((r) => r.receiptHash)).toEqual([
+			valid.receiptHash,
+		]);
+	});
+
+	it('refuses a receipt that does not describe its body, or a tampered receipt', async () => {
+		const other = feedFixture('live-2026-11-17T20-43-56Z.xml');
+		await expect(recordRound(store, valid, other, now)).rejects.toThrow(/does not describe/);
+		await expect(recordRound(store, valid, null, now)).rejects.toThrow(/does not describe/);
+		await expect(
+			recordRound(store, { ...valid, rawBytes: 1 }, feedFixture('synthetic-gs-gdp.xml'), now),
+		).rejects.toThrow(/receiptHash/);
+		expect(await readReceipt(store, valid.roundId)).toBeNull();
+	});
+
+	it('refuses a round once its write window has closed', async () => {
+		await expect(
+			recordRound(store, invalid, null, new Date('2026-11-17T20:51:00Z')),
+		).rejects.toThrow(/write window/);
+	});
+
+	it('caches a receipt as immutable only once nothing can replace it', () => {
+		expect(roundCache(valid, now)).toMatch(/immutable/);
+		expect(roundCache(invalid, now)).toBe('no-store');
+		expect(roundCache(invalid, new Date('2026-11-17T20:50:59Z'))).toBe('no-store');
+		expect(roundCache(invalid, new Date('2026-11-17T20:51:00Z'))).toMatch(/immutable/);
+	});
+});
+
+describe('settlement history', () => {
+	it('points history at the latest revision, including on the already-settled path', async () => {
+		await collect('2026-11-17T20:45:03Z');
+		const first = await settleDay(store, '2026-11-17');
+		// A later correction print, written outside settleDay.
+		const corrected = buildPrint('2026-11-17', [], {
+			revision: 2,
+			supersedesPrintHash: first.print.printHash,
+			reason: 'test correction',
+		});
+		await store.write(
+			'prints/2026-11-17/r2.json',
+			new TextEncoder().encode(JSON.stringify(corrected)),
+			'application/json',
+			{ kind: 'if-absent' },
+		);
+		const again = await settleDay(store, '2026-11-17');
+		expect(again).toEqual({ status: 'already_settled', print: corrected });
+		expect((await readHistory(store)).days).toMatchObject([
+			{ date: '2026-11-17', revision: 2, printHash: corrected.printHash },
+		]);
+		expect(await dayView(store, '2026-11-17')).toMatchObject({
+			print: { revision: 2 },
+			revisions: [{ revision: 1 }, { revision: 2 }],
 		});
 	});
 });

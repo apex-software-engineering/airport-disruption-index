@@ -20,8 +20,7 @@ import {
 export type StoredObject = { body: Uint8Array; version: string };
 
 /** How a write treats an existing object. `version` comes from a previous `read`. */
-export type WriteCondition =
-	{ kind: 'if-absent' } | { kind: 'if-version'; version: string } | { kind: 'overwrite' };
+export type WriteCondition = { kind: 'if-absent' } | { kind: 'if-version'; version: string };
 
 export interface ObjectStore {
 	read(key: string): Promise<StoredObject | null>;
@@ -65,7 +64,6 @@ export class BlobStore implements ObjectStore {
 			contentType,
 			token: this.token,
 			addRandomSuffix: false,
-			...(condition.kind === 'overwrite' ? { allowOverwrite: true } : {}),
 			...(condition.kind === 'if-version' ? { ifMatch: condition.version } : {}),
 		} as const;
 		try {

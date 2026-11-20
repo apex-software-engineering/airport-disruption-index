@@ -120,6 +120,28 @@ describe('parseFeed failures', () => {
 				'<Delay_type><Ground_Delay_List><Ground_Delay><Avg>1 hour</Avg></Ground_Delay></Ground_Delay_List></Delay_type>',
 			),
 		],
+		['two root elements', `${wrap('')}<AIRPORT_STATUS_INFORMATION/>`],
+		['a second, different root', `${wrap('')}<Other/>`],
+		[
+			'a GS list outside a Delay_type block',
+			wrap('<Ground_Stop_List><Program><ARPT>ATL</ARPT></Program></Ground_Stop_List>'),
+		],
+		[
+			'a GDP list nested inside another list',
+			wrap(
+				'<Delay_type><Airport_Closure_List><Ground_Delay_List><Ground_Delay><ARPT>SFO</ARPT></Ground_Delay></Ground_Delay_List></Airport_Closure_List></Delay_type>',
+			),
+		],
+		[
+			'a GS list in a block named for something else',
+			wrap(
+				'<Delay_type><Name>Airport Closures</Name><Ground_Stop_List><Program><ARPT>ATL</ARPT></Program></Ground_Stop_List></Delay_type>',
+			),
+		],
+		[
+			'a document the XML parser throws on (external entity)',
+			'<!DOCTYPE A [<!ENTITY e SYSTEM "file:///etc/passwd">]><AIRPORT_STATUS_INFORMATION><Update_Time>&e;</Update_Time></AIRPORT_STATUS_INFORMATION>',
+		],
 	])('rejects %s', (_label, xml) => {
 		expect(parseFeed(xml).ok).toBe(false);
 	});

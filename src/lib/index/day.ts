@@ -45,7 +45,7 @@ export function aggregateDay(
 	rounds: readonly RoundSummary[],
 	asOf: Date,
 ): DayAggregate {
-	const chosen = chooseRoundPerSlot(date, rounds);
+	const chosen = roundsBySlot(date, rounds);
 	const slots = runLadder(chosen, elapsedSlots(date, asOf));
 	const airports = PANEL.map((airport) => ({ airport, airportMinutes: 0, groundStopMinutes: 0 }));
 	const hourly: HourBucket[] = Array.from({ length: 24 }, (_, hour) => ({
@@ -90,20 +90,16 @@ export function aggregateDay(
 }
 
 /**
- * One round per slot: the earliest-fetched valid round wins; an invalid round stands only when
- * the slot has no valid one. Rounds from another day or another parameter set are a bug in the
- * caller, not data, so they throw.
+ * Places each round in its slot. The archive keeps one receipt per round id (the first valid one
+ * written wins), so two rounds for one slot, a round from another day, or one under another
+ * parameter set are a bug in the caller, not data, and throw.
  */
-function chooseRoundPerSlot(
-	date: UtcDate,
-	rounds: readonly RoundSummary[],
-): (RoundSummary | null)[] {
-	const chosen: (RoundSummary | null)[] = Array.from(
+function roundsBySlot(date: UtcDate, rounds: readonly RoundSummary[]): (RoundSummary | null)[] {
+	const bySlot: (RoundSummary | null)[] = Array.from(
 		{ length: METHODOLOGY.slotsPerDay },
 		() => null,
 	);
-	const ordered = [...rounds].sort((a, b) => a.fetchedAt.localeCompare(b.fetchedAt));
-	for (const round of ordered) {
+	for (const round of rounds) {
 		const id = parseRoundId(round.roundId);
 		if (id === null || id.date !== date)
 			throw new Error(`round ${round.roundId} is not on ${date}`);
@@ -115,13 +111,10 @@ function chooseRoundPerSlot(
 				`round ${round.roundId} uses methodology ${round.methodologyVersion}, not ${METHODOLOGY.version}`,
 			);
 		}
-		const current = chosen[id.slotIndex] ?? null;
-		const replaces =
-			current === null ||
-			(current.observation.status === 'invalid' && round.observation.status === 'valid');
-		if (replaces) chosen[id.slotIndex] = round;
+		if (bySlot[id.slotIndex] != null) throw new Error(`two rounds for slot ${round.roundId}`);
+		bySlot[id.slotIndex] = round;
 	}
-	return chosen;
+	return bySlot;
 }
 
 /**

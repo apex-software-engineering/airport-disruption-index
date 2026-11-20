@@ -81,4 +81,11 @@ describe('buildPrint', () => {
 		const print = buildPrint(DAY, rounds, { revision: 1 });
 		expect(printHashMatches({ ...print, revision: 2 })).toBe(false);
 	});
+
+	it('rejects a stored print whose revision and correction disagree', () => {
+		const print = buildPrint(DAY, rounds, { revision: 1 });
+		expect(printSchema.safeParse({ ...print, revision: 2 }).success).toBe(false);
+		const correction = { supersedesPrintHash: print.printHash, reason: 'x' };
+		expect(printSchema.safeParse({ ...print, correction }).success).toBe(false);
+	});
 });

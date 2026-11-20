@@ -1,6 +1,7 @@
 /**
  * Independent verification of published rounds and prints. Each function returns the list of
- * problems found; an empty list is a match.
+ * problems found; an empty list is a match. Nothing here throws on bad data: a receipt or print
+ * that cannot even be rebuilt is a problem to report, not a crash.
  */
 import { canonicalJson, sha256Hex, type Json } from './json';
 import { buildPrint, printHashMatches, type PrintRevision } from './print';
@@ -8,8 +9,15 @@ import { buildReceipt, outcomeFromReceipt, receiptHashMatches, summarizeReceipt 
 import type { DailyPrint, RoundReceipt } from './schemas';
 
 /** Rebuilds a receipt from its archived body and compares every field. */
-export function verifyRound(receipt: RoundReceipt, raw: Uint8Array | null): string[] {
+export function verifyRound(
+	receipt: RoundReceipt,
+	raw: Uint8Array | null,
+	requestedId: string,
+): string[] {
 	const problems: string[] = [];
+	if (receipt.roundId !== requestedId) {
+		problems.push(`asked for round ${requestedId}, got a receipt for ${receipt.roundId}`);
+	}
 	if (!receiptHashMatches(receipt))
 		problems.push('receiptHash does not match the receipt contents');
 	if (receipt.rawSha256 !== null) {
@@ -18,20 +26,28 @@ export function verifyRound(receipt: RoundReceipt, raw: Uint8Array | null): stri
 		if (actual !== receipt.rawSha256)
 			problems.push(`raw body sha256 ${actual} != rawSha256 ${receipt.rawSha256}`);
 	}
-	const rebuilt = buildReceipt({
-		fetchedAt: new Date(receipt.fetchedAt),
-		sourceUrl: receipt.sourceUrl,
-		outcome: outcomeFromReceipt(receipt, raw),
-	});
 	return [
 		...problems,
-		...differingFields(receipt, rebuilt).map((field) => `recomputed ${field} differs`),
+		...compareRebuilt(receipt, () =>
+			buildReceipt({
+				fetchedAt: new Date(receipt.fetchedAt),
+				sourceUrl: receipt.sourceUrl,
+				outcome: outcomeFromReceipt(receipt, raw),
+			}),
+		),
 	];
 }
 
 /** Rebuilds a print from the receipts it lists and compares every field. */
-export function verifyPrint(print: DailyPrint, receipts: readonly RoundReceipt[]): string[] {
+export function verifyPrint(
+	print: DailyPrint,
+	receipts: readonly RoundReceipt[],
+	requestedDate: string,
+): string[] {
 	const problems: string[] = [];
+	if (print.date !== requestedDate) {
+		problems.push(`asked for day ${requestedDate}, got a print for ${print.date}`);
+	}
 	if (!printHashMatches(print)) problems.push('printHash does not match the print contents');
 	const listed = new Map(print.rounds.map((r) => [r.roundId, r.receiptHash]));
 	for (const receipt of receipts) {
@@ -46,19 +62,26 @@ export function verifyPrint(print: DailyPrint, receipts: readonly RoundReceipt[]
 	}
 	const revision: PrintRevision =
 		print.correction === null ? { revision: 1 } : { revision: print.revision, ...print.correction };
-	const rebuilt = buildPrint(print.date, receipts.map(summarizeReceipt), revision);
 	return [
 		...problems,
-		...differingFields(print, rebuilt).map((field) => `recomputed ${field} differs`),
+		...compareRebuilt(print, () =>
+			buildPrint(print.date, receipts.map(summarizeReceipt), revision),
+		),
 	];
 }
 
-function differingFields<T extends { readonly [key: string]: Json }>(
+function compareRebuilt<T extends { readonly [key: string]: Json }>(
 	published: T,
-	rebuilt: T,
+	rebuild: () => T,
 ): string[] {
+	let rebuilt: T;
+	try {
+		rebuilt = rebuild();
+	} catch (error) {
+		return [`cannot be rebuilt: ${error instanceof Error ? error.message : String(error)}`];
+	}
 	const keys = new Set([...Object.keys(published), ...Object.keys(rebuilt)]);
-	return [...keys].filter(
-		(key) => canonicalJson(published[key] ?? null) !== canonicalJson(rebuilt[key] ?? null),
-	);
+	return [...keys]
+		.filter((key) => canonicalJson(published[key] ?? null) !== canonicalJson(rebuilt[key] ?? null))
+		.map((field) => `recomputed ${field} differs`);
 }

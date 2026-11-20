@@ -6,7 +6,9 @@
  * can repeat, and old recordings carry blocks without one. Ground stops and ground delay
  * programs become events. Known lists v1 does not count are recorded as `ignored`; anything
  * else is recorded as `unrecognized` and never fails the parse. A GS/GDP list that holds an
- * element we do not know does fail the parse, because skipping it could silently drop an event.
+ * element we do not know does fail the parse, because skipping it could silently drop an event;
+ * so does a GS/GDP list anywhere but directly in a Delay_type block, or in a block whose `Name`
+ * says it is something else.
  */
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { z } from 'zod';
@@ -24,9 +26,14 @@ export type FeedParseResult = { ok: true; feed: ParsedFeed } | { ok: false; deta
 
 const ROOT = 'AIRPORT_STATUS_INFORMATION';
 const GROUND_STOP_LIST = 'Ground_Stop_List';
+const GROUND_DELAY_LIST = 'Ground_Delay_List';
+/** The `Name` a block holding each counted list must carry, when it has a Name at all. */
+const PROGRAM_BLOCK_NAMES: Record<string, string> = {
+	[GROUND_STOP_LIST]: 'Ground Stop Programs',
+	[GROUND_DELAY_LIST]: 'Ground Delay Programs',
+};
 /** `Program` is what the live feed and old recordings use; `Ground_Stop` appears in one fixture. */
 const GROUND_STOP_ITEMS = ['Program', 'Ground_Stop'];
-const GROUND_DELAY_LIST = 'Ground_Delay_List';
 const GROUND_DELAY_ITEMS = ['Ground_Delay'];
 const IGNORED_LISTS = new Set([
 	'Arrival_Departure_Delay_List',
@@ -47,6 +54,7 @@ const parser = new XMLParser({
 	},
 });
 
+const documentSchema = z.record(z.string(), z.unknown());
 const rootSchema = z.object({
 	[ROOT]: z.object({
 		Update_Time: z.string(),
@@ -76,10 +84,27 @@ export function parseFeed(xml: string): FeedParseResult {
 			detail: `XML not well formed: ${wellFormed.err.msg} (line ${wellFormed.err.line})`,
 		};
 	}
-	const root = rootSchema.safeParse(parser.parse(xml));
+	let tree: unknown;
+	try {
+		tree = parser.parse(xml);
+	} catch (error) {
+		return { ok: false, detail: `XML parser rejected the document: ${String(error)}` };
+	}
+	const document = documentSchema.safeParse(tree);
+	const roots = document.success ? Object.keys(document.data).filter((key) => key !== '?xml') : [];
+	if (roots.length !== 1 || roots[0] !== ROOT) {
+		return { ok: false, detail: `expected exactly one ${ROOT} root, found [${roots.join(', ')}]` };
+	}
+	const root = rootSchema.safeParse(tree);
 	if (!root.success)
 		return { ok: false, detail: `not an ${ROOT} document: ${z.prettifyError(root.error)}` };
 	const { Update_Time: updateTimeText, Delay_type: blocks = [] } = root.data[ROOT];
+	for (const list of Object.keys(PROGRAM_BLOCK_NAMES)) {
+		const inBlocks = blocks.filter((block) => block !== '' && list in block).length;
+		if (countKey(tree, list) !== inBlocks) {
+			return { ok: false, detail: `${list} found outside a Delay_type block` };
+		}
+	}
 	const updateTime = parseFeedUpdateTime(updateTimeText);
 	if (updateTime === null)
 		return { ok: false, detail: `unparseable Update_Time "${updateTimeText}"` };
@@ -104,6 +129,10 @@ function readDelayType(
 	if (lists.length === 0)
 		others.push({ disposition: 'unrecognized', name, element: null, entries: 0 });
 	for (const element of lists) {
+		const expectedName = PROGRAM_BLOCK_NAMES[element];
+		if (expectedName !== undefined && name !== null && name !== expectedName) {
+			throw new FeedFormatError(`${element} is in a Delay_type named "${name}"`);
+		}
 		const list = parseList(element, block[element]);
 		if (element === GROUND_STOP_LIST) {
 			for (const raw of entriesOf(element, list, GROUND_STOP_ITEMS)) {
@@ -166,4 +195,15 @@ function parseEntry<T>(schema: z.ZodType<T>, element: string, raw: unknown): T {
 	if (!entry.success)
 		throw new FeedFormatError(`${element} entry invalid: ${z.prettifyError(entry.error)}`);
 	return entry.data;
+}
+
+/** How many times `key` occurs as an element name anywhere in a parsed tree. */
+function countKey(value: unknown, key: string): number {
+	if (Array.isArray(value))
+		return value.reduce((sum: number, item) => sum + countKey(item, key), 0);
+	if (typeof value !== 'object' || value === null) return 0;
+	return Object.entries(value).reduce(
+		(sum: number, [name, child]) => sum + (name === key ? 1 : 0) + countKey(child, key),
+		0,
+	);
 }

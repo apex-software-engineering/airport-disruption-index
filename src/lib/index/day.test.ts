@@ -127,28 +127,8 @@ describe('carry/suspend ladder', () => {
 });
 
 describe('one round per slot', () => {
-	it('keeps the earliest valid round and ignores later duplicates', () => {
-		const first = validRound(5, [{ airport: 'DEN', gs: true }], 2);
-		const later = validRound(5, [], 200);
-		const day = settle([later, first, validRound(6)]);
-		expect(day.slots[5]).toMatchObject({ status: 'observed', roundId: first.roundId });
-		expect(day.value).toBe(5);
-		expect(day.coverage.validRounds).toBe(2); // slots 5 and 6
-	});
-
-	it('lets a later valid round replace an invalid one in the same slot', () => {
-		const day = settle([
-			invalidRound(5, 1),
-			validRound(5, [{ airport: 'DEN', gs: true }], 100),
-			validRound(6),
-		]);
-		expect(day.slots[5]).toMatchObject({ status: 'observed' });
-		expect(day.value).toBe(5);
-	});
-
-	it('ignores an invalid round after a valid one', () => {
-		const day = settle([validRound(5, [], 1), invalidRound(5, 100)]);
-		expect(day.coverage.validRounds).toBe(1);
+	it('rejects two rounds for one slot: the archive keeps one receipt per round id', () => {
+		expect(() => settle([validRound(5, [], 1), invalidRound(5, 100)])).toThrow(/two rounds/);
 	});
 
 	it('rejects rounds from another day or methodology', () => {

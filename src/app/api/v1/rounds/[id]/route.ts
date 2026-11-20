@@ -11,5 +11,5 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
 	if (parseRoundId(id) === null) return problem(400, `invalid round id ${id}`);
 	const receipt = await readReceipt(storeFromEnv(), id);
 	if (receipt === null) return problem(404, `no round ${id}`);
-	return json(receipt, roundCache(id, new Date()));
+	return json(receipt, roundCache(receipt, new Date()));
 }

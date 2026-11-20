@@ -78,12 +78,13 @@ async function fetchRound(
 ): Promise<{ receipt: RoundReceipt; problems: string[] }> {
 	const url = `${baseUrl}/api/v1/rounds/${id}`;
 	const receipt = await getJson(url, receiptSchema, `receipt ${id}`);
-	requireVersion(receipt.methodologyVersion, `round ${id}`);
+	// A receipt for some other round is a mismatch whatever its version; verifyRound reports it.
+	if (receipt.roundId === id) requireVersion(receipt.methodologyVersion, `round ${id}`);
 	const raw =
 		receipt.rawSha256 === null
 			? null
 			: new Uint8Array(await (await get(`${url}/raw`)).arrayBuffer());
-	return { receipt, problems: verifyRound(receipt, raw).map((p) => `${id}: ${p}`) };
+	return { receipt, problems: verifyRound(receipt, raw, id).map((p) => `${id}: ${p}`) };
 }
 
 async function reproduceRound(baseUrl: string, id: string): Promise<string[]> {
@@ -95,7 +96,7 @@ async function reproduceRound(baseUrl: string, id: string): Promise<string[]> {
 async function reproduceDay(baseUrl: string, date: string): Promise<string[]> {
 	const daySchema = z.object({ status: z.literal('settled'), print: printSchema });
 	const { print } = await getJson(`${baseUrl}/api/v1/days/${date}`, daySchema, `day ${date}`);
-	requireVersion(print.methodologyVersion, `print ${date}`);
+	if (print.date === date) requireVersion(print.methodologyVersion, `print ${date}`);
 	const ids = print.rounds.map((r) => r.roundId);
 	const results: { receipt: RoundReceipt; problems: string[] }[] = [];
 	for (let i = 0; i < ids.length; i += CONCURRENCY) {
@@ -111,6 +112,7 @@ async function reproduceDay(baseUrl: string, date: string): Promise<string[]> {
 		...verifyPrint(
 			print,
 			results.map((r) => r.receipt),
+			date,
 		),
 	];
 }
@@ -138,7 +140,10 @@ async function main(): Promise<number> {
 			console.error(`cannot verify: ${error.message}`);
 			return 2;
 		}
-		throw error;
+		console.error(
+			`cannot verify: unexpected error: ${error instanceof Error ? error.stack : String(error)}`,
+		);
+		return 2;
 	}
 }
 

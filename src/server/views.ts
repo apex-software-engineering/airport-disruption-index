@@ -1,16 +1,10 @@
 /** Read models for the public API, shaped for direct rendering. */
 import { aggregateDay, type SlotState } from '@/lib/index/day';
 import { METHODOLOGY, PARAMETER_HASH } from '@/lib/index/methodology';
-import type { DailyPrint } from '@/lib/index/schemas';
-import {
-	elapsedSlots,
-	parseRoundId,
-	settlementCutoff,
-	utcDateOf,
-	type UtcDate,
-} from '@/lib/index/time';
+import type { DailyPrint, RoundReceipt } from '@/lib/index/schemas';
+import { elapsedSlots, settlementCutoff, utcDateOf, type UtcDate } from '@/lib/index/time';
 
-import { readDayIndex, readHistory, readPrints } from './archive';
+import { readDayIndex, readHistory, readPrints, receiptIsFinal } from './archive';
 import { CACHE } from './http';
 import type { ObjectStore } from './storage';
 
@@ -27,7 +21,9 @@ export async function currentView(store: ObjectStore, now: Date) {
 		(latest, round) => (latest === null || round.fetchedAt > latest.fetchedAt ? round : latest),
 		null,
 	);
-	const latestSlot: SlotState | null = elapsed === 0 ? null : (day.slots[elapsed - 1] ?? null);
+	// The slot open now: `pending` until its round arrives, then `observed`.
+	const latestSlot: SlotState | undefined = day.slots[elapsed];
+	if (latestSlot === undefined) throw new Error(`no open slot ${elapsed} on ${date}`);
 	return {
 		date,
 		asOf: now.toISOString(),
@@ -79,12 +75,7 @@ export async function historyView(store: ObjectStore, from: UtcDate, to: UtcDate
 	};
 }
 
-/** A round can change only while its slot is open (an invalid attempt may be replaced). */
-export function roundCache(id: string, now: Date): string {
-	const parsed = parseRoundId(id);
-	const slotEnd =
-		parsed === null
-			? Number.POSITIVE_INFINITY
-			: parsed.slotStart.getTime() + METHODOLOGY.slotMinutes * 60_000;
-	return slotEnd <= now.getTime() ? CACHE.immutable : CACHE.none;
+/** Long-lived caching only for a receipt the archive can no longer replace. */
+export function roundCache(receipt: RoundReceipt, now: Date): string {
+	return receiptIsFinal(receipt, now) ? CACHE.immutable : CACHE.none;
 }

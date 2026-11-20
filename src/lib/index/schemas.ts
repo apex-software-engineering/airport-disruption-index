@@ -159,30 +159,43 @@ export type Coverage = z.infer<typeof coverageSchema>;
 export const settledStatusSchema = z.enum(['final', 'degraded', 'suspended']);
 export type SettledStatus = z.infer<typeof settledStatusSchema>;
 
-export const printSchema = z.object({
-	schema: z.literal('adi.daily-print/1'),
-	date: utcDateSchema,
-	revision: z.number().int().min(1),
-	correction: z.object({ supersedesPrintHash: hex64, reason: z.string().min(1) }).nullable(),
-	methodologyVersion: z.string(),
-	parameterHash: hex64,
-	settlesAt: instant,
-	coverage: coverageSchema,
-	result: z.discriminatedUnion('status', [
-		z.object({
-			status: z.enum(['final', 'degraded']),
-			value: count,
-			groundStopValue: count,
-			airports: z.array(airportMinutesSchema),
-			hourly: z.array(hourSchema),
-		}),
-		z.object({ status: z.literal('suspended'), reason: z.string() }),
-	]),
-	rounds: z.array(
-		z.object({ roundId: roundIdSchema, receiptHash: hex64, status: z.enum(['valid', 'invalid']) }),
-	),
-	printHash: hex64,
-});
+export const printSchema = z
+	.object({
+		schema: z.literal('adi.daily-print/1'),
+		date: utcDateSchema,
+		revision: z.number().int().min(1),
+		correction: z
+			.object({
+				supersedesPrintHash: hex64,
+				reason: z.string().regex(/\S/, 'a correction states its reason'),
+			})
+			.nullable(),
+		methodologyVersion: z.string(),
+		parameterHash: hex64,
+		settlesAt: instant,
+		coverage: coverageSchema,
+		result: z.discriminatedUnion('status', [
+			z.object({
+				status: z.enum(['final', 'degraded']),
+				value: count,
+				groundStopValue: count,
+				airports: z.array(airportMinutesSchema),
+				hourly: z.array(hourSchema),
+			}),
+			z.object({ status: z.literal('suspended'), reason: z.string() }),
+		]),
+		rounds: z.array(
+			z.object({
+				roundId: roundIdSchema,
+				receiptHash: hex64,
+				status: z.enum(['valid', 'invalid']),
+			}),
+		),
+		printHash: hex64,
+	})
+	.refine((print) => (print.revision === 1) === (print.correction === null), {
+		message: 'revision 1 has no correction; every later revision is a correction',
+	});
 export type DailyPrint = z.infer<typeof printSchema>;
 
 export const historyEntrySchema = z.object({
