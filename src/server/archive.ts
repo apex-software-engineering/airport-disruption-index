@@ -18,6 +18,7 @@ import {
 	type DayIndex,
 	type HistoryIndex,
 	type RoundReceipt,
+	type RoundSummary,
 } from '@/lib/index/schemas';
 import {
 	parseRoundId,
@@ -106,7 +107,7 @@ export type RecordResult = { outcome: RecordOutcome; receipt: RoundReceipt };
  * Stores a round. The first valid receipt written for a slot is final. An invalid receipt
  * stands until a valid one is written in the same slot, which replaces it; any other second
  * round is a duplicate and is dropped. A lost conditional write re-reads and re-applies the
- * rule. On every path the day index entry is then patched from the persisted receipt.
+ * rule. On every path the day index is then synced from the persisted receipts.
  */
 export async function recordRound(
 	store: ObjectStore,
@@ -132,13 +133,13 @@ export async function recordRound(
 			existing !== null &&
 			(existing.observation.status === 'valid' || receipt.observation.status === 'invalid')
 		) {
-			await patchDayIndex(store, receipt.roundId);
+			await syncDayIndex(store, date, { kind: 'collect', refresh: receipt.roundId });
 			return { outcome: 'duplicate', receipt: existing };
 		}
 		const condition: WriteCondition =
 			stored === null ? { kind: 'if-absent' } : { kind: 'if-version', version: stored.version };
 		if ((await store.write(key, encode(receipt), JSON_TYPE, condition)) === 'written') {
-			await patchDayIndex(store, receipt.roundId);
+			await syncDayIndex(store, date, { kind: 'collect', refresh: receipt.roundId });
 			return { outcome: existing === null ? 'recorded' : 'superseded_invalid', receipt };
 		}
 	}
@@ -177,49 +178,60 @@ export async function readDayIndex(store: ObjectStore, date: UtcDate): Promise<D
 	return (await readJson(store, dayIndexSchema, keys.dayIndex(date))) ?? emptyDayIndex(date);
 }
 
-/**
- * Sets one round's index entry from the receipt persisted now. The receipt is read after the
- * index (inside the conditional write), so a writer holding a stale receipt either sees the
- * newer one or loses the conditional write and retries.
- */
-async function patchDayIndex(store: ObjectStore, id: RoundId): Promise<void> {
-	const date = dateOf(id);
-	await updateJson(
-		store,
-		dayIndexSchema,
-		keys.dayIndex(date),
-		emptyDayIndex(date),
-		async (index) => {
-			const persisted = await readReceipt(store, id);
-			if (persisted === null) throw new Error(`receipt ${id} is missing after it was stored`);
-			return {
-				...index,
-				rounds: [...index.rounds.filter((r) => r.roundId !== id), summarizeReceipt(persisted)].sort(
-					(x, y) => x.roundId.localeCompare(y.roundId),
-				),
-			};
-		},
-	);
-}
+/** What brought the index up to date: a collect that just resolved `refresh`, or a settle. */
+type IndexSync =
+	{ kind: 'collect'; refresh: RoundId } | { kind: 'settle'; receipts: readonly RoundReceipt[] };
 
-/** Replaces the day index with one built from `receipts`; old content is ignored, only its version used. */
-async function replaceDayIndex(
-	store: ObjectStore,
-	date: UtcDate,
-	receipts: readonly RoundReceipt[],
-): Promise<void> {
+/**
+ * The one owner of the day index, which it keeps in line with the stored receipts.
+ * - On collect: one listing of the day's receipts. The round just resolved is re-read from its
+ *   persisted receipt (inside the conditional write, so a stale writer retries), and up to
+ *   READ_CONCURRENCY listed receipts missing from the index are read and patched in. An index
+ *   that does not decode is rebuilt from every listed receipt.
+ * - On settle: rebuilt from the receipts settle already read.
+ * A rebuild ignores the old content and uses only its version.
+ */
+async function syncDayIndex(store: ObjectStore, date: UtcDate, sync: IndexSync): Promise<void> {
 	const key = keys.dayIndex(date);
-	const body = encode({
-		...emptyDayIndex(date),
-		rounds: receipts.map(summarizeReceipt).sort((x, y) => x.roundId.localeCompare(y.roundId)),
-	});
+	const listed = sync.kind === 'collect' ? await listReceiptIds(store, date) : [];
 	for (let attempt = 0; attempt < MAX_CONDITIONAL_ATTEMPTS; attempt += 1) {
-		const current = await store.read(key);
+		const object = await store.read(key);
+		const current = object === null ? emptyDayIndex(date) : tryDecode(dayIndexSchema, object);
+		let rounds: RoundSummary[];
+		if (sync.kind === 'settle') {
+			rounds = sync.receipts.map(summarizeReceipt);
+		} else if (current === null) {
+			rounds = (await readReceipts(store, date, listed)).map(summarizeReceipt);
+		} else {
+			const indexed = new Set(current.rounds.map((r) => r.roundId));
+			const missing = listed.filter((id) => !indexed.has(id) && id !== sync.refresh);
+			const toRead = [sync.refresh, ...missing.slice(0, READ_CONCURRENCY - 1)];
+			const reread = new Set(toRead);
+			rounds = [
+				...current.rounds.filter((r) => !reread.has(r.roundId)),
+				...(await readReceipts(store, date, toRead)).map(summarizeReceipt),
+			];
+		}
+		const next = encode({
+			...emptyDayIndex(date),
+			rounds: rounds.sort((x, y) => x.roundId.localeCompare(y.roundId)),
+		});
+		if (object !== null && Buffer.from(next).equals(Buffer.from(object.body))) return;
 		const condition: WriteCondition =
-			current === null ? { kind: 'if-absent' } : { kind: 'if-version', version: current.version };
-		if ((await store.write(key, body, JSON_TYPE, condition)) === 'written') return;
+			object === null ? { kind: 'if-absent' } : { kind: 'if-version', version: object.version };
+		if ((await store.write(key, next, JSON_TYPE, condition)) === 'written') return;
 	}
 	throw new Error(`${key}: gave up after ${MAX_CONDITIONAL_ATTEMPTS} conflicting writes`);
+}
+
+/** The stored object decoded, or null when it is not valid JSON of that schema. */
+function tryDecode<T>(schema: z.ZodType<T>, object: StoredObject): T | null {
+	try {
+		const parsed = schema.safeParse(JSON.parse(new TextDecoder().decode(object.body)));
+		return parsed.success ? parsed.data : null;
+	} catch {
+		return null;
+	}
 }
 
 /** Read-modify-write with optimistic concurrency on the object's version. */
@@ -242,16 +254,25 @@ async function updateJson<T>(
 	throw new Error(`${key}: gave up after ${MAX_CONDITIONAL_ATTEMPTS} conflicting writes`);
 }
 
-/** Every receipt stored for `date`, each verified against its own hash. */
-export async function readDayReceipts(store: ObjectStore, date: UtcDate): Promise<RoundReceipt[]> {
-	const receiptKeys = (await store.list(keys.roundsOf(date))).filter((key) =>
-		key.endsWith('.json'),
-	);
+async function listReceiptIds(store: ObjectStore, date: UtcDate): Promise<RoundId[]> {
+	const prefix = keys.roundsOf(date);
+	return (await store.list(prefix))
+		.filter((key) => key.endsWith('.json'))
+		.map((key) => key.slice(prefix.length, -'.json'.length));
+}
+
+/** The given rounds' receipts, read READ_CONCURRENCY at a time, each verified against its hash. */
+async function readReceipts(
+	store: ObjectStore,
+	date: UtcDate,
+	ids: readonly RoundId[],
+): Promise<RoundReceipt[]> {
 	const receipts: RoundReceipt[] = [];
-	for (let i = 0; i < receiptKeys.length; i += READ_CONCURRENCY) {
-		const batch = receiptKeys.slice(i, i + READ_CONCURRENCY).map(async (key) => {
+	for (let i = 0; i < ids.length; i += READ_CONCURRENCY) {
+		const batch = ids.slice(i, i + READ_CONCURRENCY).map(async (id) => {
+			const key = keys.receipt(date, id);
 			const receipt = await readJson(store, receiptSchema, key);
-			if (receipt === null) throw new Error(`receipt ${key} disappeared while settling`);
+			if (receipt === null) throw new Error(`receipt ${key} is listed but missing`);
 			if (!receiptHashMatches(receipt))
 				throw new Error(`receipt ${key} does not match its receiptHash`);
 			return receipt;
@@ -259,6 +280,11 @@ export async function readDayReceipts(store: ObjectStore, date: UtcDate): Promis
 		receipts.push(...(await Promise.all(batch)));
 	}
 	return receipts;
+}
+
+/** Every receipt stored for `date`, each verified against its own hash. */
+export async function readDayReceipts(store: ObjectStore, date: UtcDate): Promise<RoundReceipt[]> {
+	return readReceipts(store, date, await listReceiptIds(store, date));
 }
 
 /** All revisions of a day's print, oldest first. Empty when the day has not settled. */
@@ -285,7 +311,7 @@ export async function settleDay(store: ObjectStore, date: UtcDate): Promise<Sett
 		return { status: 'already_settled', print: settled };
 	}
 	const receipts = await readDayReceipts(store, date);
-	await replaceDayIndex(store, date, receipts);
+	await syncDayIndex(store, date, { kind: 'settle', receipts });
 	const print = buildPrint(date, receipts.map(summarizeReceipt), { revision: 1 });
 	const written = await store.write(keys.print(date, 1), encode(print), JSON_TYPE, {
 		kind: 'if-absent',

@@ -224,11 +224,33 @@ describe('archive write rules', () => {
 		expect(roundCache(invalid)).toBe('no-store');
 	});
 
-	it('updates the day index without listing or reading other receipts', async () => {
+	it('lists once and reads no other receipt when the index is complete', async () => {
+		await collect('2026-11-17T20:35:03Z');
+		await collect('2026-11-17T20:40:03Z');
 		const counting = new CountingStore(root);
 		await recordRound(counting, valid, feedFixture('synthetic-gs-gdp.xml'), now);
-		expect(counting.lists).toBe(0);
-		expect((await readDayIndex(store, '2026-11-17')).rounds).toHaveLength(1);
+		expect(counting.lists).toBe(1);
+		expect(counting.receiptReads.filter((key) => !key.includes(valid.roundId))).toEqual([]);
+		expect((await readDayIndex(store, '2026-11-17')).rounds).toHaveLength(3);
+	});
+
+	it('heals a round whose index patch was missed, on the next collect in another slot', async () => {
+		await collect('2026-11-17T20:40:03Z');
+		await overwriteDayIndex(
+			JSON.stringify({ schema: 'adi.day-index/1', date: '2026-11-17', rounds: [] }),
+		);
+		await collect('2026-11-17T20:45:03Z');
+		expect((await readDayIndex(store, '2026-11-17')).rounds.map((r) => r.roundId)).toEqual([
+			'2026-11-17T20:40Z',
+			'2026-11-17T20:45Z',
+		]);
+	});
+
+	it('rebuilds a malformed day index on collect instead of failing every collect', async () => {
+		await collect('2026-11-17T20:40:03Z');
+		await overwriteDayIndex('{"schema":"adi.day-index/1","rounds":"broken"');
+		expect((await collect('2026-11-17T20:45:03Z')).outcome).toBe('recorded');
+		expect((await readDayIndex(store, '2026-11-17')).rounds).toHaveLength(2);
 	});
 
 	it('persists the schema-parsed receipt, not extra fields the caller sent', async () => {
@@ -248,10 +270,27 @@ describe('archive write rules', () => {
 /** Counts list() calls. */
 class CountingStore extends FileStore {
 	lists = 0;
+	receiptReads: string[] = [];
 	override async list(prefix: string) {
 		this.lists += 1;
 		return super.list(prefix);
 	}
+	override async read(key: string) {
+		if (key.startsWith('rounds/') && key.endsWith('.json')) this.receiptReads.push(key);
+		return super.read(key);
+	}
+}
+
+/** Replaces the stored day index with `content`, as a failed or corrupted write would leave it. */
+async function overwriteDayIndex(content: string): Promise<void> {
+	const index = await store.read('days/2026-11-17.json');
+	if (index === null) throw new Error('no day index');
+	const body = new TextEncoder().encode(content);
+	const written = await store.write('days/2026-11-17.json', body, 'application/json', {
+		kind: 'if-version',
+		version: index.version,
+	});
+	if (written !== 'written') throw new Error('could not overwrite the day index');
 }
 
 /** A store where print writes always lose and prints never become readable. */

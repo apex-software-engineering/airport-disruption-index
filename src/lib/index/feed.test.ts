@@ -103,6 +103,16 @@ describe('parseFeed on markup that carries no data', () => {
 	);
 });
 
+describe('parseFeed on element names that collide with Object.prototype', () => {
+	it('records <isPrototypeOf/> as an unrecognized list, not a counted one', () => {
+		const xml =
+			'<AIRPORT_STATUS_INFORMATION><Update_Time>Tue Nov 17 20:43:54 2026 GMT</Update_Time><Delay_type><Name>Odd</Name><isPrototypeOf/></Delay_type></AIRPORT_STATUS_INFORMATION>';
+		expect(parseOk(xml).otherDelayTypes).toEqual([
+			{ disposition: 'unrecognized', name: 'Odd', element: 'isPrototypeOf', entries: 0 },
+		]);
+	});
+});
+
 describe('parseFeed failures', () => {
 	const wrap = (body: string) =>
 		`<AIRPORT_STATUS_INFORMATION><Update_Time>Tue Nov 17 20:43:54 2026 GMT</Update_Time>${body}</AIRPORT_STATUS_INFORMATION>`;

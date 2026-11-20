@@ -28,10 +28,10 @@ const ROOT = 'AIRPORT_STATUS_INFORMATION';
 const GROUND_STOP_LIST = 'Ground_Stop_List';
 const GROUND_DELAY_LIST = 'Ground_Delay_List';
 /** The one `Name` a block holding each counted list must carry. */
-const PROGRAM_BLOCK_NAMES: Record<string, string> = {
-	[GROUND_STOP_LIST]: 'Ground Stop Programs',
-	[GROUND_DELAY_LIST]: 'Ground Delay Programs',
-};
+const PROGRAM_BLOCK_NAMES = new Map([
+	[GROUND_STOP_LIST, 'Ground Stop Programs'],
+	[GROUND_DELAY_LIST, 'Ground Delay Programs'],
+]);
 /** `Program` is what the live feed and old recordings use; `Ground_Stop` appears in one fixture. */
 const GROUND_STOP_ITEMS = ['Program', 'Ground_Stop'];
 const GROUND_DELAY_ITEMS = ['Ground_Delay'];
@@ -102,8 +102,8 @@ export function parseFeed(xml: string): FeedParseResult {
 	if (!root.success)
 		return { ok: false, detail: `not an ${ROOT} document: ${z.prettifyError(root.error)}` };
 	const { Update_Time: updateTimeText, Delay_type: blocks = [] } = root.data[ROOT];
-	for (const list of Object.keys(PROGRAM_BLOCK_NAMES)) {
-		const inBlocks = blocks.filter((block) => block !== '' && list in block).length;
+	for (const list of PROGRAM_BLOCK_NAMES.keys()) {
+		const inBlocks = blocks.filter((block) => block !== '' && Object.hasOwn(block, list)).length;
 		if (countKey(tree, list) !== inBlocks) {
 			return { ok: false, detail: `${list} found outside a Delay_type block` };
 		}
@@ -132,7 +132,7 @@ function readDelayType(
 	if (lists.length === 0)
 		others.push({ disposition: 'unrecognized', name, element: null, entries: 0 });
 	for (const element of lists) {
-		const expectedName = PROGRAM_BLOCK_NAMES[element];
+		const expectedName = PROGRAM_BLOCK_NAMES.get(element);
 		// A counted list needs exactly one Name, the right one: absent, repeated or other fails.
 		if (expectedName !== undefined && block.Name !== expectedName) {
 			throw new FeedFormatError(

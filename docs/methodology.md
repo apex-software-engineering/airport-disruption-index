@@ -97,10 +97,12 @@ is stored for a slot it is never replaced, and any later round in that slot is a
 dropped. An invalid receipt stands only until a valid round is written in the same slot, which
 replaces it. Precedence is the order of writes to the archive, not fetch times.
 
-A round can be stored until **60 seconds after its slot ends** (the write window), never later.
-Settlement depends on this: no receipt can change after the day's print is built. The API serves a
-valid receipt and its raw body with immutable cache headers, because a valid receipt is never
-replaced, and an invalid one with `no-store`.
+**Admission deadline.** A round is admitted to the archive only if it is stored within **60 seconds
+after its slot ends**; after that the slot is closed and nothing in it can change. The last slot of
+day D (23:55Z) closes at D+1 00:01Z, 29 minutes before the 00:30Z settlement cutoff, so every
+receipt a print reads is already final. The API serves a valid receipt and its raw body with
+immutable cache headers, because a valid receipt is never replaced, and an invalid one (or the 404
+for its missing body) with `no-store`.
 
 ## Airport-minutes
 
@@ -146,9 +148,10 @@ count.
 - Day D settles at **D+1 00:30Z**. A daily cron builds the print then; it can be run again safely
   and never overwrites a print.
 - The print is built only from day D's stored receipts, each checked against its own `receiptHash`
-  first. The day index that serves the running value is a cache rebuilt from those receipts;
-  settlement never reads it. Rounds cannot be added after day D ends, because a round's slot is set
-  by its fetch time.
+  first. The day index that serves the running value is a cache of those receipts: each collect
+  reconciles it against a listing of the day's receipts, and settlement rebuilds it. Settlement
+  never reads it. No round can be added after the last slot's admission deadline (D+1 00:01Z),
+  because a round's slot is set by its fetch time.
 - A **print** (`GET /api/v1/days/{date}`) contains: date, revision, correction (null on revision 1),
   methodology version, parameter hash, `settlesAt`, coverage, the result (status, value, GS-only
   value, per-airport minutes and hourly series, or for a suspended day only a reason), every round's
