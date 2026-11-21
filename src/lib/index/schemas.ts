@@ -321,3 +321,23 @@ export const historyIndexSchema = z.object({
 	days: z.array(historyEntrySchema),
 });
 export type HistoryIndex = z.infer<typeof historyIndexSchema>;
+
+/** A full git commit id, as `git rev-parse HEAD` prints it. */
+export const commitShaSchema = z.string().regex(/^[0-9a-f]{40}$/);
+
+/**
+ * A settled print pinned outside the operator's storage: committed to the public repo and stamped
+ * with OpenTimestamps by the attest workflow. `deployedCommit` is what the API reported when the
+ * day was attested; null means the deployment could not say.
+ */
+export const attestationSchema = z.object({
+	schema: z.literal('adi.attestation/1'),
+	date: utcDateSchema,
+	revision: z.number().int().min(1),
+	printHash: hex64,
+	roundsDigest: hex64,
+	parameterHash: hex64,
+	methodologyVersion: z.string(),
+	deployedCommit: commitShaSchema.nullable(),
+});
+export type Attestation = z.infer<typeof attestationSchema>;

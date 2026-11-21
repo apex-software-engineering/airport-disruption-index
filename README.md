@@ -89,8 +89,10 @@ npm run lint && npm run format:check && npm run type-check && npm test && npm ru
 ```
 
 Deploys go to Vercel (`lexabus-projects/airport-disruption-index`) through the Vercel CLI until the
-Vercel GitHub app is installed: `vercel deploy --prod` from `main` after merge, `vercel deploy` from
-a branch for a preview.
+Vercel GitHub app is installed. Build locally from a clean checkout so the API can report the
+deployed commit (`deployedCommit` in `/api/v1/methodology`; a remote CLI build has no `.git` and
+reports null): `vercel build --prod && vercel deploy --prebuilt --prod` from `main` after merge,
+`vercel build && vercel deploy --prebuilt` from a branch for a preview.
 
 ## Monitoring
 

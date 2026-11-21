@@ -1,7 +1,7 @@
 import { CURRENT_ADAPTER } from '@/lib/index/adapters';
 import { methodologyFor } from '@/lib/index/methodology';
 import { utcDateOf } from '@/lib/index/time';
-import { CACHE, json } from '@/server/http';
+import { CACHE, DEPLOYED_COMMIT, json } from '@/server/http';
 
 /**
  * The methodology in effect today, and separately the source adapter collecting now. An adapter
@@ -16,6 +16,7 @@ export function GET() {
 			parameterHash,
 			parameterHashAlgorithm:
 				'sha256 of the canonical JSON (sorted keys, no whitespace) of parameters',
+			deployedCommit: DEPLOYED_COMMIT,
 			parameters,
 			activeAdapter: { version: CURRENT_ADAPTER.version, url: CURRENT_ADAPTER.url },
 			notes: {
