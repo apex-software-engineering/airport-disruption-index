@@ -340,7 +340,98 @@ does that for every round the print lists, then rebuilds the print under the ver
 that day and compares; a `suspended` mixed-methodology day reproduces like any other. It prints
 `MATCH` or `MISMATCH` with the differing fields. Exit codes: 0 match, 1 mismatch, 2 could not verify
 (unreachable, not found, or published under a methodology version or feed adapter this checkout does
-not include; check out a later commit).
+not include; check out a later commit, or the tag for that version, e.g. `git checkout v1.0.0`).
+
+### Attestations
+
+Receipts and prints live in the operator's storage, so on their own the hashes prove only that the
+archive agrees with the code. Each settled day is also pinned outside that storage, on the
+`attestations` branch of the public repo. A ruleset blocks force-pushes, deletion of that branch and
+merge commits, with no bypass, so its history only grows and stays linear. That property comes from
+the ruleset: the workflow's `GITHUB_TOKEN` can write anywhere in the repo, and the workflow chooses
+to push only there.
+
+At 01:45Z the attest workflow (`.github/workflows/attest.yml`) reconciles the last 7 days ending
+yesterday. For each settled day whose current print has no attestation, it reproduces the print from
+the public API and, only on `MATCH`, writes `{date}.r{revision}.json`:
+
+`schema`, `date`, `revision`, `printHash`, `roundsDigest` (sha256 of the print's receipt hashes in
+the order the print lists them, joined by `\n`), `parameterHash`, `methodologyVersion` and
+`deployedCommit` (the `X-Deployed-Commit` header of the same `/api/v1/days/{date}` response; null
+when the deployment could not say).
+
+It stamps the file with [OpenTimestamps](https://opentimestamps.org), commits the proof beside it as
+`{date}.r{revision}.json.ots`, and fails the run for any day it cannot attest. The check, the
+reproduction and the attestation all use one `/days` response. A day already attested is checked
+again instead; an attestation is never rewritten. Only the files a run is about to publish gate its
+publication, after their proofs are parsed again: a file that fails is withheld. An invalid proof
+from an earlier day is reported as an error and fails the run at the end, but never holds back a new
+day. The reproducing job reads only the public API and cannot write; the publishing job pushes only
+the files that run produced to the `attestations` branch, and warns about, without touching, any
+other file there. Neither holds a storage or deployment secret. Two limits are accepted: the
+deployed-commit check warns once per new attestation, not again later; and the timestamp checks look
+blocks up at mempool.space, so an outage there fails the run loudly, by design, and the next run
+retries.
+
+**Publication cutoff.** The attestation for revision 1 of day D counts only if the earliest Bitcoin
+block its proof reaches reports a header time before **D+2 00:00Z**. A correction (revision 2 or
+later) must be stamped within **48 hours of that revision's issue time**, as recorded in the print's
+`correction.issuedAt` (`correction` is null on revision 1). The check is against the header time the
+block's miner reported, not a wall clock. Consensus only bounds it: it must be later than the median
+of the previous 11 blocks' times, and no more than two hours ahead of the network's time when the
+block was accepted. So the cutoff is a rule about that reported time, and says only roughly when the
+attestation existed. The OpenTimestamps calendars keep the first commitment they receive,
+independently of the operator, so a rewritten attestation would need a new and later timestamp,
+which the cutoff exposes. What this does not cover: between settlement (D+1 00:30Z) and the first
+stamp at 01:45Z the operator could still rewrite a print before it is attested. That window is about
+75 minutes a day, longer when GitHub starts the scheduled run late.
+
+A fresh proof is pending until a calendar's Bitcoin transaction confirms, usually within a few
+hours. Each run upgrades pending proofs so they stop needing a calendar. Until then the
+attestation's time cannot be proven: a pending proof fails `ots verify` and gives `PENDING` below.
+
+To check a print against its attestation and its time, from the checkout:
+
+```sh
+git worktree add attestations origin/attestations
+npm run verify-attestation -- 2026-11-20 --base-url https://airports.apexsofteng.com
+```
+
+(`git fetch origin` then `git -C attestations checkout --detach origin/attestations` updates it
+later.) The directory must be a full, not shallow, checkout whose HEAD is the tip of
+`origin/attestations` (`--dir` and `--branch` change either); anything else exits 2, because a stale
+or partial history could hide a rewrite. It also asks GitHub for the branch's live tip
+(`git ls-remote`) and exits 2 ("stale checkout, fetch first") if that has moved on. Offline, it
+warns and checks the branch as of your last fetch: freshness then depends on having fetched.
+`verify-attestation` fetches the day and checks that `print` is the last of its `revisions`. It
+reads every attestation ever committed for that date from the branch history, as first committed,
+diffing each commit against its first parent: a later modification or deletion of one is a failure.
+Any merge commit in the branch history is also a failure, since the ruleset forbids them and a
+first-parent walk is only complete on a linear history. Every attested revision must still be served
+by the API (a missing one is a rollback) and match it: `printHash` (which the print must hash to),
+`roundsDigest`, `parameterHash` and `methodologyVersion`. The current revision must have an
+attestation. For each attestation it then reads the proof, checks that it commits to the file's
+first-committed bytes, and looks up its earliest Bitcoin block at a public block explorer
+(mempool.space) to check the merkle root and the cutoff. Exit codes: 0 `MATCH`, 1 `MISMATCH`
+(including an invalid proof or one after the cutoff), 2 could not verify, 3 `UNATTESTED` (the
+current print has no attestation), 4 `PENDING` (everything matches but the proof has not reached a
+Bitcoin block yet).
+
+`reproduce` checks the archive against the code; its `MATCH` says nothing about time. Only
+`verify-attestation` returning `MATCH` shows that the print served today is the one attested before
+the cutoff. To check the Bitcoin block without trusting a block explorer, run `ots verify` against
+your own Bitcoin node:
+
+```sh
+pipx install opentimestamps-client==0.8.0
+ots verify attestations/2026-11-20.r1.json.ots
+```
+
+`deployedCommit` names the commit the deployment was built from. It is set only when the build could
+know it: a Vercel git build, or a build from a clean checkout (`vercel build` then
+`vercel deploy --prebuilt`); otherwise it is `unknown`. Every API response carries it in the
+`X-Deployed-Commit` header. The workflow checks that an attested deployed commit is in the public
+repo. Each methodology version is tagged at the commit that released it (`v1.0.0`).
 
 ## Versioning
 

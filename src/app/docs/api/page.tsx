@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import { RECENT_PRINT_DAYS, readLastReceipt, readSiteData } from '@/components/index-data';
 import { Mono, Notice, PageTitle, Section } from '@/components/ui';
 import { GET as getMethodology } from '@/app/api/v1/methodology/route';
-import { cloneCommand } from '@/lib/site';
+import { cloneCommand, site } from '@/lib/site';
 import { CACHE } from '@/server/http';
 import { storeFromEnv } from '@/server/storage';
 import { API_BASE, dayView } from '@/server/views';
@@ -153,7 +153,9 @@ export default async function ApiDocsPage() {
 				The methodology parameters in force, their version and the parameter hash every receipt and
 				print carries. <Mono>parameters.source</Mono> is the source as of the release;{' '}
 				<Mono>activeAdapter</Mono> is the source adapter collecting now (version and address), which
-				a source-adapter fix can change without a methodology release.
+				a source-adapter fix can change without a methodology release. <Mono>deployedCommit</Mono>{' '}
+				is the commit of the public source this deployment was built from, or <Mono>null</Mono> when
+				the build could not tell.
 			</Endpoint>
 
 			<Section id='reproduce' title='Reproducing a number'>
@@ -173,6 +175,34 @@ export default async function ApiDocsPage() {
 					It prints <Mono>MATCH</Mono> or <Mono>MISMATCH</Mono>. Exit code 0 is a match, 1 a
 					mismatch, 2 could not verify. Details are in the{' '}
 					<a href='/methodology#reproducing'>methodology</a>.
+				</p>
+			</Section>
+
+			<Section id='attestations' title='Checking a print against its attestation'>
+				<p className='text-ink-muted mb-4 max-w-2xl'>
+					After each day settles, a workflow in the public repo reproduces its print and commits an
+					attestation to the{' '}
+					<a href={`${site.repoUrl}/tree/attestations`}>
+						<Mono>attestations</Mono> branch
+					</a>{' '}
+					(the print hash, a digest of its receipt hashes, the parameter hash, the methodology
+					version and the deployed commit) with an OpenTimestamps proof beside it. For a settled
+					date, run from the checkout:
+				</p>
+				<Code>
+					{[
+						'git worktree add attestations origin/attestations',
+						`npm run verify-attestation -- YYYY-MM-DD --base-url ${origin}`,
+					].join('\n')}
+				</Code>
+				<p className='text-ink-muted mt-4 max-w-2xl'>
+					It checks the live print against the attestation, then that the proof reached a Bitcoin
+					block in time: before D+2 00:00Z for the day&apos;s first print, and within 48 hours of{' '}
+					<Mono>correction.issuedAt</Mono> for a correction. Exit code 0 is a match, 1 a mismatch or
+					invalid proof, 2 could not verify, 3 no attestation for the current print, 4 a proof still
+					pending. Every API response names the deployed commit in its{' '}
+					<Mono>X-Deployed-Commit</Mono> header. See the{' '}
+					<a href='/methodology#attestations'>methodology</a>.
 				</p>
 			</Section>
 		</>

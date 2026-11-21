@@ -7,7 +7,7 @@ import { feedFixture } from '@/test/fixtures';
 import { methodologyFor } from './methodology';
 import { buildPrint } from './print';
 import { buildReceipt, summarizeReceipt } from './round';
-import { verifyPrint, verifyRound } from './verify';
+import { dayResponseProblems, verifyPrint, verifyRound } from './verify';
 
 const raw = feedFixture('synthetic-gs-gdp.xml');
 const receipt = collectedReceipt({
@@ -97,5 +97,48 @@ describe('verifyPrint', () => {
 		expect(verifyPrint(print, [receipt, receipt])).toEqual(
 			expect.arrayContaining([expect.stringMatching(/^cannot be rebuilt: two rounds/)]),
 		);
+	});
+});
+
+describe('dayResponseProblems', () => {
+	const first = buildPrint('2026-11-17', [summarizeReceipt(receipt)], { revision: 1 });
+	const second = buildPrint('2026-11-17', [], {
+		revision: 2,
+		correction: {
+			supersedesPrintHash: first.printHash,
+			reason: 'test correction',
+			issuedAt: '2026-11-18T10:00:00.000Z',
+			windowOverride: null,
+		},
+	});
+
+	it('accepts a print that is the last of its revisions', () => {
+		expect(dayResponseProblems('2026-11-17', second, [first, second])).toEqual([]);
+	});
+
+	it('rejects a print that is not the last revision', () => {
+		expect(dayResponseProblems('2026-11-17', first, [first, second])).toEqual([
+			'print is not the last entry in revisions',
+		]);
+	});
+
+	it('rejects conflicting duplicate revisions', () => {
+		const conflicting = buildPrint('2026-11-17', [], { revision: 1 });
+		expect(dayResponseProblems('2026-11-17', conflicting, [first, conflicting])).toEqual([
+			'revisions[1] is revision 1, expected 2',
+		]);
+	});
+
+	it('rejects a print for another date', () => {
+		expect(dayResponseProblems('2026-11-18', first, [first])).toEqual([
+			'asked for day 2026-11-18, got a print for 2026-11-17',
+			'revisions[0] is a print for 2026-11-17, not 2026-11-18',
+		]);
+	});
+
+	it('rejects an empty revision list', () => {
+		expect(dayResponseProblems('2026-11-17', first, [])).toEqual([
+			'print is not the last entry in revisions',
+		]);
 	});
 });

@@ -10,11 +10,17 @@
  */
 import { z } from 'zod';
 
+import { DEPLOYED_COMMIT_HEADER, parseDeployedCommit } from '@/lib/deployment';
 import { adapterOf } from '@/lib/index/adapters';
 import { methodologyOf } from '@/lib/index/methodology';
-import { printSchema, receiptSchema, type RoundReceipt } from '@/lib/index/schemas';
-import { parseRoundId, parseUtcDate } from '@/lib/index/time';
-import { verifyPrint, verifyRound } from '@/lib/index/verify';
+import {
+	printSchema,
+	receiptSchema,
+	type DailyPrint,
+	type RoundReceipt,
+} from '@/lib/index/schemas';
+import { parseRoundId, parseUtcDate, type UtcDate } from '@/lib/index/time';
+import { dayResponseProblems, verifyPrint, verifyRound } from '@/lib/index/verify';
 
 const CONCURRENCY = 8;
 
@@ -25,9 +31,11 @@ export type ReproduceOutcome =
 
 export type Get = (url: string) => Promise<Response>;
 
-class CannotVerify extends Error {}
+/** The check could not run: unreachable, not found, or a version this checkout lacks. */
+export class CannotVerify extends Error {}
 
-class Mismatch extends Error {
+/** The check ran and the data disagrees. */
+export class Mismatch extends Error {
 	constructor(readonly problems: string[]) {
 		super(problems.join('; '));
 	}
@@ -47,19 +55,84 @@ export async function reproduce(
 ): Promise<ReproduceOutcome> {
 	const log: string[] = [];
 	const api = new PublicApi(baseUrl, get);
+	return outcomeOf(log, async () => {
+		if (parseRoundId(target) !== null) return reproduceRound(api, target, log);
+		if (parseUtcDate(target) !== null)
+			return reproduceDay(api, await fetchSettledDay(baseUrl, target, get), log);
+		throw new CannotVerify(
+			`${target} is neither a round id (2026-11-17T20:45Z) nor a date (2026-11-17)`,
+		);
+	});
+}
+
+/**
+ * Reproduces a settled day already fetched with fetchSettledDay, from the receipts its print
+ * lists. An attestation is built from that same response, so nothing is fetched twice.
+ */
+export function reproduceFetchedDay(
+	day: SettledDay,
+	baseUrl: string,
+	get: Get,
+): Promise<ReproduceOutcome> {
+	const log: string[] = [];
+	return outcomeOf(log, () => reproduceDay(new PublicApi(baseUrl, get), day, log));
+}
+
+async function outcomeOf(log: string[], run: () => Promise<string[]>): Promise<ReproduceOutcome> {
 	try {
-		let problems: string[];
-		if (parseRoundId(target) !== null) problems = await reproduceRound(api, target, log);
-		else if (parseUtcDate(target) !== null) problems = await reproduceDay(api, target, log);
-		else
-			throw new CannotVerify(
-				`${target} is neither a round id (2026-11-17T20:45Z) nor a date (2026-11-17)`,
-			);
+		const problems = await run();
 		return problems.length > 0 ? { kind: 'mismatch', log, problems } : { kind: 'match', log };
 	} catch (error) {
 		if (error instanceof Mismatch) return { kind: 'mismatch', log, problems: error.problems };
 		if (error instanceof CannotVerify) return { kind: 'cannot_verify', log, reason: error.message };
 		throw error;
+	}
+}
+
+/**
+ * A settled day as the API serves it, checked for consistency: revisions numbered 1..n for that
+ * date, `print` the last of them, and the deployed commit the response's header names (null when
+ * the deployment could not say, or predates the header).
+ */
+export type SettledDay = {
+	print: DailyPrint;
+	revisions: DailyPrint[];
+	deployedCommit: string | null;
+};
+
+export async function fetchSettledDay(
+	baseUrl: string,
+	date: UtcDate,
+	get: Get,
+): Promise<SettledDay> {
+	const api = new PublicApi(baseUrl, get);
+	const response = await api.fetch(`/api/v1/days/${date}`);
+	const body: unknown = await response.json();
+	const recorded = z.object({ print: recordedSchema }).safeParse(body);
+	if (recorded.success) requireKnown(recorded.data.print, `print ${date}`);
+	const daySchema = z.object({
+		status: z.literal('settled'),
+		print: printSchema,
+		revisions: z.array(printSchema),
+	});
+	const day = daySchema.safeParse(body);
+	if (!day.success)
+		throw new Mismatch([`day ${date} fails its schema: ${z.prettifyError(day.error)}`]);
+	const { print, revisions } = day.data;
+	const problems = dayResponseProblems(date, print, revisions);
+	if (problems.length > 0) throw new Mismatch(problems);
+	return { print, revisions, deployedCommit: deployedCommitOf(response) };
+}
+
+function deployedCommitOf(response: Response): string | null {
+	const header = response.headers.get(DEPLOYED_COMMIT_HEADER);
+	if (header === null) return null;
+	try {
+		return parseDeployedCommit(header);
+	} catch (error) {
+		throw new Mismatch([
+			`${DEPLOYED_COMMIT_HEADER}: ${error instanceof Error ? error.message : String(error)}`,
+		]);
 	}
 }
 
@@ -125,18 +198,8 @@ async function reproduceRound(api: PublicApi, id: string, log: string[]): Promis
 	return problems;
 }
 
-async function reproduceDay(api: PublicApi, date: string, log: string[]): Promise<string[]> {
-	const daySchema = z.object({ status: z.literal('settled'), print: printSchema });
-	const response = await api.fetch(`/api/v1/days/${date}`);
-	const body: unknown = await response.json();
-	const recorded = z.object({ print: recordedSchema }).safeParse(body);
-	if (recorded.success) requireKnown(recorded.data.print, `print ${date}`);
-	const day = daySchema.safeParse(body);
-	if (!day.success)
-		throw new Mismatch([`day ${date} fails its schema: ${z.prettifyError(day.error)}`]);
-	const { print } = day.data;
-	if (print.date !== date)
-		throw new Mismatch([`asked for day ${date}, got a print for ${print.date}`]);
+async function reproduceDay(api: PublicApi, day: SettledDay, log: string[]): Promise<string[]> {
+	const { print } = day;
 	const ids = print.rounds.map((r) => r.roundId);
 	const results: { receipt: RoundReceipt; problems: string[] }[] = [];
 	for (let i = 0; i < ids.length; i += CONCURRENCY) {
@@ -145,7 +208,7 @@ async function reproduceDay(api: PublicApi, date: string, log: string[]): Promis
 		);
 	}
 	log.push(
-		`print ${date} r${print.revision}: ${print.result.status}, ${ids.length} rounds, printHash ${print.printHash}`,
+		`print ${print.date} r${print.revision}: ${print.result.status}, ${ids.length} rounds, printHash ${print.printHash}`,
 	);
 	return [
 		...results.flatMap((r) => r.problems),

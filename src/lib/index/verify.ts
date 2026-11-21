@@ -67,6 +67,29 @@ export function verifyPrint(print: DailyPrint, receipts: readonly RoundReceipt[]
 	];
 }
 
+/**
+ * Checks a settled day response is self-consistent: revisions numbered 1..n for that date, and
+ * `print` the last of them. Duplicate or conflicting revisions fail here.
+ */
+export function dayResponseProblems(
+	date: string,
+	print: DailyPrint,
+	revisions: readonly DailyPrint[],
+): string[] {
+	const problems: string[] = [];
+	if (print.date !== date) problems.push(`asked for day ${date}, got a print for ${print.date}`);
+	revisions.forEach((revision, index) => {
+		if (revision.date !== date)
+			problems.push(`revisions[${index}] is a print for ${revision.date}, not ${date}`);
+		if (revision.revision !== index + 1)
+			problems.push(`revisions[${index}] is revision ${revision.revision}, expected ${index + 1}`);
+	});
+	const last = revisions.at(-1);
+	if (last === undefined || canonicalJson(last) !== canonicalJson(print))
+		problems.push('print is not the last entry in revisions');
+	return problems;
+}
+
 function compareRebuilt<T extends { readonly [key: string]: Json }>(
 	published: T,
 	rebuild: () => T,

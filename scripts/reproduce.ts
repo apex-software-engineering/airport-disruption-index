@@ -8,7 +8,9 @@
  * Prints MATCH or MISMATCH. Exit codes: 0 match, 1 mismatch, 2 could not verify (unreachable,
  * not found, or published under a methodology or feed adapter this checkout does not include).
  */
-import { reproduce, type Get } from '@/lib/reproduce';
+import { reproduce } from '@/lib/reproduce';
+
+import { getApi } from './lib/public-api';
 
 const DEFAULT_BASE_URL = 'https://airports.apexsofteng.com';
 const USAGE = 'usage: npm run reproduce -- <roundId|YYYY-MM-DD> [--base-url URL]';
@@ -27,16 +29,6 @@ function parseArgs(argv: string[]): { target: string; baseUrl: string } | null {
 	return target === undefined || rest.length > 0 ? null : { target, baseUrl };
 }
 
-const get: Get = (url) => {
-	const headers: Record<string, string> = {
-		'User-Agent': 'airport-disruption-index-reproduce/1.0',
-	};
-	// Optional: lets the script read a Vercel preview behind deployment protection.
-	const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
-	if (bypass) headers['x-vercel-protection-bypass'] = bypass;
-	return fetch(url, { headers });
-};
-
 async function main(): Promise<number> {
 	const args = parseArgs(process.argv.slice(2));
 	if (args === null) {
@@ -44,7 +36,7 @@ async function main(): Promise<number> {
 		return 2;
 	}
 	try {
-		const outcome = await reproduce(args.target, args.baseUrl, get);
+		const outcome = await reproduce(args.target, args.baseUrl, getApi);
 		for (const line of outcome.log) console.log(line);
 		switch (outcome.kind) {
 			case 'match':

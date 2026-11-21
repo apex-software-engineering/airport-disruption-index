@@ -1,6 +1,8 @@
 /** Response helpers shared by the API route handlers. */
 import { createHash, timingSafeEqual } from 'node:crypto';
 
+import { DEPLOYED_COMMIT_HEADER, parseDeployedCommit } from '@/lib/deployment';
+
 /**
  * Cache policies. Receipts of ended slots and their raw bodies never change. Prints and history
  * use `live`, because settlement and corrections change them; `daily` is for what changes only
@@ -13,7 +15,18 @@ export const CACHE = {
 	none: 'no-store',
 } as const;
 
-const PUBLIC_HEADERS = { 'Access-Control-Allow-Origin': '*' };
+/**
+ * The commit this deployment was built from, or 'unknown'. next.config.ts inlines it at build
+ * time; a missing value means the code was not built by it, and fails here rather than guess.
+ */
+const deployedCommitValue = process.env.DEPLOYED_COMMIT ?? '';
+export const DEPLOYED_COMMIT = parseDeployedCommit(deployedCommitValue);
+
+const PUBLIC_HEADERS = {
+	'Access-Control-Allow-Origin': '*',
+	'Access-Control-Expose-Headers': DEPLOYED_COMMIT_HEADER,
+	[DEPLOYED_COMMIT_HEADER]: deployedCommitValue,
+};
 
 export function json(data: unknown, cache: string, status = 200): Response {
 	return Response.json(data, { status, headers: { ...PUBLIC_HEADERS, 'Cache-Control': cache } });

@@ -6,3 +6,5 @@ next-env.d.ts
 tsconfig.json
 test-results
 playwright-report
+# Stamped byte for byte; reformatting breaks the proofs.
+fixtures/ots/*.json
