@@ -6,7 +6,7 @@
 import type { z } from 'zod';
 
 import { sha256Hex } from '@/lib/index/json';
-import { METHODOLOGY } from '@/lib/index/methodology';
+import { SLOT_MINUTES } from '@/lib/index/methodology';
 import { buildPrint, historyEntryOf } from '@/lib/index/print';
 import { receiptHashMatches, summarizeReceipt } from '@/lib/index/round';
 import {
@@ -96,7 +96,7 @@ const WRITE_WINDOW_AFTER_SLOT_MS = 60_000;
 function writeDeadline(id: RoundId): number {
 	const parsed = parseRoundId(id);
 	if (parsed === null) throw new Error(`invalid round id ${id}`);
-	return parsed.slotStart.getTime() + METHODOLOGY.slotMinutes * 60_000 + WRITE_WINDOW_AFTER_SLOT_MS;
+	return parsed.slotStart.getTime() + SLOT_MINUTES * 60_000 + WRITE_WINDOW_AFTER_SLOT_MS;
 }
 
 export type RecordOutcome = 'recorded' | 'superseded_invalid' | 'duplicate';

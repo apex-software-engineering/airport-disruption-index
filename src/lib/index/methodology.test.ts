@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { canonicalJson, hashJson, sha256Hex } from './json';
-import { METHODOLOGY, PANEL, PARAMETER_HASH } from './methodology';
+import { methodologyFor, methodologyOf, SLOT_MINUTES, SLOTS_PER_DAY } from './methodology';
+import { METHODOLOGY_V1, RELEASES } from './releases';
 
 /**
  * Released parameter hashes. A change to any methodology parameter changes the hash and fails
@@ -11,20 +12,44 @@ const RELEASED_PARAMETER_HASHES: Record<string, string> = {
 	'1.0.0': 'e9ef6e94b84699bffefa850b78138355bb427563f6ae42a28567e0ec4303c363',
 };
 
-describe('methodology', () => {
-	it('matches the pinned parameter hash for its version', () => {
-		expect(RELEASED_PARAMETER_HASHES[METHODOLOGY.version]).toBe(PARAMETER_HASH);
+describe('methodology registry', () => {
+	it('pins the parameter hash of every release', () => {
+		for (const release of RELEASES) {
+			expect(RELEASED_PARAMETER_HASHES[release.parameters.version]).toBe(release.parameterHash);
+			expect(hashJson(release.parameters)).toBe(release.parameterHash);
+		}
+		expect(RELEASES.map((r) => r.parameters.version)).toEqual(
+			Object.keys(RELEASED_PARAMETER_HASHES),
+		);
 	});
 
-	it('has a panel of 20 distinct 3-letter codes', () => {
-		expect(PANEL).toHaveLength(20);
-		expect(new Set(PANEL).size).toBe(20);
-		expect(PANEL.every((code) => /^[A-Z]{3}$/.test(code))).toBe(true);
+	it('lists releases in effect order with distinct versions', () => {
+		const days = RELEASES.map((r) => r.effectiveFrom);
+		expect([...days].sort()).toEqual(days);
+		expect(new Set(days).size).toBe(days.length);
+		expect(new Set(RELEASES.map((r) => r.parameters.version)).size).toBe(RELEASES.length);
+	});
+
+	it('selects the release in effect on a day, and only a known release by version and hash', () => {
+		const [v1] = RELEASES;
+		expect(methodologyFor('2026-11-20')).toBe(v1);
+		expect(() => methodologyFor('2026-11-16')).toThrow(/no methodology/);
+		expect(methodologyOf('1.0.0', RELEASED_PARAMETER_HASHES['1.0.0'] ?? '')).toBe(v1);
+		expect(methodologyOf('1.0.0', 'a'.repeat(64))).toBeNull();
+		expect(methodologyOf('9.9.9', RELEASED_PARAMETER_HASHES['1.0.0'] ?? '')).toBeNull();
+	});
+
+	it('gives v1 a panel of 20 distinct 3-letter codes', () => {
+		expect(METHODOLOGY_V1.panel).toHaveLength(20);
+		expect(new Set(METHODOLOGY_V1.panel).size).toBe(20);
+		expect(METHODOLOGY_V1.panel.every((code) => /^[A-Z]{3}$/.test(code))).toBe(true);
 	});
 
 	it('has internally consistent slot parameters', () => {
-		expect(METHODOLOGY.slotsPerDay * METHODOLOGY.slotMinutes).toBe(1440);
-		expect(METHODOLOGY.minutesPerActiveSlot).toBe(METHODOLOGY.slotMinutes);
+		expect(SLOTS_PER_DAY * SLOT_MINUTES).toBe(1440);
+		for (const { parameters } of RELEASES) {
+			expect(parameters.minutesPerActiveSlot).toBe(SLOT_MINUTES);
+		}
 	});
 });
 

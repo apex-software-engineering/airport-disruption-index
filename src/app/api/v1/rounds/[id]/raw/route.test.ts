@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import { buildReceipt } from '@/lib/index/round';
+import { collectedReceipt } from '@/test/receipts';
 import { recordRound } from '@/server/archive';
 import { FileStore } from '@/server/storage';
 
@@ -22,7 +22,7 @@ afterEach(async () => {
 });
 
 it('does not cache the 404 for a bodyless invalid round, which a valid retry can replace', async () => {
-	const receipt = buildReceipt({
+	const receipt = collectedReceipt({
 		fetchedAt: new Date('2026-11-17T20:45:03Z'),
 		sourceUrl: 'https://nasstatus.faa.gov/api/airport-status-information',
 		outcome: { kind: 'network_error', detail: 'ECONNRESET' },

@@ -4,8 +4,11 @@ import { feedFixtureText } from '@/test/fixtures';
 
 import { parseFeed } from './feed';
 
+/** The current rule (adapter faa-nas-xml/2): structure is checked. */
+const parse = (xml: string) => parseFeed(xml, 'checked');
+
 function parseOk(xml: string) {
-	const result = parseFeed(xml);
+	const result = parse(xml);
 	if (!result.ok) throw new Error(`expected a parse, got: ${result.detail}`);
 	return result.feed;
 }
@@ -97,7 +100,7 @@ describe('parseFeed on markup that carries no data', () => {
 	it.each(['synthetic-gs-block-without-name.xml', 'synthetic-gdp-block-two-names.xml'])(
 		'rejects a counted block without exactly one matching Name (%s)',
 		(name) => {
-			const result = parseFeed(feedFixtureText(name));
+			const result = parse(feedFixtureText(name));
 			expect(result).toMatchObject({ ok: false, detail: expect.stringMatching(/needs one Name/) });
 		},
 	);
@@ -169,6 +172,101 @@ describe('parseFeed failures', () => {
 			'<!DOCTYPE A [<!ENTITY e SYSTEM "file:///etc/passwd">]><AIRPORT_STATUS_INFORMATION><Update_Time>&e;</Update_Time></AIRPORT_STATUS_INFORMATION>',
 		],
 	])('rejects %s', (_label, xml) => {
-		expect(parseFeed(xml).ok).toBe(false);
+		expect(parse(xml).ok).toBe(false);
+	});
+});
+
+describe('structure checks (adapter faa-nas-xml/2)', () => {
+	const UPDATE = '<Update_Time>Tue Nov 17 20:43:54 2026 GMT</Update_Time>';
+	const doc = (body: string) => `<AIRPORT_STATUS_INFORMATION>${body}</AIRPORT_STATUS_INFORMATION>`;
+	const renamed = doc(
+		`${UPDATE}<Delay_Type_V2><Name>Ground Stop Programs</Name><GS_List><Program><ARPT>ATL</ARPT></Program></GS_List></Delay_Type_V2>`,
+	);
+
+	it('fails closed on a renamed wrapper that the original rule read as an all-clear', () => {
+		const unchecked = parseFeed(renamed, 'unchecked');
+		expect(unchecked).toMatchObject({ ok: true, feed: { events: [], otherDelayTypes: [] } });
+		expect(parse(renamed)).toEqual({
+			ok: false,
+			reason: 'unrecognized_structure',
+			detail:
+				'AIRPORT_STATUS_INFORMATION holds element(s) the feed has never carried: Delay_Type_V2',
+		});
+	});
+
+	const block = (name: string, inner: string) =>
+		doc(`${UPDATE}<Delay_type><Name>${name}</Name>${inner}</Delay_type>`);
+
+	// The last column is what adapter /1 made of it: an all-clear (true) or a parse_error (false).
+	it.each([
+		[
+			'a renamed GS list',
+			block('Ground Stop Programs', '<GS_List><Program><ARPT>ATL</ARPT></Program></GS_List>'),
+			true,
+		],
+		[
+			'a renamed GDP list',
+			block(
+				'Ground Delay Programs',
+				'<GDP_List><Ground_Delay><ARPT>SFO</ARPT></Ground_Delay></GDP_List>',
+			),
+			true,
+		],
+		[
+			'an extra list beside the GS list',
+			block('Ground Stop Programs', '<Ground_Stop_List/><Other_List/>'),
+			true,
+		],
+		['a counted name with no list', block('Ground Delay Programs', ''), true],
+		["the other program's list", block('Ground Stop Programs', '<Ground_Delay_List/>'), false],
+		[
+			'its list twice',
+			block('Ground Stop Programs', '<Ground_Stop_List/><Ground_Stop_List/>'),
+			false,
+		],
+	])('fails closed on a counted-program block holding %s', (_label, xml, validUnderV1) => {
+		expect(parseFeed(xml, 'unchecked').ok).toBe(validUnderV1);
+		expect(parse(xml)).toMatchObject({
+			ok: false,
+			reason: 'unrecognized_structure',
+			detail: expect.stringMatching(
+				/block must hold exactly one (Ground_Stop_List|Ground_Delay_List)/,
+			),
+		});
+	});
+
+	it('still records an unknown block with an unknown list as unrecognized, not invalid', () => {
+		const xml = block(
+			'Deicing',
+			'<Deicing_List><Airport><ARPT>ORD</ARPT></Airport></Deicing_List>',
+		);
+		expect(parse(xml)).toMatchObject({
+			ok: true,
+			feed: {
+				otherDelayTypes: [
+					{ disposition: 'unrecognized', name: 'Deicing', element: 'Deicing_List', entries: 1 },
+				],
+			},
+		});
+	});
+
+	it('keeps a calm payload with no Delay_type valid', () => {
+		const calm = doc(`${UPDATE}<Dtd_File>http://www.fly.faa.gov/AirportStatus.dtd</Dtd_File>`);
+		expect(parse(calm)).toMatchObject({ ok: true, feed: { events: [], otherDelayTypes: [] } });
+		expect(parse(doc(UPDATE))).toMatchObject({ ok: true });
+	});
+
+	it.each([
+		'live-2026-11-17T20-43-56Z.xml',
+		'live-2026-11-17T20-58-29Z.xml',
+		'live-2026-11-20T01-03-33Z.xml',
+		'synthetic-edge-cases.xml',
+		'synthetic-gdp-block-two-names.xml',
+		'synthetic-gs-block-without-name.xml',
+		'synthetic-gs-gdp.xml',
+		'synthetic-processing-instructions.xml',
+	])('reads %s exactly as the original rule does', (name) => {
+		const xml = feedFixtureText(name);
+		expect(parse(xml)).toEqual(parseFeed(xml, 'unchecked'));
 	});
 });

@@ -12,20 +12,20 @@ import {
 	type HistoryDay,
 } from '@/components/index-data';
 import { Figure, Notice, PageTitle, Section, StatusLabel, Table } from '@/components/ui';
-import { METHODOLOGY } from '@/lib/index/methodology';
+import { methodologyFor, type MethodologyParameters } from '@/lib/index/methodology';
 import { site } from '@/lib/site';
 
 export const dynamic = 'force-dynamic';
 
-const MAX_DAILY_VALUE = METHODOLOGY.panel.length * 24 * 60;
-
 export default async function HomePage() {
 	const { current, recent } = await readSiteData(new Date());
+	// Today's methodology; the date comes from the same read as the running value.
+	const parameters = methodologyFor(current.date).parameters;
 	return (
 		<>
 			<PageTitle
 				title={site.name}
-				lede={`Airport-minutes under FAA ground stops and ground delay programs across ${METHODOLOGY.panel.length} US hub airports, per UTC day. Methodology v${METHODOLOGY.version}.`}
+				lede={`Airport-minutes under FAA ground stops and ground delay programs across ${parameters.panel.length} US hub airports, per UTC day. Methodology v${parameters.version}.`}
 			/>
 			<Today current={current} />
 			{hasValidRound(current) ? (
@@ -49,8 +49,8 @@ export default async function HomePage() {
 					</Section>
 				</>
 			) : null}
-			<RecentPrints days={recent} />
-			<WhatItMeasures />
+			<RecentPrints days={recent} parameters={parameters} />
+			<WhatItMeasures parameters={parameters} />
 		</>
 	);
 }
@@ -101,13 +101,19 @@ function Today({ current }: { current: Current }) {
 	);
 }
 
-function RecentPrints({ days }: { days: readonly HistoryDay[] }) {
+function RecentPrints({
+	days,
+	parameters,
+}: {
+	days: readonly HistoryDay[];
+	parameters: MethodologyParameters;
+}) {
 	return (
 		<Section title='Daily settlement prints'>
 			{days.length === 0 ? (
 				<Notice>
 					No day has settled in the last {RECENT_PRINT_DAYS} days. A day&apos;s print is published{' '}
-					{METHODOLOGY.settlement.cutoffMinutesAfterDayEnd} minutes after the UTC day ends, and the
+					{parameters.settlement.cutoffMinutesAfterDayEnd} minutes after the UTC day ends, and the
 					index is live-only from its first production round.
 				</Notice>
 			) : (
@@ -132,18 +138,18 @@ function RecentPrints({ days }: { days: readonly HistoryDay[] }) {
 	);
 }
 
-function WhatItMeasures() {
-	const { slotMinutes, carry, coverage, settlement } = METHODOLOGY;
+function WhatItMeasures({ parameters }: { parameters: MethodologyParameters }) {
+	const { slotMinutes, carry, coverage, settlement } = parameters;
 	return (
 		<Section title='What it measures'>
 			<div className='text-ink-muted max-w-2xl space-y-3'>
 				<p>
 					Every {slotMinutes} minutes the collector reads the FAA NAS Status airport feed once. Each
 					panel airport under an active ground stop or ground delay program in that observation adds{' '}
-					{METHODOLOGY.minutesPerActiveSlot} airport-minutes to the day. The headline{' '}
+					{parameters.minutesPerActiveSlot} airport-minutes to the day. The headline{' '}
 					<strong className='text-ink'>ADI</strong> counts either program; the{' '}
 					<strong className='text-ink'>ADI-GS</strong> sub-index counts ground stops only. A day
-					ranges from 0 to {formatInteger(MAX_DAILY_VALUE)}.
+					ranges from 0 to {formatInteger(parameters.panel.length * 24 * 60)}.
 				</p>
 				<p>
 					A missed observation carries the last valid state for at most {carry.maxCarriedSlots}{' '}

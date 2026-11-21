@@ -11,6 +11,13 @@ The source is public. Every number on the site can be reproduced from it; see th
 git clone https://github.com/apex-software-engineering/airport-disruption-index && cd airport-disruption-index && npm ci
 ```
 
+## Incidents
+
+Incidents, corrections and methodology announcements are published as
+[`incident` issues](https://github.com/apex-software-engineering/airport-disruption-index/issues?q=label%3Aincident)
+until the site's `/incidents` page ships. See the
+[settlement rules](docs/methodology.md#settlement-rules).
+
 ## Development
 
 Node 24 and npm.

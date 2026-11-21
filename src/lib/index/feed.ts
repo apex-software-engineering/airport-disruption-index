@@ -8,7 +8,9 @@
  * else is recorded as `unrecognized` and never fails the parse. A GS/GDP list that holds an
  * element we do not know does fail the parse, because skipping it could silently drop an event;
  * so does a GS/GDP list anywhere but directly in a Delay_type block, or in a block without
- * exactly one `Name` naming that list.
+ * exactly one `Name` naming that list. With `checked` structure (adapter faa-nas-xml/2), an
+ * unknown root element, or a counted-program block without exactly its list, fails as
+ * `unrecognized_structure` instead of being recorded as `unrecognized`.
  */
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { z } from 'zod';
@@ -22,7 +24,24 @@ export type ParsedFeed = {
 	otherDelayTypes: OtherDelayType[];
 };
 
-export type FeedParseResult = { ok: true; feed: ParsedFeed } | { ok: false; detail: string };
+/**
+ * `unrecognized_structure` (adapter faa-nas-xml/2 onward) is a document whose root holds an
+ * element the feed has never carried, or a block named for a counted program that does not hold
+ * exactly that program's list: a renamed wrapper or list could otherwise read as an all-clear.
+ */
+export type FeedParseResult =
+	| { ok: true; feed: ParsedFeed }
+	| { ok: false; reason: 'parse_error' | 'unrecognized_structure'; detail: string };
+
+/**
+ * `checked` (adapter faa-nas-xml/2) fails closed on structure the feed has never carried: a
+ * root child outside FAA_ROOT_CHILDREN, or a counted-program block without exactly its list.
+ * `unchecked` is the original rule of adapter faa-nas-xml/1, kept so its receipts rebuild exactly.
+ */
+export type StructureCheck = 'unchecked' | 'checked';
+
+/** Every root child seen in the archived fixtures and in sampled production bodies. */
+const FAA_ROOT_CHILDREN: ReadonlySet<string> = new Set(['Update_Time', 'Dtd_File', 'Delay_type']);
 
 const ROOT = 'AIRPORT_STATUS_INFORMATION';
 const GROUND_STOP_LIST = 'Ground_Stop_List';
@@ -42,6 +61,7 @@ const IGNORED_LISTS = new Set([
 ]);
 
 class FeedFormatError extends Error {}
+class UnrecognizedStructure extends Error {}
 
 const parser = new XMLParser({
 	ignoreAttributes: true,
@@ -79,46 +99,88 @@ const groundDelaySchema = z.object({
 	Max: optionalText,
 });
 
-export function parseFeed(xml: string): FeedParseResult {
+export function parseFeed(xml: string, structure: StructureCheck): FeedParseResult {
 	const wellFormed = XMLValidator.validate(xml);
 	if (wellFormed !== true) {
-		return {
-			ok: false,
-			detail: `XML not well formed: ${wellFormed.err.msg} (line ${wellFormed.err.line})`,
-		};
+		return parseError(`XML not well formed: ${wellFormed.err.msg} (line ${wellFormed.err.line})`);
 	}
 	let tree: unknown;
 	try {
 		tree = parser.parse(xml);
 	} catch (error) {
-		return { ok: false, detail: `XML parser rejected the document: ${String(error)}` };
+		return parseError(`XML parser rejected the document: ${String(error)}`);
 	}
 	const document = documentSchema.safeParse(tree);
 	const roots = document.success ? Object.keys(document.data) : [];
 	if (roots.length !== 1 || roots[0] !== ROOT) {
-		return { ok: false, detail: `expected exactly one ${ROOT} root, found [${roots.join(', ')}]` };
+		return parseError(`expected exactly one ${ROOT} root, found [${roots.join(', ')}]`);
+	}
+	const unknown = structure === 'checked' ? unknownRootChildren(document.data?.[ROOT]) : [];
+	if (unknown.length > 0) {
+		return {
+			ok: false,
+			reason: 'unrecognized_structure',
+			detail: `${ROOT} holds element(s) the feed has never carried: ${unknown.join(', ')}`,
+		};
 	}
 	const root = rootSchema.safeParse(tree);
-	if (!root.success)
-		return { ok: false, detail: `not an ${ROOT} document: ${z.prettifyError(root.error)}` };
+	if (!root.success) return parseError(`not an ${ROOT} document: ${z.prettifyError(root.error)}`);
 	const { Update_Time: updateTimeText, Delay_type: blocks = [] } = root.data[ROOT];
 	for (const list of PROGRAM_BLOCK_NAMES.keys()) {
 		const inBlocks = blocks.filter((block) => block !== '' && Object.hasOwn(block, list)).length;
 		if (countKey(tree, list) !== inBlocks) {
-			return { ok: false, detail: `${list} found outside a Delay_type block` };
+			return parseError(`${list} found outside a Delay_type block`);
 		}
 	}
 	const updateTime = parseFeedUpdateTime(updateTimeText);
-	if (updateTime === null)
-		return { ok: false, detail: `unparseable Update_Time "${updateTimeText}"` };
+	if (updateTime === null) return parseError(`unparseable Update_Time "${updateTimeText}"`);
 	try {
 		const events: ProgramEvent[] = [];
 		const otherDelayTypes: OtherDelayType[] = [];
-		for (const block of blocks) readDelayType(block === '' ? {} : block, events, otherDelayTypes);
+		for (const block of blocks) {
+			const contents = block === '' ? {} : block;
+			if (structure === 'checked') requireCountedList(contents);
+			readDelayType(contents, events, otherDelayTypes);
+		}
 		return { ok: true, feed: { updateTime, events, otherDelayTypes } };
 	} catch (error) {
-		if (error instanceof FeedFormatError) return { ok: false, detail: error.message };
+		if (error instanceof FeedFormatError) return parseError(error.message);
+		if (error instanceof UnrecognizedStructure)
+			return { ok: false, reason: 'unrecognized_structure', detail: error.message };
 		throw error;
+	}
+}
+
+function parseError(detail: string): FeedParseResult {
+	return { ok: false, reason: 'parse_error', detail };
+}
+
+/** Root children outside FAA_ROOT_CHILDREN. An empty root (text only) has none. */
+function unknownRootChildren(root: unknown): string[] {
+	if (typeof root !== 'object' || root === null) return [];
+	return Object.keys(root).filter((name) => !FAA_ROOT_CHILDREN.has(name));
+}
+
+/**
+ * A block named for a counted program must hold exactly one of that program's list and nothing
+ * else. A renamed list under a counted Name would otherwise be recorded as `unrecognized` and
+ * the round read as an all-clear. A repeated list parses to an array. Blocks with other names
+ * are left to readDelayType.
+ */
+function requireCountedList(block: Record<string, unknown>): void {
+	const names = [block.Name].flat().filter((name) => typeof name === 'string');
+	const lists = Object.keys(block).filter((key) => key !== 'Name');
+	for (const [list, countedName] of PROGRAM_BLOCK_NAMES) {
+		if (!names.includes(countedName)) continue;
+		const found = lists.flatMap((key) => {
+			const value = block[key];
+			return Array.isArray(value) ? value.map(() => key) : [key];
+		});
+		if (!(found.length === 1 && found[0] === list)) {
+			throw new UnrecognizedStructure(
+				`a "${countedName}" block must hold exactly one ${list}, found [${found.join(', ')}]`,
+			);
+		}
 	}
 }
 

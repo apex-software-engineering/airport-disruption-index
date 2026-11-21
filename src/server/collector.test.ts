@@ -4,10 +4,11 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { collectedReceipt } from '@/test/receipts';
 import { feedFixture } from '@/test/fixtures';
+import { DAY, validRound } from '@/test/rounds';
 
 import { buildPrint } from '@/lib/index/print';
-import { buildReceipt } from '@/lib/index/round';
 
 import {
 	readDayIndex,
@@ -121,7 +122,18 @@ describe('views and settlement', () => {
 			roundId: '2026-11-17T20:55Z',
 		});
 
-		expect(await dayView(store, '2026-11-17')).toMatchObject({ status: 'unsettled' });
+		expect(current).toMatchObject({
+			settlesAt: '2026-11-18T00:30:00.000Z',
+			publishBy: '2026-11-18T01:30:00.000Z',
+			foreignMethodologies: [],
+			unrecognizedLists: [],
+		});
+		expect(await dayView(store, '2026-11-17')).toEqual({
+			date: '2026-11-17',
+			status: 'unsettled',
+			settlesAt: '2026-11-18T00:30:00.000Z',
+			publishBy: '2026-11-18T01:30:00.000Z',
+		});
 		const settled = await settleDay(store, '2026-11-17');
 		expect(settled.status).toBe('settled');
 		expect(settled.print.result).toEqual({
@@ -166,12 +178,12 @@ class RacingStore extends FileStore {
 describe('archive write rules', () => {
 	const fetchedAt = new Date('2026-11-17T20:45:03Z');
 	const now = new Date('2026-11-17T20:45:04Z');
-	const valid = buildReceipt({
+	const valid = collectedReceipt({
 		fetchedAt,
 		sourceUrl: 'https://nasstatus.faa.gov/api/airport-status-information',
 		outcome: { kind: 'response', httpStatus: 200, body: feedFixture('synthetic-gs-gdp.xml') },
 	});
-	const invalid = buildReceipt({
+	const invalid = collectedReceipt({
 		fetchedAt: new Date('2026-11-17T20:45:01Z'),
 		sourceUrl: valid.sourceUrl,
 		outcome: { kind: 'network_error', detail: 'ECONNRESET' },
@@ -270,7 +282,7 @@ describe('archive write rules', () => {
 		// 17 invalid rounds, 19:20Z to 20:40Z.
 		for (let minute = 19 * 60 + 20; minute <= 20 * 60 + 40; minute += 5) {
 			const slot = Date.parse('2026-11-17T00:00:00Z') + minute * 60_000;
-			const failed = buildReceipt({
+			const failed = collectedReceipt({
 				fetchedAt: new Date(slot + 3000),
 				sourceUrl: valid.sourceUrl,
 				outcome: { kind: 'network_error', detail: 'ECONNRESET' },
@@ -406,6 +418,19 @@ class LostPrintStore extends FileStore {
 	}
 }
 
+/** Fails the first read of any receipt, as a blob read can fail once and then succeed. */
+class FlakyReceiptStore extends FileStore {
+	private failed = false;
+
+	override async read(key: string) {
+		if (!this.failed && key.startsWith('rounds/') && key.endsWith('.json')) {
+			this.failed = true;
+			throw new Error(`transient read failure for ${key}`);
+		}
+		return super.read(key);
+	}
+}
+
 describe('settlement', () => {
 	it('rebuilds the day index from receipts, ignoring whatever the old index held', async () => {
 		await collect('2026-11-17T20:45:03Z');
@@ -424,11 +449,82 @@ describe('settlement', () => {
 		expect((await readDayIndex(store, '2026-11-17')).rounds).toHaveLength(1);
 	});
 
+	it('settles on a retry after a run that could not read a receipt', async () => {
+		await collect('2026-11-17T20:45:03Z');
+		const flaky = new FlakyReceiptStore(root);
+		await expect(settleDay(flaky, '2026-11-17')).rejects.toThrow(/transient/);
+		expect(await readPrints(store, '2026-11-17')).toEqual([]);
+		const retried = await settleDay(flaky, '2026-11-17');
+		expect(retried.status).toBe('settled');
+		expect(await settleDay(flaky, '2026-11-17')).toEqual({
+			status: 'already_settled',
+			print: retried.print,
+		});
+	});
+
 	it('fails loudly, and does not loop, when a print conflicts but cannot be read', async () => {
 		await collect('2026-11-17T20:45:03Z');
 		await expect(settleDay(new LostPrintStore(root), '2026-11-17')).rejects.toThrow(
 			/could not be read/,
 		);
+	});
+});
+
+describe('unrecognized lists', () => {
+	it('flags each unrecognized list seen today in the running value', async () => {
+		await collect('2026-11-17T20:45:03Z', 'synthetic-edge-cases.xml');
+		await collect('2026-11-17T20:50:03Z', 'synthetic-edge-cases.xml');
+		await collect('2026-11-17T20:55:03Z');
+		const current = await currentView(store, new Date('2026-11-17T20:56:00Z'));
+		expect(current.unrecognizedLists).toEqual([
+			{ element: 'Deicing_List', name: 'Deicing', rounds: 2, lastRoundId: '2026-11-17T20:50Z' },
+			{ element: null, name: 'Empty block', rounds: 2, lastRoundId: '2026-11-17T20:50Z' },
+		]);
+	});
+
+	it('counts a round once when it repeats an unrecognized list', async () => {
+		const round = validRound(0);
+		if (round.observation.status !== 'valid') throw new Error('validRound is valid');
+		const deicing = { element: 'Deicing_List', name: 'Deicing' };
+		const repeated = {
+			...round,
+			observation: { ...round.observation, unrecognized: [deicing, deicing] },
+		};
+		const index = { schema: 'adi.day-index/1', date: DAY, rounds: [repeated] };
+		await store.write(
+			`days/${DAY}.json`,
+			new TextEncoder().encode(JSON.stringify(index)),
+			'application/json',
+			{
+				kind: 'if-absent',
+			},
+		);
+		const current = await currentView(store, new Date(`${DAY}T00:05:30Z`));
+		expect(current.unrecognizedLists).toEqual([
+			{ ...deicing, rounds: 1, lastRoundId: round.roundId },
+		]);
+	});
+
+	it('reads a day index written before the field existed as recording none', async () => {
+		await collect('2026-11-17T20:45:03Z', 'synthetic-edge-cases.xml');
+		const object = await store.read('days/2026-11-17.json');
+		if (object === null) throw new Error('no day index');
+		const legacy = new TextDecoder()
+			.decode(object.body)
+			.replaceAll(/,"unrecognized":\[[^\]]*\]/g, '');
+		expect(legacy).not.toContain('unrecognized');
+		await store.write(
+			'days/2026-11-17.json',
+			new TextEncoder().encode(legacy),
+			'application/json',
+			{
+				kind: 'if-version',
+				version: object.version,
+			},
+		);
+		const current = await currentView(store, new Date('2026-11-17T20:50:30Z'));
+		expect(current.unrecognizedLists).toEqual([]);
+		expect(current.coverage.validRounds).toBe(1);
 	});
 });
 

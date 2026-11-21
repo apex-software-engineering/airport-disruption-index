@@ -1,17 +1,49 @@
 import { describe, expect, it } from 'vitest';
 
+import { CURRENT_ADAPTER } from '@/lib/index/adapters';
+import { collectedReceipt } from '@/test/receipts';
 import { feedFixture } from '@/test/fixtures';
 
-import { METHODOLOGY } from './methodology';
+import { methodologyFor } from './methodology';
 import { buildPrint } from './print';
 import { buildReceipt, summarizeReceipt } from './round';
 import { verifyPrint, verifyRound } from './verify';
 
 const raw = feedFixture('synthetic-gs-gdp.xml');
-const receipt = buildReceipt({
+const receipt = collectedReceipt({
 	fetchedAt: new Date('2026-11-17T20:45:02.123Z'),
-	sourceUrl: METHODOLOGY.source.url,
+	sourceUrl: CURRENT_ADAPTER.url,
 	outcome: { kind: 'response', httpStatus: 200, body: raw },
+});
+
+describe('verifyRound across feed adapters', () => {
+	/** GS at ATL inside a renamed wrapper: an all-clear to adapter /1, fail-closed to /2. */
+	const renamed = new TextEncoder().encode(
+		'<AIRPORT_STATUS_INFORMATION><Update_Time>Tue Nov 17 20:43:54 2026 GMT</Update_Time><Delay_Type_V2><Name>Ground Stop Programs</Name><GS_List><Program><ARPT>ATL</ARPT></Program></GS_List></Delay_Type_V2></AIRPORT_STATUS_INFORMATION>',
+	);
+	const under = (adapterVersion: string | undefined) =>
+		buildReceipt({
+			fetchedAt: new Date('2026-11-17T20:45:02.123Z'),
+			sourceUrl: CURRENT_ADAPTER.url,
+			outcome: { kind: 'response', httpStatus: 200, body: renamed },
+			methodology: methodologyFor('2026-11-17'),
+			adapterVersion,
+		});
+
+	it('rebuilds each receipt with the adapter it records, so archived /1 receipts still match', () => {
+		const archived = under('faa-nas-xml/1');
+		const unrecorded = under(undefined);
+		const current = under(CURRENT_ADAPTER.version);
+		expect(archived.observation.status).toBe('valid');
+		expect(unrecorded.observation.status).toBe('valid');
+		expect(current.observation).toMatchObject({
+			status: 'invalid',
+			reason: 'unrecognized_structure',
+		});
+		for (const receipt of [archived, unrecorded, current]) {
+			expect(verifyRound(receipt, renamed)).toEqual([]);
+		}
+	});
 });
 
 describe('verifyRound', () => {

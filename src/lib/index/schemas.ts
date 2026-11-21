@@ -4,12 +4,14 @@
  */
 import { z } from 'zod';
 
-import { METHODOLOGY, PANEL } from './methodology';
+import { adapterOf } from './adapters';
+import { methodologyOf } from './methodology';
 import { parseRoundId, parseUtcDate } from './time';
 
 const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
 const instant = z.iso.datetime();
-const panelAirport = z.enum(METHODOLOGY.panel);
+/** An FAA 3-letter code. Which codes form the panel depends on the recorded methodology. */
+const panelAirport = z.string().regex(/^[A-Z]{3}$/);
 const count = z.number().int().nonnegative();
 export const roundIdSchema = z
 	.string()
@@ -42,6 +44,10 @@ export const otherDelayTypeSchema = z.object({
 });
 export type OtherDelayType = z.infer<typeof otherDelayTypeSchema>;
 
+/** Which list an `unrecognized` Delay_type entry was: its element and its block's Name. */
+export const unrecognizedListSchema = otherDelayTypeSchema.pick({ name: true, element: true });
+export type UnrecognizedList = z.infer<typeof unrecognizedListSchema>;
+
 export const airportStateSchema = z.object({
 	airport: panelAirport,
 	groundStop: z.boolean(),
@@ -49,18 +55,48 @@ export const airportStateSchema = z.object({
 });
 export type AirportState = z.infer<typeof airportStateSchema>;
 
-/** One entry per panel airport, in panel order. */
-const panelStateSchema = z
-	.array(airportStateSchema)
-	.refine(
-		(rows) => rows.length === PANEL.length && rows.every((row, i) => row.airport === PANEL[i]),
-		'panel state must list every panel airport in panel order',
-	);
+/**
+ * Checks a stored object against the methodology it records: the release must be one this code
+ * knows, and `rows` (when given) must list that release's panel in panel order. Validating
+ * against the recorded release, not the current one, keeps archived objects readable after a
+ * later release changes the panel.
+ */
+function checkRecordedMethodology(
+	recorded: { methodologyVersion: string; parameterHash: string },
+	rows: readonly { airport: string }[] | null,
+	ctx: z.RefinementCtx,
+): void {
+	const { methodologyVersion, parameterHash } = recorded;
+	const methodology = methodologyOf(methodologyVersion, parameterHash);
+	if (methodology === null) {
+		ctx.addIssue({
+			code: 'custom',
+			message: `methodology ${methodologyVersion} (${parameterHash}) is not a known release`,
+			path: ['methodologyVersion'],
+		});
+		return;
+	}
+	const { panel } = methodology.parameters;
+	if (
+		rows !== null &&
+		!(rows.length === panel.length && rows.every((r, i) => r.airport === panel[i]))
+	) {
+		ctx.addIssue({
+			code: 'custom',
+			message: `must list every airport of the ${methodologyVersion} panel in panel order`,
+		});
+	}
+}
 
 export const invalidReasonSchema = z.enum([
 	'network_error',
 	'http_status',
 	'parse_error',
+	/**
+	 * Adapter faa-nas-xml/2 onward: the root holds an element the feed has never carried, or a
+	 * counted-program block does not hold exactly one of its own list.
+	 */
+	'unrecognized_structure',
 	'stale_feed',
 	'feed_ahead_of_clock',
 ]);
@@ -72,7 +108,8 @@ export const observationSchema = z.discriminatedUnion('status', [
 		feedUpdateTime: instant,
 		events: z.array(programEventSchema),
 		otherDelayTypes: z.array(otherDelayTypeSchema),
-		panel: panelStateSchema,
+		/** One entry per panel airport of the recorded methodology, in panel order. */
+		panel: z.array(airportStateSchema),
 	}),
 	z.object({
 		status: z.literal('invalid'),
@@ -83,22 +120,43 @@ export const observationSchema = z.discriminatedUnion('status', [
 ]);
 export type Observation = z.infer<typeof observationSchema>;
 
-export const receiptSchema = z.object({
-	schema: z.literal('adi.round-receipt/1'),
-	roundId: roundIdSchema,
-	slotStart: instant,
-	fetchedAt: instant,
-	sourceUrl: z.url(),
-	methodologyVersion: z.string(),
-	parameterHash: hex64,
-	/** null when no HTTP response arrived. */
-	httpStatus: z.number().int().nullable(),
-	/** sha256 of the response body bytes as received; null when there was no response. */
-	rawSha256: hex64.nullable(),
-	rawBytes: count.nullable(),
-	observation: observationSchema,
-	receiptHash: hex64,
-});
+export const receiptSchema = z
+	.object({
+		schema: z.literal('adi.round-receipt/1'),
+		roundId: roundIdSchema,
+		slotStart: instant,
+		fetchedAt: instant,
+		sourceUrl: z.url(),
+		/**
+		 * The source adapter that fetched and parsed this round (adapters.ts). Absent on receipts
+		 * written before the field existed, which keeps their receiptHash unchanged; those were all
+		 * produced by the first adapter.
+		 */
+		adapterVersion: z.string().optional(),
+		methodologyVersion: z.string(),
+		parameterHash: hex64,
+		/** null when no HTTP response arrived. */
+		httpStatus: z.number().int().nullable(),
+		/** sha256 of the response body bytes as received; null when there was no response. */
+		rawSha256: hex64.nullable(),
+		rawBytes: count.nullable(),
+		observation: observationSchema,
+		receiptHash: hex64,
+	})
+	.superRefine((receipt, ctx) => {
+		checkRecordedMethodology(
+			receipt,
+			receipt.observation.status === 'valid' ? receipt.observation.panel : null,
+			ctx,
+		);
+		if (adapterOf(receipt.adapterVersion) === null) {
+			ctx.addIssue({
+				code: 'custom',
+				message: `feed adapter ${receipt.adapterVersion} is not a known adapter`,
+				path: ['adapterVersion'],
+			});
+		}
+	});
 export type RoundReceipt = z.infer<typeof receiptSchema>;
 
 /** The part of a receipt the index math needs. Day index blobs store these. */
@@ -114,6 +172,13 @@ export const roundSummarySchema = z.object({
 			feedUpdateTime: instant,
 			/** Panel airports with at least one active program. */
 			active: z.array(airportStateSchema),
+			/**
+			 * The round's `unrecognized` Delay_type lists, which never count but are flagged. Day
+			 * indexes written before this field existed read as none; settlement rebuilds the index
+			 * from receipts, so the gap is limited to that one day's earlier rounds and never
+			 * reaches a print.
+			 */
+			unrecognized: z.array(unrecognizedListSchema).default([]),
 		}),
 		z.object({ status: z.literal('invalid'), reason: invalidReasonSchema }),
 	]),
@@ -195,7 +260,14 @@ export const printSchema = z
 	})
 	.refine((print) => (print.revision === 1) === (print.correction === null), {
 		message: 'revision 1 has no correction; every later revision is a correction',
-	});
+	})
+	.superRefine((print, ctx) =>
+		checkRecordedMethodology(
+			print,
+			print.result.status === 'suspended' ? null : print.result.airports,
+			ctx,
+		),
+	);
 export type DailyPrint = z.infer<typeof printSchema>;
 
 export const historyEntrySchema = z.object({

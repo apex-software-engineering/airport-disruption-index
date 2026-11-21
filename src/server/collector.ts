@@ -1,6 +1,8 @@
 /** One collection round: poll the feed once, build the receipt, archive it. */
-import { METHODOLOGY } from '@/lib/index/methodology';
+import { CURRENT_ADAPTER } from '@/lib/index/adapters';
+import { methodologyFor } from '@/lib/index/methodology';
 import { buildReceipt, type FetchOutcome } from '@/lib/index/round';
+import { utcDateOf } from '@/lib/index/time';
 
 import { recordRound, type RecordResult } from './archive';
 import type { ObjectStore } from './storage';
@@ -15,7 +17,7 @@ export type FeedFetcher = () => Promise<FetchedFeed>;
 /** GETs the source feed. `fetchedAt` is when the whole body has arrived. */
 export const fetchSourceFeed: FeedFetcher = async () => {
 	try {
-		const response = await fetch(METHODOLOGY.source.url, {
+		const response = await fetch(CURRENT_ADAPTER.url, {
 			headers: { 'User-Agent': USER_AGENT, Accept: 'application/xml' },
 			cache: 'no-store',
 			redirect: 'error',
@@ -38,7 +40,14 @@ export async function collectRound(
 	clock: () => Date = () => new Date(),
 ): Promise<RecordResult> {
 	const { fetchedAt, outcome } = await fetchFeed();
-	const receipt = buildReceipt({ fetchedAt, sourceUrl: METHODOLOGY.source.url, outcome });
+	// A round is collected under the methodology in effect on its own UTC day.
+	const receipt = buildReceipt({
+		fetchedAt,
+		sourceUrl: CURRENT_ADAPTER.url,
+		outcome,
+		methodology: methodologyFor(utcDateOf(fetchedAt)),
+		adapterVersion: CURRENT_ADAPTER.version,
+	});
 	const body = outcome.kind === 'response' ? outcome.body : null;
 	return recordRound(store, receipt, body, clock());
 }
