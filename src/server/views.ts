@@ -62,15 +62,21 @@ export async function currentView(store: ObjectStore, now: Date) {
 	};
 }
 
-export type UnrecognizedSighting = UnrecognizedList & { rounds: number; lastRoundId: RoundId };
+type UnrecognizedSighting = UnrecognizedList & { rounds: number; lastRoundId: RoundId };
 
 /** Each distinct unrecognized list in `rounds`, with how many rounds carried it and the latest. */
 function unrecognizedListsOf(rounds: readonly RoundSummary[]): UnrecognizedSighting[] {
 	const sightings = new Map<string, UnrecognizedSighting>();
 	for (const round of [...rounds].sort((x, y) => x.roundId.localeCompare(y.roundId))) {
 		if (round.observation.status !== 'valid') continue;
-		for (const list of round.observation.unrecognized) {
-			const key = JSON.stringify([list.element, list.name]);
+		// A list repeated within one round counts that round once.
+		const lists = new Map(
+			round.observation.unrecognized.map((list) => [
+				JSON.stringify([list.element, list.name]),
+				list,
+			]),
+		);
+		for (const [key, list] of lists) {
 			const seen = sightings.get(key)?.rounds ?? 0;
 			sightings.set(key, { ...list, rounds: seen + 1, lastRoundId: round.roundId });
 		}

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { feedFixture } from '@/test/fixtures';
+import { DAY, validRound } from '@/test/rounds';
 
 import { buildPrint } from '@/lib/index/print';
 import { buildReceipt } from '@/lib/index/round';
@@ -478,6 +479,29 @@ describe('unrecognized lists', () => {
 		expect(current.unrecognizedLists).toEqual([
 			{ element: 'Deicing_List', name: 'Deicing', rounds: 2, lastRoundId: '2026-11-17T20:50Z' },
 			{ element: null, name: 'Empty block', rounds: 2, lastRoundId: '2026-11-17T20:50Z' },
+		]);
+	});
+
+	it('counts a round once when it repeats an unrecognized list', async () => {
+		const round = validRound(0);
+		if (round.observation.status !== 'valid') throw new Error('validRound is valid');
+		const deicing = { element: 'Deicing_List', name: 'Deicing' };
+		const repeated = {
+			...round,
+			observation: { ...round.observation, unrecognized: [deicing, deicing] },
+		};
+		const index = { schema: 'adi.day-index/1', date: DAY, rounds: [repeated] };
+		await store.write(
+			`days/${DAY}.json`,
+			new TextEncoder().encode(JSON.stringify(index)),
+			'application/json',
+			{
+				kind: 'if-absent',
+			},
+		);
+		const current = await currentView(store, new Date(`${DAY}T00:05:30Z`));
+		expect(current.unrecognizedLists).toEqual([
+			{ ...deicing, rounds: 1, lastRoundId: round.roundId },
 		]);
 	});
 
