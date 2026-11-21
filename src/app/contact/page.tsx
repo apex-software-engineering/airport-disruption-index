@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 
-import { Notice, PageTitle, Section } from '@/components/ui';
+import { PageTitle, Section } from '@/components/ui';
 import { contactEmail, site } from '@/lib/site';
 
 export const metadata: Metadata = { title: 'Contact' };
@@ -11,13 +11,9 @@ export default function ContactPage() {
 		<>
 			<PageTitle title='Contact' lede='The index is operated by Apex Software Engineering LLC.' />
 			<Section title='Email'>
-				{contactEmail === null ? (
-					<Notice>Contact address coming soon.</Notice>
-				) : (
-					<p>
-						<a href={`mailto:${contactEmail}`}>{contactEmail}</a>
-					</p>
-				)}
+				<p>
+					<a href={`mailto:${contactEmail}`}>{contactEmail}</a>
+				</p>
 			</Section>
 			<Section title='Incidents and corrections'>
 				<p className='text-sm'>
