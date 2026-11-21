@@ -202,7 +202,8 @@ this document disagree, the rule wins and the disagreement is a documentation bu
    rounds and still settle. Nothing is estimated or backfilled to compensate, and the v1 calculation
    is exactly as described above.
 4. **One methodology per day.** A new methodology version takes effect only at 00:00Z of a UTC day
-   and is announced on the [incident log](#incident-log) at least [NOTICE] before (see
+   and is announced on the [incident log](#incident-log) at least 30 days (**PROVISIONAL, pending
+   owner decision**) before (see
    [Changes to the source or the methodology](#changes-to-the-source-or-the-methodology)). Each
    version stays in the code with the day it takes effect, so day D is always computed under the
    version in effect on D, and an archived receipt is always validated and reproduced under the
@@ -279,13 +280,16 @@ shape), while what is measured, the formula and every parameter stay the same.
   adapter, `faa-nas-xml/1`; their hashes are unchanged.
 - It passes the same reproduce check as any release: every published round and print still
   reproduces with `MATCH`.
-- The repair time is a **target, not a guarantee**: [TARGET]. The clock starts at detection (the
-  monitor's first alert). A business day is a US federal business day in America/New_York.
+- The repair time is a **target, not a guarantee**: one US federal business day (America/New_York)
+  from the monitor's first alert (**PROVISIONAL, pending owner decision**). The clock starts at
+  detection (the monitor's first alert). A business day is a US federal business day in
+  America/New_York.
 
 **A methodology change** is anything that changes what is measured or how: a parameter, the panel,
 or how events become airport-minutes. It is a new version with a new parameter hash (see
-[Versioning](#versioning)), announced on the [incident log](#incident-log) at least [NOTICE] before
-it takes effect, and it takes effect at 00:00Z of a UTC day under rule 4.
+[Versioning](#versioning)), announced on the [incident log](#incident-log) at least 30 days
+(**PROVISIONAL, pending owner decision**) before it takes effect, and it takes effect at 00:00Z of a
+UTC day under rule 4.
 
 ## Receipts
 
@@ -463,10 +467,11 @@ These notes bind whoever deploys the index.
 
 ### v2 rollout checklist
 
-1. Add v2 to `src/lib/index/releases.ts` with an `effectiveFrom` day at least [NOTICE] after the
-   announcement on the [incident log](#incident-log), and pin its parameter hash in
-   `src/lib/index/methodology.test.ts`. Keep v1 in the registry: v1 days keep settling under v1
-   until v1's last day has printed, and reproducing under v1 forever.
+1. Add v2 to `src/lib/index/releases.ts` with an `effectiveFrom` day at least 30 days
+   (**PROVISIONAL, pending owner decision**) after the announcement on the
+   [incident log](#incident-log), and pin its parameter hash in `src/lib/index/methodology.test.ts`.
+   Keep v1 in the registry: v1 days keep settling under v1 until v1's last day has printed, and
+   reproducing under v1 forever.
 2. Deploy before the effective day, so no collector runs v1-only code past the cutover (rounds it
    writes would make the first v2 day `suspended`).
 3. Expect cached responses to lag the 00:00Z cutover: `/api/v1/methodology` caches for up to an hour
