@@ -371,15 +371,15 @@ there fails the run loudly, by design, and the next run retries.
 **Publication cutoff.** The attestation for revision 1 of day D counts only if its proof shows it
 existed before **D+2 00:00Z**: the earliest Bitcoin block it reaches must have a header time before
 then. A correction (revision 2 or later) must be stamped within **48 hours of that revision's issue
-time**, as recorded in the print's `issuedAt` field. Prints do not carry `issuedAt` yet; until the
-correction process (#10) adds it to correction prints, a correction's attestation cannot be verified
-(exit 2). The block header time is set by the miner and consensus keeps it within about two hours of
-real time, so the guarantee is that the attestation existed by the cutoff give or take about two
-hours. The OpenTimestamps calendars keep the first commitment they receive, independently of the
-operator, so a rewritten attestation would need a new and later timestamp, which the cutoff exposes.
-What this does not cover: between settlement (D+1 00:30Z) and the first stamp at 01:45Z the operator
-could still rewrite a print before it is attested. That window is about 75 minutes a day, longer
-when GitHub starts the scheduled run late.
+time**, as recorded in the print's `correction.issuedAt` (`correction` is null on revision 1). Until
+the correction process (#10) records it, a correction's attestation cannot be verified (exit 2). The
+block header time is set by the miner and consensus keeps it within about two hours of real time, so
+the guarantee is that the attestation existed by the cutoff give or take about two hours. The
+OpenTimestamps calendars keep the first commitment they receive, independently of the operator, so a
+rewritten attestation would need a new and later timestamp, which the cutoff exposes. What this does
+not cover: between settlement (D+1 00:30Z) and the first stamp at 01:45Z the operator could still
+rewrite a print before it is attested. That window is about 75 minutes a day, longer when GitHub
+starts the scheduled run late.
 
 A fresh proof is pending until a calendar's Bitcoin transaction confirms, usually within a few
 hours. Each run upgrades pending proofs so they stop needing a calendar. Until then the

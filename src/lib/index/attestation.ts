@@ -64,25 +64,26 @@ export function attestationProblems(attestation: Attestation, print: DailyPrint)
 	return problems;
 }
 
-/** A correction's attestation must be stamped within this many hours of its `issuedAt`. */
+/** A correction's attestation must be stamped within this many hours of its issue time. */
 export const CORRECTION_STAMP_HOURS = 48;
 
 /**
  * The time by which a print's attestation must be timestamped. Revision 1 of day D: D+2 00:00Z.
- * A correction: CORRECTION_STAMP_HOURS after the print's `issuedAt` (an ISO instant the
- * correction process, #10, records on revisions after 1); null while a correction lacks it,
- * since its cutoff cannot be checked then. The calendars keep the first commitment, so a rewritten
- * attestation needs a new, later timestamp, and the cutoff exposes it.
+ * A correction: CORRECTION_STAMP_HOURS after `correction.issuedAt` (an ISO instant the
+ * correction process, #10, records; `correction` is null on revision 1). Null while a correction
+ * lacks it, since its cutoff cannot be checked then. The calendars keep the first commitment, so
+ * a rewritten attestation needs a new, later timestamp, and the cutoff exposes it.
  */
 export function publicationCutoff(print: {
 	date: UtcDate;
 	revision: number;
-	issuedAt?: string;
+	correction: { supersedesPrintHash: string; issuedAt?: string } | null;
 }): Date | null {
 	if (print.revision === 1) return new Date(dayStartMs(addDays(print.date, 2)));
-	if (print.issuedAt === undefined) return null;
-	const issued = Date.parse(print.issuedAt);
-	if (Number.isNaN(issued)) throw new Error(`issuedAt ${print.issuedAt} is not an instant`);
+	const issuedAt = print.correction?.issuedAt;
+	if (issuedAt === undefined) return null;
+	const issued = Date.parse(issuedAt);
+	if (Number.isNaN(issued)) throw new Error(`correction.issuedAt ${issuedAt} is not an instant`);
 	return new Date(issued + CORRECTION_STAMP_HOURS * 3_600_000);
 }
 

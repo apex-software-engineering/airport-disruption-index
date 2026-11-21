@@ -159,7 +159,7 @@ export async function verifyAttested(
 		const cutoff = publicationCutoff(served);
 		if (cutoff === null) {
 			throw new CannotVerify(
-				`${pin.name} attests a correction; its cutoff is ${CORRECTION_STAMP_HOURS} hours after the print's issuedAt, which it does not record (#10)`,
+				`${pin.name} attests a correction; its cutoff is ${CORRECTION_STAMP_HOURS} hours after the print's correction.issuedAt, which it does not record (#10)`,
 			);
 		}
 		const proofPath = `${directory}/${pin.name}.ots`;

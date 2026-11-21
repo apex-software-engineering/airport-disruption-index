@@ -134,24 +134,34 @@ describe('pinProblems', () => {
 
 describe('publicationCutoff', () => {
 	it('is the start of D+2 in UTC for revision 1', () => {
-		expect(publicationCutoff({ date: '2026-11-20', revision: 1 })?.toISOString()).toBe(
-			'2026-11-22T00:00:00.000Z',
-		);
-		expect(publicationCutoff({ date: '2026-12-31', revision: 1 })?.toISOString()).toBe(
-			'2027-01-02T00:00:00.000Z',
-		);
+		expect(
+			publicationCutoff({ date: '2026-11-20', revision: 1, correction: null })?.toISOString(),
+		).toBe('2026-11-22T00:00:00.000Z');
+		expect(
+			publicationCutoff({ date: '2026-12-31', revision: 1, correction: null })?.toISOString(),
+		).toBe('2027-01-02T00:00:00.000Z');
 	});
 
-	it('is 48 hours after issuedAt for a correction', () => {
+	const correction = { supersedesPrintHash: 'a'.repeat(64), reason: 'test' };
+
+	it('is 48 hours after correction.issuedAt for a correction', () => {
 		expect(
-			publicationCutoff({ date: '2026-11-20', revision: 2, issuedAt: '2026-11-25T10:00:00Z' }),
+			publicationCutoff({
+				date: '2026-11-20',
+				revision: 2,
+				correction: { ...correction, issuedAt: '2026-11-25T10:00:00Z' },
+			}),
 		).toEqual(new Date('2026-11-27T10:00:00Z'));
 	});
 
 	it('is unknown for a correction without issuedAt, and rejects a malformed one', () => {
-		expect(publicationCutoff({ date: '2026-11-20', revision: 2 })).toBeNull();
+		expect(publicationCutoff({ date: '2026-11-20', revision: 2, correction })).toBeNull();
 		expect(() =>
-			publicationCutoff({ date: '2026-11-20', revision: 2, issuedAt: 'yesterday' }),
+			publicationCutoff({
+				date: '2026-11-20',
+				revision: 2,
+				correction: { ...correction, issuedAt: 'yesterday' },
+			}),
 		).toThrow(/not an instant/);
 	});
 });
@@ -165,7 +175,7 @@ describe('checkTimestamp', () => {
 		time: new Date('2015-05-28T15:41:18Z'),
 	};
 	const cutoff = (date: string) => {
-		const at = publicationCutoff({ date, revision: 1 });
+		const at = publicationCutoff({ date, revision: 1, correction: null });
 		if (at === null) throw new Error('revision 1 always has a cutoff');
 		return at;
 	};
