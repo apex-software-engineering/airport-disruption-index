@@ -42,13 +42,22 @@ that reference the index, before it is published.
 
 **TODO(Alex):** confirm this commitment.
 
-## Methodology changes
+## Methodology changes and source-adapter fixes
 
-Methodology changes are versioned (see [versioning](methodology.md#versioning)) and announced on
-this site before they take effect. A change never applies to a day that has already been printed.
+A **methodology change** is anything that changes what the index measures or how: a parameter, the
+panel, or how events become airport-minutes. Methodology changes are versioned (see
+[versioning](methodology.md#versioning)) and announced on the incident log at least [NOTICE] before
+they take effect. A change never applies to a day that has already been printed.
 
-**TODO(Alex):** minimum notice period for a methodology change (for example 30 days), and where it
-is announced.
+A **source-adapter fix** reads the same FAA data from a new address or in a new shape, with the
+formula and parameters unchanged. It is not a methodology change and ships without that notice. It
+is announced on the incident log when it ships.
+
+Until the incident log is on this site, it is the repository's
+[`incident` issues](https://github.com/apex-software-engineering/airport-disruption-index/issues?q=label%3Aincident).
+
+**TODO(Alex):** set [NOTICE], the minimum notice period for a methodology change (decided together
+with the adapter-fix repair target).
 
 ## Contact
 
