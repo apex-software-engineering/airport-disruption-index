@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { expect, test, type Page } from '@playwright/test';
 
-import { cloneCommand, site } from '@/lib/site';
+import { cloneCommand, footerLinks, site } from '@/lib/site';
 
 const PAGES = [
 	{ path: '/', name: 'home', heading: site.name },
@@ -10,6 +10,9 @@ const PAGES = [
 	{ path: '/docs/api', name: 'api', heading: 'API' },
 	{ path: '/sources', name: 'sources', heading: 'Sources' },
 	{ path: '/status', name: 'status', heading: 'Status' },
+	{ path: '/terms', name: 'terms', heading: 'Terms of use' },
+	{ path: '/disclaimer', name: 'disclaimer', heading: 'Disclaimer' },
+	{ path: '/independence', name: 'independence', heading: 'Independence policy' },
 ] as const;
 
 /** Set to a directory to keep a full-page screenshot of every page (for PR evidence). */
@@ -21,7 +24,11 @@ for (const page of PAGES) {
 		expect(response?.status(), `${page.path} status`).toBe(200);
 		await expect(browser.getByRole('heading', { level: 1 })).toHaveText(page.heading);
 		await expect(browser.locator('footer')).toContainText(site.footer);
-		await expect(browser.locator('footer').getByRole('link')).toHaveAttribute('href', site.repoUrl);
+		const links = browser.locator('footer').getByRole('link');
+		await expect(links).toHaveText(footerLinks.map((link) => link.label));
+		for (const [index, link] of footerLinks.entries()) {
+			await expect(links.nth(index)).toHaveAttribute('href', link.href);
+		}
 		if (screenshotDir) {
 			await browser.screenshot({
 				path: path.join(screenshotDir, `${page.name}.png`),
@@ -82,3 +89,19 @@ test('/ shows the running value with its chart, or says plainly there is none', 
 		await expect(page.getByRole('img', { name: /Airport-minutes per UTC hour/ })).toBeVisible();
 	}
 });
+
+const LEGAL_STATEMENTS = [
+	{ path: '/terms', texts: ['Apache License 2.0', 'CC BY 4.0', site.dataAttribution, '"as is"'] },
+	{
+		path: '/disclaimer',
+		texts: ['not affiliated with', 'Not for flight planning', 'Not investment advice'],
+	},
+	{ path: '/independence', texts: ['Apex Software Engineering LLC', 'Trading restrictions'] },
+] as const;
+
+for (const { path: route, texts } of LEGAL_STATEMENTS) {
+	test(`${route} states what an exchange checks for`, async ({ page }) => {
+		await page.goto(route);
+		for (const text of texts) await expect(page.locator('article')).toContainText(text);
+	});
+}
