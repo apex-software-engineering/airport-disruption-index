@@ -6,7 +6,7 @@
 import type { z } from 'zod';
 
 import { sha256Hex } from '@/lib/index/json';
-import { SLOT_MINUTES } from '@/lib/index/methodology';
+import { isUnder, methodologyFor, SLOT_MINUTES } from '@/lib/index/methodology';
 import { buildPrint, historyEntryOf } from '@/lib/index/print';
 import { receiptHashMatches, summarizeReceipt } from '@/lib/index/round';
 import {
@@ -366,6 +366,64 @@ export async function settleDay(store: ObjectStore, date: UtcDate): Promise<Sett
 	}
 	await updateHistory(store, print);
 	return { status: 'settled', print };
+}
+
+/** What the operator states when issuing a correction (scripts/correct.ts). */
+export type CorrectionRequest = {
+	supersedesPrintHash: string;
+	reason: string;
+	/** Required after the corrections window, refused inside it (see the print schema). */
+	windowOverride: string | null;
+};
+
+/**
+ * Issues a correction: rebuilds the day from its stored receipts and writes it as the next
+ * revision, issued at `now`. Refuses unless `supersedesPrintHash` is the day's latest revision,
+ * and refuses a day whose print records a methodology other than the one the rebuild uses.
+ * Earlier revisions are never touched; the history index then cites the new revision.
+ */
+export async function correctDay(
+	store: ObjectStore,
+	date: UtcDate,
+	request: CorrectionRequest,
+	now: Date,
+): Promise<DailyPrint> {
+	const revisions = await readPrints(store, date);
+	const latest = revisions.at(-1);
+	if (latest === undefined)
+		throw new Error(`${date} has not settled, so it has nothing to correct`);
+	if (latest.printHash !== request.supersedesPrintHash) {
+		const superseded = revisions.find((p) => p.printHash === request.supersedesPrintHash);
+		throw new Error(
+			superseded === undefined
+				? `${request.supersedesPrintHash} is not a print of ${date}`
+				: `${request.supersedesPrintHash} is r${superseded.revision}, but the latest revision of ${date} is r${latest.revision} (${latest.printHash})`,
+		);
+	}
+	if (!isUnder(methodologyFor(date), latest)) {
+		throw new Error(
+			`r${latest.revision} records methodology ${latest.methodologyVersion} (${latest.parameterHash}), not the one in effect on ${date}; a correction never changes a day's methodology`,
+		);
+	}
+	const receipts = await readDayReceipts(store, date);
+	await syncDayIndex(store, date, { kind: 'settle', receipts });
+	const revision = latest.revision + 1;
+	const print = buildPrint(date, receipts.map(summarizeReceipt), {
+		revision,
+		correction: { ...request, issuedAt: now.toISOString() },
+	});
+	const written = await store.write(keys.print(date, revision), encode(print), JSON_TYPE, {
+		kind: 'if-absent',
+	});
+	if (written === 'conflict')
+		throw new Error(`${date} r${revision} was written by someone else; nothing was changed`);
+	await updateHistory(store, print).catch((error: unknown) => {
+		// settleDay points the history at the latest revision, so settling the day again repairs it.
+		throw new Error(
+			`${date} r${revision} is written, but the history index still cites the previous revision (${String(error)}); settle ${date} again to repair it`,
+		);
+	});
+	return print;
 }
 
 const EMPTY_HISTORY: HistoryIndex = { schema: 'adi.history/1', days: [] };

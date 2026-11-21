@@ -12,6 +12,7 @@
 		"format": "prettier --write .",
 		"format:check": "prettier --check .",
 		"reproduce": "tsx scripts/reproduce.ts",
+		"correct": "tsx scripts/correct.ts",
 		"test:smoke": "playwright test -c playwright.smoke.config.ts"
 	},
 	"engines": {

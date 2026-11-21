@@ -4,14 +4,19 @@
  */
 import { aggregateDay, settledStatus, type DayAggregate } from './day';
 import { hashJson } from './json';
-import { printSchema, type DailyPrint, type HistoryEntry, type RoundSummary } from './schemas';
+import {
+	printSchema,
+	type Correction,
+	type DailyPrint,
+	type HistoryEntry,
+	type RoundSummary,
+} from './schemas';
 import { dayStartMs, settlementCutoff, type UtcDate } from './time';
 
 export const PRINT_SCHEMA = 'adi.daily-print/1' as const;
 
 /** Revision 1 is the settlement. Any later revision is a correction and must say why. */
-export type PrintRevision =
-	{ revision: 1 } | { revision: number; supersedesPrintHash: string; reason: string };
+export type PrintRevision = { revision: 1 } | { revision: number; correction: Correction };
 
 export function buildPrint(
 	date: UtcDate,
@@ -30,10 +35,7 @@ export function buildPrint(
 		schema: PRINT_SCHEMA,
 		date,
 		revision: revision.revision,
-		correction:
-			'reason' in revision
-				? { supersedesPrintHash: revision.supersedesPrintHash, reason: revision.reason }
-				: null,
+		correction: 'correction' in revision ? revision.correction : null,
 		methodologyVersion: parameters.version,
 		parameterHash,
 		settlesAt: settlementCutoff(date).toISOString(),
@@ -56,7 +58,7 @@ export function buildPrint(
 				status: round.observation.status,
 			})),
 	};
-	// The schema owns the print's invariants (revision 1 ⇔ no correction, a stated reason).
+	// The schema owns the print's invariants (revision 1 ⇔ no correction, a stated reason, timing).
 	return printSchema.parse({ ...unsigned, printHash: hashJson(unsigned) });
 }
 

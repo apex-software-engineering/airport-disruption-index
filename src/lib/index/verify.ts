@@ -56,7 +56,9 @@ export function verifyPrint(print: DailyPrint, receipts: readonly RoundReceipt[]
 		problems.push(`print lists ${print.rounds.length} rounds, ${receipts.length} supplied`);
 	}
 	const revision: PrintRevision =
-		print.correction === null ? { revision: 1 } : { revision: print.revision, ...print.correction };
+		print.correction === null
+			? { revision: 1 }
+			: { revision: print.revision, correction: print.correction };
 	return [
 		...problems,
 		...compareRebuilt(print, () =>

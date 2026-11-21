@@ -13,10 +13,34 @@ git clone https://github.com/apex-software-engineering/airport-disruption-index 
 
 ## Incidents
 
-Incidents, corrections and methodology announcements are published as
-[`incident` issues](https://github.com/apex-software-engineering/airport-disruption-index/issues?q=label%3Aincident)
-until the site's `/incidents` page ships. See the
-[settlement rules](docs/methodology.md#settlement-rules).
+Incidents, corrections and methodology announcements are published at
+[airports.apexsofteng.com/incidents](https://airports.apexsofteng.com/incidents): the operator's log
+in [docs/incidents.md](docs/incidents.md), then every correction print. Each is discussed in an
+[`incident` issue](https://github.com/apex-software-engineering/airport-disruption-index/issues?q=label%3Aincident).
+See the [settlement rules](docs/methodology.md#settlement-rules).
+
+## Corrections
+
+Only the operator issues a correction print (settlement rule 8). The command rebuilds the day from
+its stored receipts and writes the next revision. It refuses a hash that is not the day's latest
+revision, and after D+2 00:30Z it refuses unless `--override-window` gives a justification, which
+the print records. Earlier revisions are never touched.
+
+The command writes to the store the environment names. Pull the Vercel environment to a file outside
+the repo and load it without printing it (the file sets `BLOB_READ_WRITE_TOKEN` and `VERCEL_ENV`,
+which picks the `prod` or `preview` namespace). Then add the incident to `docs/incidents.md` and
+check the new revision:
+
+```sh
+vercel env pull --yes --environment=production /tmp/adi-prod.env
+set -a && . /tmp/adi-prod.env && set +a
+npm run correct -- 2026-11-20 --supersedes <printHash of the latest revision> --reason "<what was wrong>"
+rm /tmp/adi-prod.env
+npm run reproduce -- 2026-11-20
+```
+
+The command prints the store it writes to, the new revision and its `printHash`. Rehearse on a
+preview first: `--environment=preview` writes only to the `preview` namespace.
 
 ## Development
 
