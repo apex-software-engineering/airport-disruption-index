@@ -16,6 +16,19 @@ import { collectRound } from './collector';
 import { FileStore } from './storage';
 import { correctionsView, dayView } from './views';
 
+/** Runs inside every `printBody` call, the aggregation step of a print. */
+const aggregation = vi.hoisted(() => ({ during: (): void => undefined }));
+vi.mock('@/lib/index/print', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('@/lib/index/print')>();
+	return {
+		...actual,
+		printBody: (...args: Parameters<typeof actual.printBody>) => {
+			aggregation.during();
+			return actual.printBody(...args);
+		},
+	};
+});
+
 let root: string;
 let store: FileStore;
 
@@ -25,6 +38,7 @@ beforeEach(async () => {
 	vi.stubEnv('ADI_DATA_DIR', root);
 });
 afterEach(async () => {
+	aggregation.during = () => undefined;
 	vi.unstubAllEnvs();
 	await rm(root, { recursive: true, force: true });
 });
@@ -168,6 +182,18 @@ describe('correctDay', () => {
 		).rejects.toThrow(/corrections window closed/);
 		expect(await readPrints(store, DAY)).toEqual([original]);
 	});
+
+	it('reads the issue time after aggregation, so a window that closes meanwhile refuses', async () => {
+		const original = await settled();
+		let now = new Date('2026-11-19T00:29:59Z');
+		aggregation.during = () => {
+			now = new Date('2026-11-19T00:30:01Z');
+		};
+		await expect(correctDay(store, DAY, request(original), () => now)).rejects.toThrow(
+			/corrections window closed/,
+		);
+		expect(await readPrints(store, DAY)).toEqual([original]);
+	});
 });
 
 describe('correctionsView', () => {
@@ -192,6 +218,27 @@ describe('correctionsView', () => {
 				url: `/api/v1/days/${DAY}`,
 			},
 		]);
+	});
+
+	it('reads stored corrections at most READ_CONCURRENCY (16) at a time', async () => {
+		let latest = await settled();
+		for (let i = 0; i < 20; i += 1)
+			latest = await correctDay(store, DAY, request(latest), () => IN_WINDOW);
+		let inFlight = 0;
+		let peak = 0;
+		class CountingStore extends FileStore {
+			override async read(key: string) {
+				inFlight += 1;
+				peak = Math.max(peak, inFlight);
+				try {
+					return await super.read(key);
+				} finally {
+					inFlight -= 1;
+				}
+			}
+		}
+		expect(await correctionsView(new CountingStore(root))).toHaveLength(20);
+		expect(peak).toBe(16);
 	});
 
 	it('lists a correction whose history update was lost', async () => {

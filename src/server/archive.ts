@@ -7,7 +7,7 @@ import type { z } from 'zod';
 
 import { sha256Hex } from '@/lib/index/json';
 import { isUnder, methodologyFor, SLOT_MINUTES } from '@/lib/index/methodology';
-import { buildPrint, historyEntryOf } from '@/lib/index/print';
+import { buildPrint, finalizePrint, historyEntryOf, printBody } from '@/lib/index/print';
 import { receiptHashMatches, summarizeReceipt } from '@/lib/index/round';
 import {
 	dayIndexSchema,
@@ -293,30 +293,38 @@ async function listReceiptIds(store: ObjectStore, date: UtcDate): Promise<RoundI
  * `unreadable: 'skip'` leaves out a receipt that cannot be read, decoded or verified; 'throw'
  * fails on it.
  */
+/** `read` applied to every item, READ_CONCURRENCY at a time, results in item order. */
+async function readInBatches<T, R>(
+	items: readonly T[],
+	read: (item: T) => Promise<R>,
+): Promise<R[]> {
+	const results: R[] = [];
+	for (let i = 0; i < items.length; i += READ_CONCURRENCY) {
+		results.push(...(await Promise.all(items.slice(i, i + READ_CONCURRENCY).map(read))));
+	}
+	return results;
+}
+
 async function readReceipts(
 	store: ObjectStore,
 	date: UtcDate,
 	ids: readonly RoundId[],
 	unreadable: 'throw' | 'skip',
 ): Promise<RoundReceipt[]> {
-	const receipts: RoundReceipt[] = [];
-	for (let i = 0; i < ids.length; i += READ_CONCURRENCY) {
-		const batch = ids.slice(i, i + READ_CONCURRENCY).map(async (id) => {
-			const key = keys.receipt(date, id);
-			try {
-				const receipt = await readJson(store, receiptSchema, key);
-				if (receipt === null) throw new Error(`receipt ${key} is listed but could not be read`);
-				if (!receiptHashMatches(receipt))
-					throw new Error(`receipt ${key} does not match its receiptHash`);
-				return receipt;
-			} catch (error) {
-				if (unreadable === 'skip') return null;
-				throw error;
-			}
-		});
-		for (const receipt of await Promise.all(batch)) if (receipt !== null) receipts.push(receipt);
-	}
-	return receipts;
+	const receipts = await readInBatches(ids, async (id) => {
+		const key = keys.receipt(date, id);
+		try {
+			const receipt = await readJson(store, receiptSchema, key);
+			if (receipt === null) throw new Error(`receipt ${key} is listed but could not be read`);
+			if (!receiptHashMatches(receipt))
+				throw new Error(`receipt ${key} does not match its receiptHash`);
+			return receipt;
+		} catch (error) {
+			if (unreadable === 'skip') return null;
+			throw error;
+		}
+	});
+	return receipts.filter((receipt) => receipt !== null);
 }
 
 /** Every receipt stored for `date`, each verified against its own hash. */
@@ -344,15 +352,13 @@ export async function readCorrectionPrints(store: ObjectStore): Promise<DailyPri
 	const listed = (await store.list('prints/')).filter(
 		(key) => Number(PRINT_KEY.exec(key)?.[2]) > 1,
 	);
-	return Promise.all(
-		listed.map(async (key) => {
-			const print = await readJson(store, printSchema, key);
-			if (print === null) throw new Error(`${key} is listed but could not be read`);
-			const expected = keys.print(print.date, print.revision);
-			if (key !== expected) throw new Error(`${key} holds the print for ${expected}`);
-			return print;
-		}),
-	);
+	return readInBatches(listed, async (key) => {
+		const print = await readJson(store, printSchema, key);
+		if (print === null) throw new Error(`${key} is listed but could not be read`);
+		const expected = keys.print(print.date, print.revision);
+		if (key !== expected) throw new Error(`${key} holds the print for ${expected}`);
+		return print;
+	});
 }
 
 export type SettleOutcome = { status: 'settled' | 'already_settled'; print: DailyPrint };
@@ -430,9 +436,10 @@ export async function correctDay(
 	const receipts = await readDayReceipts(store, date);
 	await syncDayIndex(store, date, { kind: 'settle', receipts });
 	const revision = latest.revision + 1;
-	const summaries = receipts.map(summarizeReceipt);
-	// The print schema checks issuedAt against the window: read the clock last, then write.
-	const print = buildPrint(date, summaries, {
+	const body = printBody(date, receipts.map(summarizeReceipt));
+	// Finalizing checks issuedAt against the window, so the clock is read after aggregation,
+	// immediately before the conditional write.
+	const print = finalizePrint(body, {
 		revision,
 		correction: { ...request, issuedAt: clock().toISOString() },
 	});

@@ -18,11 +18,19 @@ export const PRINT_SCHEMA = 'adi.daily-print/1' as const;
 /** Revision 1 is the settlement. Any later revision is a correction and must say why. */
 export type PrintRevision = { revision: 1 } | { revision: number; correction: Correction };
 
+/** Everything a print states except its revision: the day computed from its rounds. */
+export type PrintBody = Omit<DailyPrint, 'revision' | 'correction' | 'printHash'>;
+
 export function buildPrint(
 	date: UtcDate,
 	rounds: readonly RoundSummary[],
 	revision: PrintRevision,
 ): DailyPrint {
+	return finalizePrint(printBody(date, rounds), revision);
+}
+
+/** The aggregation step of a print: everything but its revision, computed from the rounds. */
+export function printBody(date: UtcDate, rounds: readonly RoundSummary[]): PrintBody {
 	const dayEnd = new Date(dayStartMs(date) + 86_400_000);
 	const day = aggregateDay(date, rounds, dayEnd);
 	// A day settles under one methodology: any round under another suspends it, whatever the coverage.
@@ -31,11 +39,9 @@ export function buildPrint(
 		day.foreignMethodologies.length > 0
 			? 'suspended'
 			: settledStatus(day.coverage.validRounds, parameters.coverage);
-	const unsigned: Omit<DailyPrint, 'printHash'> = {
+	return {
 		schema: PRINT_SCHEMA,
 		date,
-		revision: revision.revision,
-		correction: 'correction' in revision ? revision.correction : null,
 		methodologyVersion: parameters.version,
 		parameterHash,
 		settlesAt: settlementCutoff(date).toISOString(),
@@ -57,6 +63,18 @@ export function buildPrint(
 				receiptHash: round.receiptHash,
 				status: round.observation.status,
 			})),
+	};
+}
+
+/** Adds the revision to a computed body, hashes it and validates it against the print schema. */
+export function finalizePrint(body: PrintBody, revision: PrintRevision): DailyPrint {
+	const { schema, date, ...rest } = body;
+	const unsigned: Omit<DailyPrint, 'printHash'> = {
+		schema,
+		date,
+		revision: revision.revision,
+		correction: 'correction' in revision ? revision.correction : null,
+		...rest,
 	};
 	// The schema owns the print's invariants (revision 1 ⇔ no correction, a stated reason, timing).
 	return printSchema.parse({ ...unsigned, printHash: hashJson(unsigned) });
