@@ -13,6 +13,7 @@ describe('docs rendering', () => {
 
 	it('maps doc links to site routes and leaves other links alone', () => {
 		expect(siteHref('sources.md')).toBe('/sources');
+		expect(siteHref('independence.md')).toBe('/independence');
 		expect(siteHref('methodology.md#source')).toBe('/methodology#source');
 		expect(siteHref('https://aspm.faa.gov/x.html')).toBe('https://aspm.faa.gov/x.html');
 		expect(siteHref('#versioning')).toBe('#versioning');
