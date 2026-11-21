@@ -85,6 +85,18 @@ export function publicationDeadline(date: UtcDate): Date {
 	return new Date(dayStartMs(date) + DAY_MS + PUBLICATION_DEADLINE_MINUTES_AFTER_DAY_END * 60_000);
 }
 
+/** How long after the settlement cutoff a correction may be issued without an override. */
+const CORRECTION_WINDOW_MS = 24 * 3_600_000;
+
+/**
+ * Corrections to day D are issued by D+2 00:30Z: 24 hours after the settlement cutoff, which is
+ * the earliest the original print can have been published, so the window never runs longer than
+ * 24 hours after it. Computed from the day alone, so anyone can check a correction against it.
+ */
+export function correctionDeadline(date: UtcDate): Date {
+	return new Date(settlementCutoff(date).getTime() + CORRECTION_WINDOW_MS);
+}
+
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const UPDATE_TIME_PATTERN =

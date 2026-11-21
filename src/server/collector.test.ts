@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { collectedReceipt } from '@/test/receipts';
 import { feedFixture } from '@/test/fixtures';
-import { DAY, validRound } from '@/test/rounds';
+import { correctionOf, DAY, validRound } from '@/test/rounds';
 
 import { buildPrint } from '@/lib/index/print';
 
@@ -535,8 +535,7 @@ describe('settlement history', () => {
 		// A later correction print, written outside settleDay.
 		const corrected = buildPrint('2026-11-17', [], {
 			revision: 2,
-			supersedesPrintHash: first.print.printHash,
-			reason: 'test correction',
+			correction: correctionOf(first.print.printHash),
 		});
 		await store.write(
 			'prints/2026-11-17/r2.json',

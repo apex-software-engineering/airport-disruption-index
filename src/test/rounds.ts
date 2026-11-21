@@ -1,5 +1,5 @@
 import { methodologyFor } from '@/lib/index/methodology';
-import type { RoundSummary } from '@/lib/index/schemas';
+import type { Correction, RoundSummary } from '@/lib/index/schemas';
 import { slotStartOf, type UtcDate } from '@/lib/index/time';
 
 export const DAY = '2026-11-17';
@@ -60,4 +60,14 @@ export function validRange(
 	day: UtcDate = DAY,
 ): RoundSummary[] {
 	return Array.from({ length: to - from }, (_, i) => validRound(from + i, active, 3, day));
+}
+
+/** A correction of a `DAY` print, issued at DAY+1 12:00Z, inside the corrections window. */
+export function correctionOf(supersedesPrintHash: string, reason = 'test correction'): Correction {
+	return {
+		supersedesPrintHash,
+		reason,
+		issuedAt: '2026-11-18T12:00:00.000Z',
+		windowOverride: null,
+	};
 }

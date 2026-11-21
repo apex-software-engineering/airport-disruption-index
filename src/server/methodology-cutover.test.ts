@@ -9,15 +9,13 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { GET as getDay } from '@/app/api/v1/days/[date]/route';
-import { GET as getRaw } from '@/app/api/v1/rounds/[id]/raw/route';
-import { GET as getRound } from '@/app/api/v1/rounds/[id]/route';
 import { CURRENT_ADAPTER } from '@/lib/index/adapters';
 import { methodologyFor } from '@/lib/index/methodology';
 import { buildPrint } from '@/lib/index/print';
 import { buildReceipt, type FetchOutcome } from '@/lib/index/round';
 import { METHODOLOGY_V1 } from '@/lib/index/releases';
-import { reproduce, type Get } from '@/lib/reproduce';
+import { reproduce } from '@/lib/reproduce';
+import { routeGet } from '@/test/api';
 import { feedFixtureText } from '@/test/fixtures';
 import { validRange } from '@/test/rounds';
 
@@ -165,17 +163,3 @@ describe('a day with rounds from two panel versions', () => {
 		]);
 	});
 });
-
-/** Serves the public API from the route handlers over the test store. */
-const routeGet: Get = async (url) => {
-	const { pathname } = new URL(url);
-	const request = new Request(url);
-	const day = /^\/api\/v1\/days\/([^/]+)$/.exec(pathname);
-	if (day?.[1] !== undefined) return getDay(request, { params: Promise.resolve({ date: day[1] }) });
-	const raw = /^\/api\/v1\/rounds\/([^/]+)\/raw$/.exec(pathname);
-	if (raw?.[1] !== undefined) return getRaw(request, { params: Promise.resolve({ id: raw[1] }) });
-	const round = /^\/api\/v1\/rounds\/([^/]+)$/.exec(pathname);
-	if (round?.[1] !== undefined)
-		return getRound(request, { params: Promise.resolve({ id: round[1] }) });
-	return new Response('not found', { status: 404 });
-};

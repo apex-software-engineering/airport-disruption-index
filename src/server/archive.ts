@@ -6,8 +6,8 @@
 import type { z } from 'zod';
 
 import { sha256Hex } from '@/lib/index/json';
-import { SLOT_MINUTES } from '@/lib/index/methodology';
-import { buildPrint, historyEntryOf } from '@/lib/index/print';
+import { isUnder, methodologyFor, SLOT_MINUTES } from '@/lib/index/methodology';
+import { buildPrint, finalizePrint, historyEntryOf, printBody } from '@/lib/index/print';
 import { receiptHashMatches, summarizeReceipt } from '@/lib/index/round';
 import {
 	dayIndexSchema,
@@ -293,30 +293,38 @@ async function listReceiptIds(store: ObjectStore, date: UtcDate): Promise<RoundI
  * `unreadable: 'skip'` leaves out a receipt that cannot be read, decoded or verified; 'throw'
  * fails on it.
  */
+/** `read` applied to every item, READ_CONCURRENCY at a time, results in item order. */
+async function readInBatches<T, R>(
+	items: readonly T[],
+	read: (item: T) => Promise<R>,
+): Promise<R[]> {
+	const results: R[] = [];
+	for (let i = 0; i < items.length; i += READ_CONCURRENCY) {
+		results.push(...(await Promise.all(items.slice(i, i + READ_CONCURRENCY).map(read))));
+	}
+	return results;
+}
+
 async function readReceipts(
 	store: ObjectStore,
 	date: UtcDate,
 	ids: readonly RoundId[],
 	unreadable: 'throw' | 'skip',
 ): Promise<RoundReceipt[]> {
-	const receipts: RoundReceipt[] = [];
-	for (let i = 0; i < ids.length; i += READ_CONCURRENCY) {
-		const batch = ids.slice(i, i + READ_CONCURRENCY).map(async (id) => {
-			const key = keys.receipt(date, id);
-			try {
-				const receipt = await readJson(store, receiptSchema, key);
-				if (receipt === null) throw new Error(`receipt ${key} is listed but could not be read`);
-				if (!receiptHashMatches(receipt))
-					throw new Error(`receipt ${key} does not match its receiptHash`);
-				return receipt;
-			} catch (error) {
-				if (unreadable === 'skip') return null;
-				throw error;
-			}
-		});
-		for (const receipt of await Promise.all(batch)) if (receipt !== null) receipts.push(receipt);
-	}
-	return receipts;
+	const receipts = await readInBatches(ids, async (id) => {
+		const key = keys.receipt(date, id);
+		try {
+			const receipt = await readJson(store, receiptSchema, key);
+			if (receipt === null) throw new Error(`receipt ${key} is listed but could not be read`);
+			if (!receiptHashMatches(receipt))
+				throw new Error(`receipt ${key} does not match its receiptHash`);
+			return receipt;
+		} catch (error) {
+			if (unreadable === 'skip') return null;
+			throw error;
+		}
+	});
+	return receipts.filter((receipt) => receipt !== null);
 }
 
 /** Every receipt stored for `date`, each verified against its own hash. */
@@ -332,6 +340,25 @@ export async function readPrints(store: ObjectStore, date: UtcDate): Promise<Dai
 		if (print === null) return prints;
 		prints.push(print);
 	}
+}
+
+const PRINT_KEY = /^prints\/(\d{4}-\d{2}-\d{2})\/r(\d+)\.json$/;
+
+/**
+ * Every stored correction print (revision 2 or later), found by listing the print keys. It does
+ * not rely on the history index, which can lag a correction whose history update failed.
+ */
+export async function readCorrectionPrints(store: ObjectStore): Promise<DailyPrint[]> {
+	const listed = (await store.list('prints/')).filter(
+		(key) => Number(PRINT_KEY.exec(key)?.[2]) > 1,
+	);
+	return readInBatches(listed, async (key) => {
+		const print = await readJson(store, printSchema, key);
+		if (print === null) throw new Error(`${key} is listed but could not be read`);
+		const expected = keys.print(print.date, print.revision);
+		if (key !== expected) throw new Error(`${key} holds the print for ${expected}`);
+		return print;
+	});
 }
 
 export type SettleOutcome = { status: 'settled' | 'already_settled'; print: DailyPrint };
@@ -366,6 +393,70 @@ export async function settleDay(store: ObjectStore, date: UtcDate): Promise<Sett
 	}
 	await updateHistory(store, print);
 	return { status: 'settled', print };
+}
+
+/** What the operator states when issuing a correction (scripts/correct.ts). */
+export type CorrectionRequest = {
+	supersedesPrintHash: string;
+	reason: string;
+	/** Required after the corrections window, refused inside it (see the print schema). */
+	windowOverride: string | null;
+};
+
+/**
+ * Issues a correction: rebuilds the day from its stored receipts and writes it as the next
+ * revision. `clock()` is read after aggregation, just before the write, so a rebuild that runs
+ * past the corrections window is judged at its real issue time.
+ *
+ * Refuses unless `supersedesPrintHash` is the day's latest revision, and refuses a day whose
+ * print records a methodology other than the one the rebuild uses. Earlier revisions are never
+ * touched; the history index then cites the new revision.
+ */
+export async function correctDay(
+	store: ObjectStore,
+	date: UtcDate,
+	request: CorrectionRequest,
+	clock: () => Date,
+): Promise<DailyPrint> {
+	const revisions = await readPrints(store, date);
+	const latest = revisions.at(-1);
+	if (latest === undefined)
+		throw new Error(`${date} has not settled, so it has nothing to correct`);
+	if (latest.printHash !== request.supersedesPrintHash) {
+		const superseded = revisions.find((p) => p.printHash === request.supersedesPrintHash);
+		throw new Error(
+			superseded === undefined
+				? `${request.supersedesPrintHash} is not a print of ${date}`
+				: `${request.supersedesPrintHash} is r${superseded.revision}, but the latest revision of ${date} is r${latest.revision} (${latest.printHash})`,
+		);
+	}
+	if (!isUnder(methodologyFor(date), latest)) {
+		throw new Error(
+			`r${latest.revision} records methodology ${latest.methodologyVersion} (${latest.parameterHash}), not the one in effect on ${date}; a correction never changes a day's methodology`,
+		);
+	}
+	const receipts = await readDayReceipts(store, date);
+	await syncDayIndex(store, date, { kind: 'settle', receipts });
+	const revision = latest.revision + 1;
+	const body = printBody(date, receipts.map(summarizeReceipt));
+	// Finalizing checks issuedAt against the window, so the clock is read after aggregation,
+	// immediately before the conditional write.
+	const print = finalizePrint(body, {
+		revision,
+		correction: { ...request, issuedAt: clock().toISOString() },
+	});
+	const written = await store.write(keys.print(date, revision), encode(print), JSON_TYPE, {
+		kind: 'if-absent',
+	});
+	if (written === 'conflict')
+		throw new Error(`${date} r${revision} was written by someone else; nothing was changed`);
+	await updateHistory(store, print).catch((error: unknown) => {
+		// settleDay points the history at the latest revision, so settling the day again repairs it.
+		throw new Error(
+			`${date} r${revision} is written, but the history index still cites the previous revision (${String(error)}); settle ${date} again to repair it`,
+		);
+	});
+	return print;
 }
 
 const EMPTY_HISTORY: HistoryIndex = { schema: 'adi.history/1', days: [] };

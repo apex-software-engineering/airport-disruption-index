@@ -6,7 +6,7 @@ import { z } from 'zod';
 
 import { adapterOf } from './adapters';
 import { methodologyOf } from './methodology';
-import { parseRoundId, parseUtcDate } from './time';
+import { correctionDeadline, parseRoundId, parseUtcDate } from './time';
 
 const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
 const instant = z.iso.datetime();
@@ -224,17 +224,51 @@ export type Coverage = z.infer<typeof coverageSchema>;
 export const settledStatusSchema = z.enum(['final', 'degraded', 'suspended']);
 export type SettledStatus = z.infer<typeof settledStatusSchema>;
 
+const statedText = (what: string) => z.string().regex(/\S/, what);
+
+/** Why a revision supersedes another, and when the operator issued it (correctDay in archive.ts). */
+export const correctionSchema = z.object({
+	supersedesPrintHash: hex64,
+	reason: statedText('a correction states its reason'),
+	/** When the operator issued this revision. Attestation deadlines count from it. */
+	issuedAt: instant,
+	/** Why it was issued after the corrections window closed; null when issued inside it. */
+	windowOverride: statedText('a window override states its justification').nullable(),
+});
+export type Correction = z.infer<typeof correctionSchema>;
+
+/** A correction is issued after its day settles, and after the window only with a justification. */
+function checkCorrectionTiming(
+	print: { date: string; settlesAt: string; correction: Correction | null },
+	ctx: z.RefinementCtx,
+): void {
+	const { correction } = print;
+	if (correction === null) return;
+	const issuedAt = new Date(correction.issuedAt);
+	if (issuedAt < new Date(print.settlesAt)) {
+		ctx.addIssue({
+			code: 'custom',
+			message: `issued at ${correction.issuedAt}, before the day settled at ${print.settlesAt}`,
+			path: ['correction', 'issuedAt'],
+		});
+	}
+	const deadline = correctionDeadline(print.date);
+	if (issuedAt >= deadline !== (correction.windowOverride !== null)) {
+		ctx.addIssue({
+			code: 'custom',
+			message: `the corrections window closed at ${deadline.toISOString()}: a correction issued after it records a windowOverride justification, and one issued before it records none`,
+			path: ['correction', 'windowOverride'],
+		});
+	}
+}
+
 export const printSchema = z
 	.object({
 		schema: z.literal('adi.daily-print/1'),
 		date: utcDateSchema,
 		revision: z.number().int().min(1),
-		correction: z
-			.object({
-				supersedesPrintHash: hex64,
-				reason: z.string().regex(/\S/, 'a correction states its reason'),
-			})
-			.nullable(),
+		/** null on revision 1, which settlement issues; every later revision is a correction. */
+		correction: correctionSchema.nullable(),
 		methodologyVersion: z.string(),
 		parameterHash: hex64,
 		settlesAt: instant,
@@ -261,13 +295,14 @@ export const printSchema = z
 	.refine((print) => (print.revision === 1) === (print.correction === null), {
 		message: 'revision 1 has no correction; every later revision is a correction',
 	})
-	.superRefine((print, ctx) =>
+	.superRefine((print, ctx) => {
 		checkRecordedMethodology(
 			print,
 			print.result.status === 'suspended' ? null : print.result.airports,
 			ctx,
-		),
-	);
+		);
+		checkCorrectionTiming(print, ctx);
+	});
 export type DailyPrint = z.infer<typeof printSchema>;
 
 export const historyEntrySchema = z.object({

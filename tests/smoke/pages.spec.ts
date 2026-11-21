@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { expect, test, type Page } from '@playwright/test';
 
-import { cloneCommand, site } from '@/lib/site';
+import { cloneCommand, contactEmail, site } from '@/lib/site';
 
 const PAGES = [
 	{ path: '/', name: 'home', heading: site.name },
@@ -10,6 +10,8 @@ const PAGES = [
 	{ path: '/docs/api', name: 'api', heading: 'API' },
 	{ path: '/sources', name: 'sources', heading: 'Sources' },
 	{ path: '/status', name: 'status', heading: 'Status' },
+	{ path: '/incidents', name: 'incidents', heading: 'Incidents' },
+	{ path: '/contact', name: 'contact', heading: 'Contact' },
 ] as const;
 
 /** Set to a directory to keep a full-page screenshot of every page (for PR evidence). */
@@ -21,7 +23,16 @@ for (const page of PAGES) {
 		expect(response?.status(), `${page.path} status`).toBe(200);
 		await expect(browser.getByRole('heading', { level: 1 })).toHaveText(page.heading);
 		await expect(browser.locator('footer')).toContainText(site.footer);
-		await expect(browser.locator('footer').getByRole('link')).toHaveAttribute('href', site.repoUrl);
+		const footer = browser.locator('footer');
+		await expect(footer.getByRole('link', { name: 'Source code' })).toHaveAttribute(
+			'href',
+			site.repoUrl,
+		);
+		await expect(footer.getByRole('link', { name: 'Incidents' })).toHaveAttribute(
+			'href',
+			'/incidents',
+		);
+		await expect(footer.getByRole('link', { name: 'Contact' })).toHaveAttribute('href', '/contact');
 		if (screenshotDir) {
 			await browser.screenshot({
 				path: path.join(screenshotDir, `${page.name}.png`),
@@ -81,4 +92,32 @@ test('/ shows the running value with its chart, or says plainly there is none', 
 		await expect(runningValue.getByText(/^\d{1,3}(,\d{3})*$/)).toBeVisible();
 		await expect(page.getByRole('img', { name: /Airport-minutes per UTC hour/ })).toBeVisible();
 	}
+});
+
+test('/incidents shows the operator log, the correction prints and the discussion channel', async ({
+	page,
+}) => {
+	await page.goto('/incidents');
+	await expect(page.getByText('2026-11-20: partial day, collector started 04:30Z')).toBeVisible();
+	const corrections = page.locator('#correction-prints');
+	const listed = corrections.getByRole('listitem');
+	const none = corrections.getByText('No correction print has been issued.');
+	await expect(listed.first().or(none)).toBeVisible();
+	if (await listed.first().isVisible()) {
+		await expect(listed.first()).toContainText(/Revision\s*(?:[2-9]|[1-9]\d+)(?!\d)/);
+		await expect(listed.first().getByRole('link', { name: /\/api\/v1\/days\// })).toBeVisible();
+	}
+	await expect(
+		page.locator('#discussion').getByRole('link', { name: 'issue labelled incident' }),
+	).toHaveAttribute('href', site.incidentIssuesUrl);
+});
+
+test('/contact shows the published address, or says it is coming, never a placeholder', async ({
+	page,
+}) => {
+	await page.goto('/contact');
+	if (contactEmail === null)
+		await expect(page.getByText('Contact address coming soon.')).toBeVisible();
+	else await expect(page.getByRole('link', { name: contactEmail })).toBeVisible();
+	await expect(page.locator('main')).not.toContainText('TODO');
 });

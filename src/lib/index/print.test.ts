@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { DAY, invalidRound, validRange, validRound } from '@/test/rounds';
+import { correctionOf, DAY, invalidRound, validRange, validRound } from '@/test/rounds';
 
 import { buildPrint, historyEntryOf, printHashMatches } from './print';
-import { printSchema } from './schemas';
+import { printSchema, type Correction } from './schemas';
 
 const rounds = [
 	...validRange(0, 280, [{ airport: 'JFK', gs: true }]),
@@ -73,29 +73,32 @@ describe('buildPrint', () => {
 
 	it('requires a correction to supersede a print and give a reason', () => {
 		const original = buildPrint(DAY, rounds, { revision: 1 });
-		const correction = buildPrint(DAY, rounds.slice(0, 200), {
-			revision: 2,
-			supersedesPrintHash: original.printHash,
-			reason: 'receipts for 23:20Z onward were written by a misconfigured deployment',
-		});
-		expect(correction.correction).toEqual({
-			supersedesPrintHash: original.printHash,
-			reason: 'receipts for 23:20Z onward were written by a misconfigured deployment',
-		});
+		const correction = correctionOf(
+			original.printHash,
+			'receipts for 23:20Z onward were written by a misconfigured deployment',
+		);
+		expect(buildPrint(DAY, rounds.slice(0, 200), { revision: 2, correction }).correction).toEqual(
+			correction,
+		);
 		expect(() =>
-			buildPrint(DAY, rounds, {
-				revision: 1,
-				supersedesPrintHash: original.printHash,
-				reason: 'x',
-			}),
+			buildPrint(DAY, rounds, { revision: 2, correction: { ...correction, reason: ' ' } }),
 		).toThrow();
-		expect(() =>
-			buildPrint(DAY, rounds, {
-				revision: 2,
-				supersedesPrintHash: original.printHash,
-				reason: ' ',
-			}),
-		).toThrow();
+	});
+
+	it('keeps a correction inside its window unless the print records why', () => {
+		const original = buildPrint(DAY, rounds, { revision: 1 });
+		const at = (issuedAt: string, windowOverride: string | null = null) =>
+			printSchema.safeParse(
+				buildUnchecked({ ...correctionOf(original.printHash), issuedAt, windowOverride }),
+			).success;
+		// The window runs from the settlement cutoff (D+1 00:30Z) to D+2 00:30Z.
+		expect(at('2026-11-18T00:29:59.999Z')).toBe(false);
+		expect(at('2026-11-18T00:30:00.000Z')).toBe(true);
+		expect(at('2026-11-19T00:29:59.999Z')).toBe(true);
+		expect(at('2026-11-19T00:30:00.000Z')).toBe(false);
+		expect(at('2026-11-19T00:30:00.000Z', 'feed outage confirmed by the FAA on D+2')).toBe(true);
+		expect(at('2026-11-19T00:30:00.000Z', ' ')).toBe(false);
+		expect(at('2026-11-18T12:00:00.000Z', 'not needed inside the window')).toBe(false);
 	});
 
 	it('detects a tampered print', () => {
@@ -106,7 +109,14 @@ describe('buildPrint', () => {
 	it('rejects a stored print whose revision and correction disagree', () => {
 		const print = buildPrint(DAY, rounds, { revision: 1 });
 		expect(printSchema.safeParse({ ...print, revision: 2 }).success).toBe(false);
-		const correction = { supersedesPrintHash: print.printHash, reason: 'x' };
-		expect(printSchema.safeParse({ ...print, correction }).success).toBe(false);
+		expect(
+			printSchema.safeParse({ ...print, correction: correctionOf(print.printHash) }).success,
+		).toBe(false);
 	});
 });
+
+/** A revision-2 print with `correction`, as stored, without buildPrint's validation. */
+function buildUnchecked(correction: Correction) {
+	const valid = buildPrint(DAY, rounds, { revision: 2, correction: correctionOf('0'.repeat(64)) });
+	return { ...valid, correction };
+}

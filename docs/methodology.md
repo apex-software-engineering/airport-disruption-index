@@ -168,19 +168,21 @@ count.
   reconciles it against a listing of the day's receipts, and settlement rebuilds it. Settlement
   never reads it. No round can be added after the last slot's admission deadline (D+1 00:01Z),
   because a round's slot is set by its fetch time.
-- A **print** (`GET /api/v1/days/{date}`) contains: date, revision, correction (null on revision 1),
-  methodology version, parameter hash, `settlesAt`, coverage, the result (status, value, GS-only
-  value, per-airport minutes and hourly series, or for a suspended day only a reason), every round's
-  id, status and `receiptHash`, and `printHash`.
+- A **print** (`GET /api/v1/days/{date}`) contains: date, revision, correction (null on revision 1;
+  see [Revisions](#revisions)), methodology version, parameter hash, `settlesAt`, coverage, the
+  result (status, value, GS-only value, per-airport minutes and hourly series, or for a suspended
+  day only a reason), every round's id, status and `receiptHash`, and `printHash`.
 - `printHash` = sha256 of the canonical JSON of the print without `printHash`.
 
 ### Revisions
 
-None after settlement, except a **correction print**: revision 2 or later, naming the `printHash` it
-supersedes and a stated reason. The original stays published (`revisions` in the day response lists
-every revision; `print` is the latest). Corrections exist for operational faults such as a
-misconfigured deployment. They are never used to apply a later methodology to past days. Who may
-issue one, and until when, is under [Settlement rules](#settlement-rules).
+None after settlement, except a **correction print**: revision 2 or later. Its `correction` names
+the `printHash` it supersedes (`supersedesPrintHash`) and states the `reason`, records when the
+operator issued it (`issuedAt`), and holds `windowOverride`: null, or the written justification for
+a correction issued after its window (rule 8). The original stays published (`revisions` in the day
+response lists every revision; `print` is the latest). Corrections exist for operational faults such
+as a misconfigured deployment. They are never used to apply a later methodology to past days. Who
+may issue one, and until when, is under [Settlement rules](#settlement-rules).
 
 ## Settlement rules
 
@@ -240,19 +242,26 @@ this document disagree, the rule wins and the disagreement is a documentation bu
    [incident log](#incident-log). **A late print is still the print**: it is built by the same rules
    from the same receipts, and lateness alone never changes its status or value.
 8. **Corrections.** Only Apex Software Engineering LLC, the operator, issues a correction print
-   (revision 2 or later, see [Revisions](#revisions)). A correction may be published only within
-   **24 hours after the original print was published**; after that the print stands. Each correction
-   is announced on the [incident log](#incident-log) with the superseded `printHash` and the reason,
-   and both revisions stay published. The command that publishes a correction is not built yet
-   (issue #10); until it is, no correction can be published.
+   (revision 2 or later, see [Revisions](#revisions)), with `npm run correct` (see the
+   [README](https://github.com/apex-software-engineering/airport-disruption-index#corrections)). A
+   correction supersedes the day's latest revision and nothing else. It is rebuilt from the day's
+   stored receipts under the methodology the superseded print records, so it reproduces like
+   revision 1. A correction for day D may be issued only until **D+2 00:30Z**: 24 hours after the
+   settlement cutoff, so never more than 24 hours after the original print was published. After that
+   the print stands, unless the operator issues a correction with a written justification, which the
+   print records in `windowOverride` for anyone to judge; the print schema refuses a late correction
+   without one. Every correction print is listed on the [incident log](#incident-log) with the
+   superseded `printHash`, the reason and the time it was issued, and every revision stays
+   published.
 
 ### Incident log
 
-Incidents, corrections and methodology announcements are published as
-[`incident` issues](https://github.com/apex-software-engineering/airport-disruption-index/issues?q=label%3Aincident)
-in the public repository, which the
-[README](https://github.com/apex-software-engineering/airport-disruption-index#incidents) links. A
-page on this site (`/incidents`, issue #17) replaces them when it ships.
+Incidents, corrections and methodology announcements are published on the site's
+[incidents page](incidents.md). It shows the operator's log, kept in the repository as
+`docs/incidents.md`, followed by every correction print, listed from the published prints
+themselves. Each is discussed in an
+[`incident` issue](https://github.com/apex-software-engineering/airport-disruption-index/issues?q=label%3Aincident)
+in the public repository.
 
 ### Changes to the source or the methodology
 
@@ -352,6 +361,10 @@ These notes bind whoever deploys the index.
 - **Rollbacks.** Receipts written from this release on record `adapterVersion` inside their hash. An
   older deployment cannot read the field and would rebuild them without it, so every rollback target
   must include this release's receipt reader (`src/lib/index/adapters.ts`). Never roll back past it.
+  Once any correction print exists, the floor rises: every rollback target must also include the
+  correction-aware print reader (`correction.issuedAt` and `correction.windowOverride` in
+  `src/lib/index/schemas.ts`). An older reader drops those fields when it parses the print, so it
+  would serve a correction whose contents no longer match its `printHash`.
 - **Never remove a release or an adapter.** Every entry in `src/lib/index/releases.ts` and
   `src/lib/index/adapters.ts` stays for as long as any receipt or print cites it. An adapter
   revision is frozen once any production receipt records it: a later fix is a new revision. Preview

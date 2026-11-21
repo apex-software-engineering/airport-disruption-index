@@ -1,7 +1,7 @@
 /**
- * The repo's docs/*.md files are the single source of truth for the methodology and sources
- * prose; the site renders them as they are. Cross-links between docs become site routes, and
- * headings get GitHub-style ids so `methodology.md#source` lands on the same section here.
+ * The repo's docs/*.md files are the single source of truth for the methodology, sources and
+ * incident-log prose; the site renders them as they are. Cross-links between docs become site
+ * routes, and headings get GitHub-style ids so `methodology.md#source` lands on the same section.
  */
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -9,7 +9,11 @@ import path from 'node:path';
 import { Marked, type Tokens } from 'marked';
 
 /** Each rendered doc and the route that renders it. */
-export const DOC_ROUTES = { methodology: '/methodology', sources: '/sources' } as const;
+export const DOC_ROUTES = {
+	methodology: '/methodology',
+	sources: '/sources',
+	incidents: '/incidents',
+} as const;
 export type DocName = keyof typeof DOC_ROUTES;
 
 const DOCS_DIR = path.join(process.cwd(), 'docs');

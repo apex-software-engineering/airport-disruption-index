@@ -17,5 +17,5 @@ export async function GET(request: Request) {
 	if (parseUtcDate(from) === null) return problem(400, `invalid from ${from}`);
 	const days = (dayStartMs(to) - dayStartMs(from)) / 86_400_000 + 1;
 	if (days < 1 || days > MAX_DAYS) return problem(400, `range must be 1 to ${MAX_DAYS} days`);
-	return json(await historyView(storeFromEnv(), from, to), CACHE.daily);
+	return json(await historyView(storeFromEnv(), from, to), CACHE.live);
 }

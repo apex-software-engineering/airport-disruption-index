@@ -1,7 +1,13 @@
 /** Read models for the public API, shaped for direct rendering. */
 import { aggregateDay, type SlotState } from '@/lib/index/day';
 import { methodologyInEffect } from '@/lib/index/methodology';
-import type { DailyPrint, RoundReceipt, RoundSummary, UnrecognizedList } from '@/lib/index/schemas';
+import type {
+	Correction,
+	DailyPrint,
+	RoundReceipt,
+	RoundSummary,
+	UnrecognizedList,
+} from '@/lib/index/schemas';
 import {
 	elapsedSlots,
 	publicationDeadline,
@@ -11,7 +17,7 @@ import {
 	type UtcDate,
 } from '@/lib/index/time';
 
-import { readDayIndex, readHistory, readPrints } from './archive';
+import { readCorrectionPrints, readDayIndex, readHistory, readPrints } from './archive';
 import { CACHE } from './http';
 import type { ObjectStore } from './storage';
 
@@ -113,6 +119,24 @@ export async function historyView(store: ObjectStore, from: UtcDate, to: UtcDate
 			.filter((day) => day.date >= from && day.date <= to)
 			.map((day) => ({ ...day, url: `${API_BASE}/days/${day.date}` })),
 	};
+}
+
+export type CorrectionEntry = Correction & {
+	date: UtcDate;
+	revision: number;
+	printHash: string;
+	url: string;
+};
+
+/** Every stored correction print (revision 2 or later), most recently issued first. */
+export async function correctionsView(store: ObjectStore): Promise<CorrectionEntry[]> {
+	return (await readCorrectionPrints(store))
+		.flatMap(({ date, revision, printHash, correction }) =>
+			correction === null
+				? []
+				: [{ date, revision, printHash, ...correction, url: `${API_BASE}/days/${date}` }],
+		)
+		.sort((x, y) => y.issuedAt.localeCompare(x.issuedAt));
 }
 
 /** A valid receipt is never replaced, so it caches forever; an invalid one never caches. */

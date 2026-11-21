@@ -182,6 +182,23 @@ const NAMESPACES: Record<string, string> = {
 };
 
 /**
+ * What `storeFromEnv(env)` opens, named without credentials, for an operator to confirm. Null
+ * unless ADI_DATA_DIR or VERCEL_ENV is set explicitly, so a command never guesses a store.
+ */
+export function storeTarget(
+	env: Readonly<Record<string, string | undefined>>,
+): { name: string; warning: string | null } | null {
+	if (env.ADI_DATA_DIR) {
+		const warning = env.VERCEL_ENV
+			? `ADI_DATA_DIR and VERCEL_ENV are both set; ADI_DATA_DIR wins, so Vercel Blob is not used`
+			: null;
+		return { name: `filesystem store ${env.ADI_DATA_DIR}`, warning };
+	}
+	if (env.VERCEL_ENV) return { name: `Vercel Blob, VERCEL_ENV=${env.VERCEL_ENV}`, warning: null };
+	return null;
+}
+
+/**
  * The store for this process. `ADI_DATA_DIR` selects a filesystem store (local runs); otherwise
  * Vercel Blob, namespaced by `VERCEL_ENV` (`local` when not on Vercel).
  */
