@@ -13,8 +13,8 @@ const MAX_ARGUMENT_BYTES = 4096;
 /** Every operation's result is capped, as python-opentimestamps does, so no proof can blow up. */
 const MAX_RESULT_BYTES = 4096;
 const MAX_PAYLOAD_BYTES = 8192;
-const BITCOIN_TAG = '0588960d73d71901';
-const PENDING_TAG = '83dfe30d2ef90c8e';
+export const BITCOIN_TAG = '0588960d73d71901';
+export const PENDING_TAG = '83dfe30d2ef90c8e';
 
 export type OtsAttestation =
 	| { kind: 'bitcoin'; height: number; merkleRoot: string }
@@ -142,6 +142,14 @@ function applyOp(reader: Reader, tag: number, message: Uint8Array): Uint8Array {
 function readAttestation(reader: Reader, message: Uint8Array): OtsAttestation {
 	const tag = hex(reader.take(8));
 	const payload = new Reader(reader.varbytes(MAX_PAYLOAD_BYTES));
+	const attestation = readPayload(tag, payload, message);
+	// A known attestation's payload must be exactly its fields, as the reference client requires.
+	if (attestation.kind !== 'unknown' && !payload.atEnd())
+		throw new OtsFormatError(`trailing bytes in a ${attestation.kind} attestation`);
+	return attestation;
+}
+
+function readPayload(tag: string, payload: Reader, message: Uint8Array): OtsAttestation {
 	if (tag === BITCOIN_TAG) {
 		if (message.length !== 32) throw new OtsFormatError('Bitcoin attestation on a non-digest');
 		// Block explorers show the merkle root byte-reversed, as python-bitcoinlib's b2lx does.

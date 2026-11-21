@@ -97,21 +97,30 @@ export function requireDate(target: string): UtcDate {
 	return target;
 }
 
-/** GET from the index API under check. Only these requests carry the preview bypass secret. */
+/**
+ * GET from the index API under check. Only these requests carry the preview bypass secret, and
+ * those refuse redirects, so the secret cannot follow one to another origin.
+ */
 export function getApi(url: string): Promise<Response> {
 	// Optional: lets the script read a Vercel preview behind deployment protection.
 	const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
-	return request(url, bypass ? { 'x-vercel-protection-bypass': bypass } : {});
+	if (!bypass) return request(url, {}, 'follow');
+	return request(url, { 'x-vercel-protection-bypass': bypass }, 'error');
 }
 
 /** GET from a third party, such as a block explorer: never with the bypass secret. */
 export function getPublic(url: string): Promise<Response> {
-	return request(url, {});
+	return request(url, {}, 'follow');
 }
 
-function request(url: string, extraHeaders: Record<string, string>): Promise<Response> {
+function request(
+	url: string,
+	extraHeaders: Record<string, string>,
+	redirect: RequestRedirect,
+): Promise<Response> {
 	return fetch(url, {
 		headers: { 'User-Agent': 'airport-disruption-index-reproduce/1.0', ...extraHeaders },
+		redirect,
 	});
 }
 

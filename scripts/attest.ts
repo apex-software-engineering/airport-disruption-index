@@ -12,14 +12,17 @@
  * or a proof that is invalid.
  */
 import { buildAttestation } from '@/lib/index/attestation';
-import { reproduceSettledDay } from '@/lib/reproduce';
+import { reproduceFetchedDay } from '@/lib/reproduce';
 import { addDays, type UtcDate } from '@/lib/index/time';
 
 import {
+	DEFAULT_BRANCH,
 	DEFAULT_DIRECTORY,
+	attestationNames,
 	invalidProofs,
-	verifyAttested,
+	verifyAttestedDay,
 	writeAttestation,
+	type BranchCheckout,
 } from './lib/attestations';
 import {
 	CannotVerify,
@@ -27,53 +30,65 @@ import {
 	Pending,
 	Unattested,
 	describeError,
+	fetchDay,
 	getApi,
 	parseArgs,
 	requireDate,
 } from './lib/public-api';
 
-const USAGE = 'npm run attest -- <YYYY-MM-DD> [--days 1] [--dir attestations] [--base-url URL]';
+const USAGE =
+	'npm run attest -- <YYYY-MM-DD> [--days 1] [--dir attestations] [--branch attestations] [--base-url URL]';
 /** Collection began 2026-11-20T04:30Z; no earlier day has a print. */
 const FIRST_PRINT_DATE = '2026-11-20';
 
 /** The day's outcome, and the file written for it, if any. */
 async function attestDay(
 	baseUrl: string,
-	directory: string,
+	checkout: BranchCheckout,
 	date: UtcDate,
 ): Promise<{ outcome: string; written: string | null }> {
+	// One response for everything: the pins are checked against it, and it is what gets attested.
+	const day = await fetchDay(baseUrl, date);
 	try {
-		const problems = await verifyAttested(baseUrl, directory, date);
+		const problems = await verifyAttestedDay(day, checkout);
 		if (problems.length > 0) throw new Mismatch(problems);
 		return { outcome: 'attested, timestamp proven', written: null };
 	} catch (error) {
 		if (error instanceof Pending) return { outcome: 'attested, timestamp pending', written: null };
 		if (!(error instanceof Unattested)) throw error;
 	}
-	const { outcome, reproduced } = await reproduceSettledDay(date, baseUrl, getApi);
+	const outcome = await reproduceFetchedDay(day, baseUrl, getApi);
 	for (const line of outcome.log) console.log(line);
 	if (outcome.kind === 'cannot_verify') throw new CannotVerify(outcome.reason);
 	if (outcome.kind === 'mismatch')
 		throw new Mismatch(outcome.problems.map((p) => `reproduce: ${p}`));
-	if (reproduced === null) throw new Error('a MATCH always carries the reproduced print');
-	const { print, deployedCommit } = reproduced;
-	const written = await writeAttestation(directory, buildAttestation(print, deployedCommit));
+	const written = await writeAttestation(
+		checkout.directory,
+		buildAttestation(day.print, day.deployedCommit),
+	);
 	return { outcome: `reproduced MATCH, wrote ${written}`, written };
 }
 
 async function main(): Promise<number> {
-	const { target, baseUrl, options } = parseArgs(process.argv.slice(2), USAGE, ['days', 'dir']);
+	const { target, baseUrl, options } = parseArgs(process.argv.slice(2), USAGE, [
+		'days',
+		'dir',
+		'branch',
+	]);
 	const through = requireDate(target);
 	const days = Number(options.get('days') ?? '1');
 	if (!Number.isInteger(days) || days < 1) throw new Error(`--days must be a positive integer`);
-	const directory = options.get('dir') ?? DEFAULT_DIRECTORY;
+	const checkout = {
+		directory: options.get('dir') ?? DEFAULT_DIRECTORY,
+		branch: options.get('branch') ?? DEFAULT_BRANCH,
+	};
 	let failures = 0;
 	const written = new Set<string>();
 	for (let offset = days - 1; offset >= 0; offset -= 1) {
 		const date = addDays(through, -offset);
 		if (date < FIRST_PRINT_DATE) continue;
 		try {
-			const day = await attestDay(baseUrl, directory, date);
+			const day = await attestDay(baseUrl, checkout, date);
 			if (day.written !== null) written.add(day.written);
 			console.log(`${date}: ${day.outcome}`);
 		} catch (error) {
@@ -81,8 +96,12 @@ async function main(): Promise<number> {
 			console.log(`${date}: FAILED: ${describeError(error)}`);
 		}
 	}
-	const invalid = await invalidProofs(directory, written);
-	for (const problem of invalid) console.log(`INVALID PROOF: ${problem}`);
+	// Every earlier proof too, reported apart from the days: written files are not stamped yet.
+	const earlier = (await attestationNames(checkout.directory)).filter(
+		(name) => !written.has(`${checkout.directory}/${name}`),
+	);
+	const invalid = await invalidProofs(checkout.directory, earlier);
+	for (const { problem } of invalid) console.log(`INVALID PROOF: ${problem}`);
 	const ok = failures === 0 && invalid.length === 0;
 	console.log(
 		ok ? 'ATTESTED' : `FAILED: ${failures} day(s) not attested, ${invalid.length} invalid proof(s)`,

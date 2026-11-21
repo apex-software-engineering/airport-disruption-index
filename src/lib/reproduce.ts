@@ -53,12 +53,12 @@ export async function reproduce(
 	baseUrl: string,
 	get: Get,
 ): Promise<ReproduceOutcome> {
-	if (parseUtcDate(target) !== null)
-		return (await reproduceSettledDay(target, baseUrl, get)).outcome;
 	const log: string[] = [];
+	const api = new PublicApi(baseUrl, get);
 	return outcomeOf(log, async () => {
-		if (parseRoundId(target) !== null)
-			return reproduceRound(new PublicApi(baseUrl, get), target, log);
+		if (parseRoundId(target) !== null) return reproduceRound(api, target, log);
+		if (parseUtcDate(target) !== null)
+			return reproduceDay(api, await fetchSettledDay(baseUrl, target, get), log);
 		throw new CannotVerify(
 			`${target} is neither a round id (2026-11-17T20:45Z) nor a date (2026-11-17)`,
 		);
@@ -66,25 +66,16 @@ export async function reproduce(
 }
 
 /**
- * Reproduces a settled day. On MATCH it also returns the print it reproduced and the deployed
- * commit named by that same response, which is what an attestation pins.
+ * Reproduces a settled day already fetched with fetchSettledDay, from the receipts its print
+ * lists. An attestation is built from that same response, so nothing is fetched twice.
  */
-export async function reproduceSettledDay(
-	date: UtcDate,
+export function reproduceFetchedDay(
+	day: SettledDay,
 	baseUrl: string,
 	get: Get,
-): Promise<{
-	outcome: ReproduceOutcome;
-	reproduced: { print: DailyPrint; deployedCommit: string | null } | null;
-}> {
+): Promise<ReproduceOutcome> {
 	const log: string[] = [];
-	let reproduced: { print: DailyPrint; deployedCommit: string | null } | null = null;
-	const outcome = await outcomeOf(log, async () => {
-		const day = await reproduceDay(new PublicApi(baseUrl, get), date, log);
-		reproduced = day.problems.length === 0 ? day : null;
-		return day.problems;
-	});
-	return { outcome, reproduced: outcome.kind === 'match' ? reproduced : null };
+	return outcomeOf(log, () => reproduceDay(new PublicApi(baseUrl, get), day, log));
 }
 
 async function outcomeOf(log: string[], run: () => Promise<string[]>): Promise<ReproduceOutcome> {
@@ -103,11 +94,17 @@ async function outcomeOf(log: string[], run: () => Promise<string[]>): Promise<R
  * date, `print` the last of them, and the deployed commit the response's header names (null when
  * the deployment could not say, or predates the header).
  */
+export type SettledDay = {
+	print: DailyPrint;
+	revisions: DailyPrint[];
+	deployedCommit: string | null;
+};
+
 export async function fetchSettledDay(
 	baseUrl: string,
 	date: UtcDate,
 	get: Get,
-): Promise<{ print: DailyPrint; revisions: DailyPrint[]; deployedCommit: string | null }> {
+): Promise<SettledDay> {
 	const api = new PublicApi(baseUrl, get);
 	const response = await api.fetch(`/api/v1/days/${date}`);
 	const body: unknown = await response.json();
@@ -141,8 +138,8 @@ function deployedCommitOf(response: Response): string | null {
 
 class PublicApi {
 	constructor(
-		readonly baseUrl: string,
-		readonly get: Get,
+		private readonly baseUrl: string,
+		private readonly get: Get,
 	) {}
 
 	async fetch(path: string): Promise<Response> {
@@ -201,12 +198,8 @@ async function reproduceRound(api: PublicApi, id: string, log: string[]): Promis
 	return problems;
 }
 
-async function reproduceDay(
-	api: PublicApi,
-	date: UtcDate,
-	log: string[],
-): Promise<{ print: DailyPrint; deployedCommit: string | null; problems: string[] }> {
-	const { print, deployedCommit } = await fetchSettledDay(api.baseUrl, date, api.get);
+async function reproduceDay(api: PublicApi, day: SettledDay, log: string[]): Promise<string[]> {
+	const { print } = day;
 	const ids = print.rounds.map((r) => r.roundId);
 	const results: { receipt: RoundReceipt; problems: string[] }[] = [];
 	for (let i = 0; i < ids.length; i += CONCURRENCY) {
@@ -215,14 +208,13 @@ async function reproduceDay(
 		);
 	}
 	log.push(
-		`print ${date} r${print.revision}: ${print.result.status}, ${ids.length} rounds, printHash ${print.printHash}`,
+		`print ${print.date} r${print.revision}: ${print.result.status}, ${ids.length} rounds, printHash ${print.printHash}`,
 	);
-	const problems = [
+	return [
 		...results.flatMap((r) => r.problems),
 		...verifyPrint(
 			print,
 			results.map((r) => r.receipt),
 		),
 	];
-	return { print, deployedCommit, problems };
 }

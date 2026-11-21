@@ -94,6 +94,17 @@ deployed commit (`deployedCommit` in `/api/v1/methodology`; a remote CLI build h
 reports null): `vercel build --prod && vercel deploy --prebuilt --prod` from `main` after merge,
 `vercel build && vercel deploy --prebuilt` from a branch for a preview.
 
+## Attestations branch
+
+The attest workflow appends to the `attestations` branch (see
+[methodology](docs/methodology.md#attestations)). Its ruleset blocks force-pushes and deleting the
+branch; ordinary commits still land. If a file that is not an attestation gets pushed there, remove
+it with a new commit: `git worktree add /tmp/adi-attestations origin/attestations`, then
+`git -C /tmp/adi-attestations rm <file>`, commit, and
+`git -C /tmp/adi-attestations push origin HEAD:attestations`. Until then each run only warns about
+it. Never edit or remove a `{date}.r{revision}.json` file: `verify-attestation` treats any change to
+one after its first commit as a failure. A proof (`.ots`) may change only by `ots upgrade`.
+
 ## Monitoring
 
 An external check runs outside Vercel every 5 minutes (a launchd job on a separate host, not part of

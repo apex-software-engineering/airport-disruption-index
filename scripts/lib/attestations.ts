@@ -23,9 +23,15 @@ import { attestationSchema, type Attestation } from '@/lib/index/schemas';
 import type { UtcDate } from '@/lib/index/time';
 import { OtsFormatError, readOtsProof } from '@/lib/ots';
 
+import type { SettledDay } from '@/lib/reproduce';
+
 import { CannotVerify, Pending, Unattested, fetchDay, getPublic } from './public-api';
 
 export const DEFAULT_DIRECTORY = 'attestations';
+export const DEFAULT_BRANCH = 'attestations';
+
+/** Where the publication branch is checked out, and which branch it must be. */
+export type BranchCheckout = { directory: string; branch: string };
 const BLOCK_EXPLORER = 'https://mempool.space/api';
 
 export function attestationPath(directory: string, date: UtcDate, revision: number): string {
@@ -66,30 +72,61 @@ function git(directory: string, args: string[]): Buffer {
 	return execFileSync('git', ['-C', directory, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
+function commitOf(directory: string, ref: string): string | null {
+	try {
+		return git(directory, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])
+			.toString()
+			.trim();
+	} catch {
+		return null;
+	}
+}
+
 /**
- * Every attestation ever committed for a date, as first committed, with a problem for each later
- * modification or deletion of one. The directory must be the root of a checkout of the branch.
+ * Checks the directory is the root of a full checkout whose HEAD is the tip of origin/{branch},
+ * so its history is the published one. Returns false when nothing is published yet.
  */
-export function readPins(directory: string, date: UtcDate): { pins: Pin[]; problems: string[] } {
-	let root: string;
+function requireBranchCheckout({ directory, branch }: BranchCheckout): boolean {
+	let root = '';
 	try {
 		root = git(directory, ['rev-parse', '--show-toplevel']).toString().trim();
 	} catch {
-		root = '';
+		// not a git checkout: reported below
 	}
 	if (!existsSync(directory) || root !== realpathSync(directory)) {
 		throw new CannotVerify(
-			`${directory}/ is not a checkout of the attestations branch; see docs/methodology.md, Attestations`,
+			`${directory}/ is not a checkout of the ${branch} branch; see docs/methodology.md, Attestations`,
 		);
 	}
-	try {
-		git(directory, ['rev-parse', '--verify', '--quiet', 'HEAD']);
-	} catch {
-		return { pins: [], problems: [] }; // nothing published yet
+	if (git(directory, ['rev-parse', '--is-shallow-repository']).toString().trim() === 'true')
+		throw new CannotVerify(`${directory}/ is a shallow checkout, whose history is incomplete`);
+	const head = commitOf(directory, 'HEAD');
+	const tip = commitOf(directory, `refs/remotes/origin/${branch}`);
+	if (head === null && tip === null) return false;
+	if (head !== tip) {
+		throw new CannotVerify(
+			`${directory}/ is at ${head ?? 'no commit'}, not origin/${branch} (${tip ?? 'missing'}); run git fetch origin && git -C ${directory} checkout --detach origin/${branch}`,
+		);
 	}
+	return true;
+}
+
+/**
+ * Every attestation ever committed for a date, as first committed, with a problem for each later
+ * modification or deletion of one. Each commit is diffed against its first parent, so a merge
+ * cannot hide a rewrite or a deletion.
+ */
+export function readPins(
+	checkout: BranchCheckout,
+	date: UtcDate,
+): { pins: Pin[]; problems: string[] } {
+	const { directory } = checkout;
+	if (!requireBranchCheckout(checkout)) return { pins: [], problems: [] };
 	const log = git(directory, [
 		'log',
 		'--reverse',
+		'--first-parent',
+		'--diff-merges=first-parent',
 		'--no-renames',
 		'--format=commit %H',
 		'--name-status',
@@ -131,11 +168,20 @@ export function readPins(directory: string, date: UtcDate): { pins: Pin[]; probl
  */
 export async function verifyAttested(
 	baseUrl: string,
-	directory: string,
+	checkout: BranchCheckout,
 	date: UtcDate,
 ): Promise<string[]> {
-	const { print, revisions } = await fetchDay(baseUrl, date);
-	const { pins, problems } = readPins(directory, date);
+	return verifyAttestedDay(await fetchDay(baseUrl, date), checkout);
+}
+
+/** verifyAttested for a day already fetched, so a caller can attest from the same response. */
+export async function verifyAttestedDay(
+	{ print, revisions }: SettledDay,
+	checkout: BranchCheckout,
+): Promise<string[]> {
+	const { directory } = checkout;
+	const date = print.date;
+	const { pins, problems } = readPins(checkout, date);
 	problems.push(
 		...pinProblems(
 			pins.map((pin) => pin.attestation),
@@ -193,32 +239,36 @@ export async function verifyAttested(
 	return [];
 }
 
+/** The attestation files (`{date}.r{revision}.json`) in a directory. */
+export async function attestationNames(directory: string): Promise<string[]> {
+	return (await readdir(directory)).filter((name) =>
+		/^\d{4}-\d{2}-\d{2}\.r[1-9]\d*\.json$/.test(name),
+	);
+}
+
 /**
- * Offline check of every proof in the directory, whatever its date: it must parse and commit to
- * its attestation file. Returns the problems; a pending proof is not one. `skip` lists files
- * written this run, which the workflow stamps afterwards.
+ * Offline check of the named attestations' proofs, whatever their dates: each must exist, parse,
+ * and commit to its attestation file. A pending proof passes. Returns one entry per bad proof.
  */
 export async function invalidProofs(
 	directory: string,
-	skip: ReadonlySet<string>,
-): Promise<string[]> {
-	const names = (await readdir(directory)).filter((name) => /\.r\d+\.json$/.test(name));
-	const problems: string[] = [];
+	names: readonly string[],
+): Promise<{ name: string; problem: string }[]> {
+	const invalid: { name: string; problem: string }[] = [];
 	for (const name of names) {
 		const path = `${directory}/${name}`;
-		if (skip.has(path)) continue;
 		if (!existsSync(`${path}.ots`)) {
-			problems.push(`${path}.ots does not exist`);
+			invalid.push({ name, problem: `${path}.ots does not exist` });
 			continue;
 		}
 		try {
 			const proof = readOtsProof(new Uint8Array(await readFile(`${path}.ots`)));
 			if (proof.fileSha256 !== sha256Hex(new Uint8Array(await readFile(path))))
-				problems.push(`${path}.ots does not commit to ${path}`);
+				invalid.push({ name, problem: `${path}.ots does not commit to ${path}` });
 		} catch (error) {
 			if (!(error instanceof OtsFormatError)) throw error;
-			problems.push(`${path}.ots is not a valid proof: ${error.message}`);
+			invalid.push({ name, problem: `${path}.ots is not a valid proof: ${error.message}` });
 		}
 	}
-	return problems;
+	return invalid;
 }

@@ -360,26 +360,31 @@ the order the print lists them, joined by `\n`), `parameterHash`, `methodologyVe
 when the deployment could not say).
 
 It stamps the file with [OpenTimestamps](https://opentimestamps.org), commits the proof beside it as
-`{date}.r{revision}.json.ots`, and fails the run for any day it cannot attest. A day already
-attested is checked again instead; an attestation is never rewritten. The reproducing job reads only
-the public API and cannot write; the publishing job pushes only the files that run produced to the
-`attestations` branch, and warns about, without touching, any other file there. Neither holds a
-storage or deployment secret. Two limits are accepted: the deployed-commit check warns once per new
-attestation, not again later; and the timestamp checks look blocks up at mempool.space, so an outage
-there fails the run loudly, by design, and the next run retries.
+`{date}.r{revision}.json.ots`, and fails the run for any day it cannot attest. The check, the
+reproduction and the attestation all use one `/days` response. A day already attested is checked
+again instead; an attestation is never rewritten. Only the files a run is about to publish gate its
+publication, after their proofs are parsed again: a file that fails is withheld. An invalid proof
+from an earlier day is reported as an error and fails the run at the end, but never holds back a new
+day. The reproducing job reads only the public API and cannot write; the publishing job pushes only
+the files that run produced to the `attestations` branch, and warns about, without touching, any
+other file there. Neither holds a storage or deployment secret. Two limits are accepted: the
+deployed-commit check warns once per new attestation, not again later; and the timestamp checks look
+blocks up at mempool.space, so an outage there fails the run loudly, by design, and the next run
+retries.
 
-**Publication cutoff.** The attestation for revision 1 of day D counts only if its proof shows it
-existed before **D+2 00:00Z**: the earliest Bitcoin block it reaches must have a header time before
-then. A correction (revision 2 or later) must be stamped within **48 hours of that revision's issue
-time**, as recorded in the print's `correction.issuedAt` (`correction` is null on revision 1). Until
-the correction process (#10) records it, a correction's attestation cannot be verified (exit 2). The
-block header time is set by the miner and consensus keeps it within about two hours of real time, so
-the guarantee is that the attestation existed by the cutoff give or take about two hours. The
-OpenTimestamps calendars keep the first commitment they receive, independently of the operator, so a
-rewritten attestation would need a new and later timestamp, which the cutoff exposes. What this does
-not cover: between settlement (D+1 00:30Z) and the first stamp at 01:45Z the operator could still
-rewrite a print before it is attested. That window is about 75 minutes a day, longer when GitHub
-starts the scheduled run late.
+**Publication cutoff.** The attestation for revision 1 of day D counts only if the earliest Bitcoin
+block its proof reaches reports a header time before **D+2 00:00Z**. A correction (revision 2 or
+later) must be stamped within **48 hours of that revision's issue time**, as recorded in the print's
+`correction.issuedAt` (`correction` is null on revision 1). Until the correction process (#10)
+records it, a correction's attestation cannot be verified (exit 2). The check is against the header
+time the block's miner reported, not a wall clock. Consensus only bounds it: it must be later than
+the median of the previous 11 blocks' times, and no more than two hours ahead of the network's time
+when the block was accepted. So the cutoff is a rule about that reported time, and says only roughly
+when the attestation existed. The OpenTimestamps calendars keep the first commitment they receive,
+independently of the operator, so a rewritten attestation would need a new and later timestamp,
+which the cutoff exposes. What this does not cover: between settlement (D+1 00:30Z) and the first
+stamp at 01:45Z the operator could still rewrite a print before it is attested. That window is about
+75 minutes a day, longer when GitHub starts the scheduled run late.
 
 A fresh proof is pending until a calendar's Bitcoin transaction confirms, usually within a few
 hours. Each run upgrades pending proofs so they stop needing a calendar. Until then the
@@ -393,13 +398,16 @@ npm run verify-attestation -- 2026-11-20 --base-url https://airports.apexsofteng
 ```
 
 (`git fetch origin` then `git -C attestations checkout --detach origin/attestations` updates it
-later.) `verify-attestation` fetches the day and checks that `print` is the last of its `revisions`.
-It reads every attestation ever committed for that date from the branch history, as first committed:
-a later modification or deletion of one is a failure. Every attested revision must still be served
-by the API (a missing one is a rollback) and match it: `printHash` (which the print must hash to),
-`roundsDigest`, `parameterHash` and `methodologyVersion`. The current revision must have an
-attestation. For each attestation it then reads the proof, checks that it commits to the file's
-first-committed bytes, and looks up its earliest Bitcoin block at a public block explorer
+later.) The directory must be a full, not shallow, checkout whose HEAD is the tip of
+`origin/attestations` (`--dir` and `--branch` change either); anything else exits 2, because a stale
+or partial history could hide a rewrite. `verify-attestation` fetches the day and checks that
+`print` is the last of its `revisions`. It reads every attestation ever committed for that date from
+the branch history, as first committed, diffing each commit against its first parent so that a merge
+cannot hide anything: a later modification or deletion of one is a failure. Every attested revision
+must still be served by the API (a missing one is a rollback) and match it: `printHash` (which the
+print must hash to), `roundsDigest`, `parameterHash` and `methodologyVersion`. The current revision
+must have an attestation. For each attestation it then reads the proof, checks that it commits to
+the file's first-committed bytes, and looks up its earliest Bitcoin block at a public block explorer
 (mempool.space) to check the merkle root and the cutoff. Exit codes: 0 `MATCH`, 1 `MISMATCH`
 (including an invalid proof or one after the cutoff), 2 could not verify, 3 `UNATTESTED` (the
 current print has no attestation), 4 `PENDING` (everything matches but the proof has not reached a

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { otsFixture } from '@/test/fixtures';
+import { syntheticProof } from '@/test/ots';
 
 import { sha256Hex } from './index/json';
 import { OtsFormatError, readOtsProof } from './ots';
@@ -48,6 +49,20 @@ describe('readOtsProof', () => {
 		expect(() => readOtsProof(new Uint8Array([...header, ...hexlifies]))).toThrow(
 			/exceeds 4096 bytes/,
 		);
+	});
+
+	it('reads a well-formed attestation payload and rejects one with trailing bytes', () => {
+		const file = new TextEncoder().encode('x');
+		for (const attestation of [
+			{ kind: 'bitcoin', height: 900_000 } as const,
+			{ kind: 'pending', calendarUrl: 'https://alice.btc.calendar.opentimestamps.org' } as const,
+		]) {
+			const { proof } = syntheticProof(file, attestation);
+			expect(readOtsProof(proof).attestations[0]).toMatchObject(attestation);
+			expect(() => readOtsProof(syntheticProof(file, attestation, [0]).proof)).toThrow(
+				`trailing bytes in a ${attestation.kind} attestation`,
+			);
+		}
 	});
 
 	it('rejects trailing bytes', () => {

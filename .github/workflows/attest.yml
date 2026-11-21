@@ -44,6 +44,7 @@ jobs:
       branch-exists: ${{ steps.branch.outputs.exists }}
       changed: ${{ steps.changes.outputs.changed }}
       unproven-commits: ${{ steps.commits.outputs.unproven }}
+      withheld: ${{ steps.changes.outputs.withheld }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -121,8 +122,12 @@ jobs:
           THROUGH: ${{ steps.days.outputs.through }}
           DAYS: ${{ steps.days.outputs.days }}
         run: |
+          set -o pipefail
           status=0
-          npm run attest -- "$THROUGH" --days "$DAYS" --dir attestations --base-url "$BASE_URL" || status=$?
+          npm run attest -- "$THROUGH" --days "$DAYS" --dir attestations \
+            --branch "$PUBLICATION_BRANCH" --base-url "$BASE_URL" | tee attest.log || status=$?
+          # Annotated, not blocking: a bad day or an earlier invalid proof never holds back the others.
+          sed -n 's/^\([0-9-]*: FAILED: .*\)$/::error::\1/p; s/^INVALID PROOF: \(.*\)$/::error::invalid earlier proof: \1/p' attest.log
           echo "status=$status" >> "$GITHUB_OUTPUT"
 
       - name: Check deployed commits are public
@@ -152,29 +157,52 @@ jobs:
             fi
           done
 
-      # A freshly stamped proof is parsed again before anything is published.
-      - name: Check every proof
-        run: npm run check-proofs -- attestations
-
-      # Only what this run wrote or upgraded is published. Other files already on the branch that
-      # do not look like attestations are warned about and left alone: the branch cannot delete.
-      - name: Collect changes
+      # Only what this run wrote or upgraded is published, and only after its proof is parsed again
+      # and found to commit to its attestation; a file that fails is withheld, the rest go out.
+      # Other files already on the branch that do not look like attestations are warned about and
+      # left alone.
+      - name: Collect and check changes
         id: changes
         run: |
           pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}\.r[0-9]+\.json(\.ots)?$'
-          while read -r name; do
+          while IFS= read -r name; do
             [[ "$name" =~ $pattern ]] || echo "::warning::$PUBLICATION_BRANCH holds $name, which is not an attestation file"
           done < <(git -C attestations ls-files)
-          mkdir outgoing
-          while read -r line; do
+          withheld=0
+          changed=()
+          # IFS= keeps the leading space of a status such as " M", so the name starts at column 4.
+          while IFS= read -r line; do
             name="${line:3}"
-            if [[ ! "$name" =~ $pattern ]]; then
-              echo "::error::this run produced $name, which is not an attestation file"
-              exit 1
+            if [[ "$name" =~ $pattern ]]; then
+              changed+=("$name")
+            else
+              echo "::error::this run produced $name, which is not an attestation file; withheld"
+              withheld=$((withheld + 1))
             fi
-            echo "$line"
-            cp "attestations/$name" outgoing/
           done < <(git -C attestations status --porcelain --untracked-files=all)
+          names=()
+          for name in "${changed[@]}"; do names+=("${name%.ots}"); done
+          mapfile -t names < <(printf '%s\n' "${names[@]}" | sort -u | sed '/^$/d')
+          mkdir outgoing
+          if (( ${#names[@]} > 0 )); then
+            # Fails closed: a name is published only on an OK line, so a crash withholds everything.
+            npm run -s check-proofs -- attestations "${names[@]}" > proofs.log || true
+            cat proofs.log
+            for name in "${names[@]}"; do
+              if ! grep -qxF "OK $name" proofs.log; then
+                echo "::error::$name: proof did not pass its check; withheld"
+                withheld=$((withheld + 1))
+                continue
+              fi
+              for file in "$name" "$name.ots"; do
+                if printf '%s\n' "${changed[@]}" | grep -qx "$file"; then
+                  cp "attestations/$file" outgoing/
+                fi
+              done
+            done
+          fi
+          ls -l outgoing
+          echo "withheld=$withheld" >> "$GITHUB_OUTPUT"
           if compgen -G 'outgoing/*' > /dev/null; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
@@ -271,8 +299,10 @@ jobs:
           git push origin "HEAD:refs/heads/$PUBLICATION_BRANCH"
 
       # Last, so everything that could be attested is published before the run fails.
-      - name: Fail for days not attested or commits not public
-        if: needs.attest.outputs.status != '0' || needs.attest.outputs.unproven-commits != '0'
+      - name: Fail for anything not attested, proven or published
+        if: >-
+          needs.attest.outputs.status != '0' || needs.attest.outputs.unproven-commits != '0' ||
+          needs.attest.outputs.withheld != '0'
         run: |
-          echo "::error::Days not attested, invalid proofs or non-public deployed commits; see the attest job"
+          echo "::error::Days not attested, invalid proofs, withheld files or non-public deployed commits; see the attest job"
           exit 1
