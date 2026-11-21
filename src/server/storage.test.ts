@@ -39,7 +39,7 @@ vi.mock('@vercel/blob', async (importOriginal) => {
 	};
 });
 
-const { BlobStore } = await import('./storage');
+const { BlobStore, storeTarget } = await import('./storage');
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 const text = (body: Uint8Array) => new TextDecoder().decode(body);
@@ -83,5 +83,23 @@ describe('BlobStore versions', () => {
 			await store.write('days/x.json', bytes('d'), 'application/json', { kind: 'if-absent' }),
 		).toBe('conflict');
 		expect(await store.read('days/missing.json')).toBeNull();
+	});
+});
+
+describe('storeTarget', () => {
+	it('names the store, warns when both stores are named, and never guesses one', () => {
+		expect(storeTarget({ VERCEL_ENV: 'production' })).toEqual({
+			name: 'Vercel Blob, VERCEL_ENV=production',
+			warning: null,
+		});
+		expect(storeTarget({ ADI_DATA_DIR: '/tmp/x' })).toEqual({
+			name: 'filesystem store /tmp/x',
+			warning: null,
+		});
+		expect(storeTarget({ ADI_DATA_DIR: '/tmp/x', VERCEL_ENV: 'production' })).toMatchObject({
+			name: 'filesystem store /tmp/x',
+			warning: expect.stringMatching(/both set; ADI_DATA_DIR wins/),
+		});
+		expect(storeTarget({ BLOB_READ_WRITE_TOKEN: 'x' })).toBeNull();
 	});
 });

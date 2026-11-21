@@ -334,6 +334,27 @@ export async function readPrints(store: ObjectStore, date: UtcDate): Promise<Dai
 	}
 }
 
+const PRINT_KEY = /^prints\/(\d{4}-\d{2}-\d{2})\/r(\d+)\.json$/;
+
+/**
+ * Every stored correction print (revision 2 or later), found by listing the print keys. It does
+ * not rely on the history index, which can lag a correction whose history update failed.
+ */
+export async function readCorrectionPrints(store: ObjectStore): Promise<DailyPrint[]> {
+	const listed = (await store.list('prints/')).filter(
+		(key) => Number(PRINT_KEY.exec(key)?.[2]) > 1,
+	);
+	return Promise.all(
+		listed.map(async (key) => {
+			const print = await readJson(store, printSchema, key);
+			if (print === null) throw new Error(`${key} is listed but could not be read`);
+			const expected = keys.print(print.date, print.revision);
+			if (key !== expected) throw new Error(`${key} holds the print for ${expected}`);
+			return print;
+		}),
+	);
+}
+
 export type SettleOutcome = { status: 'settled' | 'already_settled'; print: DailyPrint };
 
 /**
@@ -378,7 +399,8 @@ export type CorrectionRequest = {
 
 /**
  * Issues a correction: rebuilds the day from its stored receipts and writes it as the next
- * revision, issued at `now`. Refuses unless `supersedesPrintHash` is the day's latest revision,
+ * revision. It is issued at `clock()` read after the rebuild, just before the write, so a
+ * rebuild that runs past the corrections window is judged at its real issue time. Refuses unless `supersedesPrintHash` is the day's latest revision,
  * and refuses a day whose print records a methodology other than the one the rebuild uses.
  * Earlier revisions are never touched; the history index then cites the new revision.
  */
@@ -386,7 +408,7 @@ export async function correctDay(
 	store: ObjectStore,
 	date: UtcDate,
 	request: CorrectionRequest,
-	now: Date,
+	clock: () => Date,
 ): Promise<DailyPrint> {
 	const revisions = await readPrints(store, date);
 	const latest = revisions.at(-1);
@@ -408,9 +430,11 @@ export async function correctDay(
 	const receipts = await readDayReceipts(store, date);
 	await syncDayIndex(store, date, { kind: 'settle', receipts });
 	const revision = latest.revision + 1;
-	const print = buildPrint(date, receipts.map(summarizeReceipt), {
+	const summaries = receipts.map(summarizeReceipt);
+	// The print schema checks issuedAt against the window: read the clock last, then write.
+	const print = buildPrint(date, summaries, {
 		revision,
-		correction: { ...request, issuedAt: now.toISOString() },
+		correction: { ...request, issuedAt: clock().toISOString() },
 	});
 	const written = await store.write(keys.print(date, revision), encode(print), JSON_TYPE, {
 		kind: 'if-absent',

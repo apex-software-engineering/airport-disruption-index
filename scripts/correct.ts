@@ -14,7 +14,7 @@ import { z } from 'zod';
 
 import { parseUtcDate } from '@/lib/index/time';
 import { correctDay, type CorrectionRequest } from '@/server/archive';
-import { storeFromEnv } from '@/server/storage';
+import { storeFromEnv, storeTarget } from '@/server/storage';
 
 const USAGE =
 	'usage: npm run correct -- <YYYY-MM-DD> --supersedes <printHash> --reason "<text>" [--override-window "<justification>"]';
@@ -44,13 +44,6 @@ function parse(argv: string[]): { date: string; request: CorrectionRequest } | n
 	};
 }
 
-/** Names the store without its credentials, and refuses to guess one. */
-function target(env: NodeJS.ProcessEnv): string | null {
-	if (env.ADI_DATA_DIR) return `filesystem store ${env.ADI_DATA_DIR}`;
-	if (env.VERCEL_ENV) return `Vercel Blob, VERCEL_ENV=${env.VERCEL_ENV}`;
-	return null;
-}
-
 async function main(): Promise<number> {
 	let args: ReturnType<typeof parse>;
 	try {
@@ -63,23 +56,26 @@ async function main(): Promise<number> {
 		console.error(USAGE);
 		return 2;
 	}
-	const store = target(process.env);
+	const store = storeTarget(process.env);
 	if (store === null) {
 		console.error(
 			'Set ADI_DATA_DIR, or VERCEL_ENV and BLOB_READ_WRITE_TOKEN (README.md#corrections).',
 		);
 		return 2;
 	}
-	console.log(`store: ${store}`);
+	if (store.warning !== null) console.warn(`warning: ${store.warning}`);
+	console.log(`store: ${store.name}`);
 	try {
-		const print = await correctDay(storeFromEnv(), args.date, args.request, new Date());
+		const print = await correctDay(storeFromEnv(), args.date, args.request, () => new Date());
 		const { result } = print;
 		console.log(
 			`wrote ${print.date} r${print.revision}: ${result.status}${result.status === 'suspended' ? '' : `, ADI ${result.value}`}, ${print.rounds.length} rounds`,
 		);
 		console.log(`printHash ${print.printHash}`);
 		console.log(`supersedes ${args.request.supersedesPrintHash}`);
-		console.log(`The API serves it within 5 minutes; then run: npm run reproduce -- ${print.date}`);
+		console.log(
+			`The API serves it within 5 minutes; then npm run reproduce -- ${print.date} must report r${print.revision} with this printHash.`,
+		);
 		return 0;
 	} catch (error) {
 		const message =

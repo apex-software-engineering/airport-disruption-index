@@ -26,22 +26,57 @@ its stored receipts and writes the next revision. It refuses a hash that is not 
 revision, and after D+2 00:30Z it refuses unless `--override-window` gives a justification, which
 the print records. Earlier revisions are never touched.
 
-The command writes to the store the environment names. Pull the Vercel environment to a file outside
-the repo and load it without printing it (the file sets `BLOB_READ_WRITE_TOKEN` and `VERCEL_ENV`,
-which picks the `prod` or `preview` namespace). Then add the incident to `docs/incidents.md` and
-check the new revision:
+The command writes to the store its environment names, and prints which one. Run it as below: the
+Vercel environment is pulled into a private temporary directory that is deleted on exit, read as
+data (never sourced into the shell), and only the Blob token and an explicit `VERCEL_ENV` reach the
+command. `VERCEL_ENV` picks the namespace (`production` writes `prod/`). Unset `ADI_DATA_DIR` first:
+if both are set the command warns and uses the filesystem store.
 
 ```sh
-vercel env pull --yes --environment=production /tmp/adi-prod.env
-set -a && . /tmp/adi-prod.env && set +a
-npm run correct -- 2026-11-20 --supersedes <printHash of the latest revision> --reason "<what was wrong>"
-rm /tmp/adi-prod.env
+(
+  set -eu
+  dir=$(mktemp -d) && chmod 700 "$dir" && trap 'rm -rf "$dir"' EXIT
+  vercel env pull --yes --environment=production "$dir/vercel.env" >/dev/null
+  token=$(sed -n 's/^BLOB_READ_WRITE_TOKEN="\(.*\)"$/\1/p' "$dir/vercel.env")
+  test -n "$token"
+  BLOB_READ_WRITE_TOKEN="$token" VERCEL_ENV=production \
+    npm run correct -- 2026-11-20 --supersedes <printHash of the latest revision> --reason "<what was wrong>"
+)
+```
+
+The command prints the new revision and its `printHash`. The API serves it within 5 minutes (its CDN
+cache). Then reproduce the day and check that the revision and `printHash` it reports are the ones
+the command printed, and add the incident to `docs/incidents.md`:
+
+```sh
 npm run reproduce -- 2026-11-20
 ```
 
-The command prints the store it writes to, the new revision and its `printHash`. The API serves the
-new revision within 5 minutes (its CDN cache), so wait that long before reproducing. Rehearse on a
-preview first: `--environment=preview` writes only to the `preview` namespace.
+**Rehearse on a preview first.** Use `--environment=preview` and `VERCEL_ENV=preview`, which write
+only to the `preview/` namespace, after settling a day there through the settle route (called as
+below, with the preview's URL and its bypass header). Reproduce against the preview, with
+`VERCEL_AUTOMATION_BYPASS_SECRET` set for its deployment protection:
+`npm run reproduce -- <date> --base-url <preview URL>`, and check the revision and `printHash` the
+same way.
+
+**If the history index was not updated.** The print is written first. If the command then reports
+that the history index still cites the previous revision, call the authenticated settle route for
+that day. It finds the stored print and points history at the latest revision without rebuilding
+anything. `CRON_SECRET` is a Sensitive Vercel variable, which `vercel env pull` does not return, so
+paste the operator's copy at the silent prompt; the header file keeps it out of the process list:
+
+```sh
+(
+  set -eu
+  dir=$(mktemp -d) && chmod 700 "$dir" && trap 'rm -rf "$dir"' EXIT
+  printf 'CRON_SECRET: ' && read -rs secret && echo
+  printf 'Authorization: Bearer %s\n' "$secret" > "$dir/auth"
+  curl -fsS -H @"$dir/auth" "https://airports.apexsofteng.com/api/cron/settle?date=2026-11-20"
+)
+```
+
+The incidents page lists correction prints from the stored prints, so it shows the correction even
+before history is repaired.
 
 ## Development
 

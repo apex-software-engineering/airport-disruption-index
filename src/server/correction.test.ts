@@ -8,7 +8,8 @@ import { reproduce } from '@/lib/reproduce';
 import type { DailyPrint } from '@/lib/index/schemas';
 import { routeGet } from '@/test/api';
 import { feedFixture } from '@/test/fixtures';
-import { DAY } from '@/test/rounds';
+import { buildPrint } from '@/lib/index/print';
+import { correctionOf, DAY } from '@/test/rounds';
 
 import { correctDay, readHistory, readPrints, settleDay, type CorrectionRequest } from './archive';
 import { collectRound } from './collector';
@@ -67,7 +68,7 @@ describe('correctDay', () => {
 	it('writes the next revision from the receipts, leaves r1 untouched and cites it in history', async () => {
 		const original = await settled();
 		const r1Bytes = (await store.read(`prints/${DAY}/r1.json`))?.version;
-		const corrected = await correctDay(store, DAY, request(original), IN_WINDOW);
+		const corrected = await correctDay(store, DAY, request(original), () => IN_WINDOW);
 
 		expect(corrected).toMatchObject({
 			revision: 2,
@@ -89,23 +90,23 @@ describe('correctDay', () => {
 	});
 
 	it('produces a revision that reproduces from the public API: MATCH', async () => {
-		await correctDay(store, DAY, request(await settled()), IN_WINDOW);
+		await correctDay(store, DAY, request(await settled()), () => IN_WINDOW);
 		const outcome = await reproduce(DAY, 'http://adi.test', routeGet);
 		expect(outcome).toMatchObject({ kind: 'match' });
 		expect(outcome.log).toEqual([expect.stringMatching(/^print 2026-11-17 r2: /)]);
 	});
 
 	it('chains: a further correction supersedes the latest revision', async () => {
-		const r2 = await correctDay(store, DAY, request(await settled()), IN_WINDOW);
-		const r3 = await correctDay(store, DAY, request(r2), IN_WINDOW);
+		const r2 = await correctDay(store, DAY, request(await settled()), () => IN_WINDOW);
+		const r3 = await correctDay(store, DAY, request(r2), () => IN_WINDOW);
 		expect(r3).toMatchObject({ revision: 3, correction: { supersedesPrintHash: r2.printHash } });
 	});
 
 	it('refuses a hash that is not the latest revision, and writes nothing', async () => {
 		const original = await settled();
-		await correctDay(store, DAY, request(original), IN_WINDOW);
+		await correctDay(store, DAY, request(original), () => IN_WINDOW);
 		const before = await storedPrints();
-		await expect(correctDay(store, DAY, request(original), IN_WINDOW)).rejects.toThrow(
+		await expect(correctDay(store, DAY, request(original), () => IN_WINDOW)).rejects.toThrow(
 			/is r1, but the latest revision of 2026-11-17 is r2/,
 		);
 		await expect(
@@ -113,7 +114,7 @@ describe('correctDay', () => {
 				store,
 				DAY,
 				{ ...request(original), supersedesPrintHash: 'f'.repeat(64) },
-				IN_WINDOW,
+				() => IN_WINDOW,
 			),
 		).rejects.toThrow(/is not a print of 2026-11-17/);
 		expect(await storedPrints()).toEqual(before);
@@ -125,18 +126,18 @@ describe('correctDay', () => {
 				store,
 				DAY,
 				{ supersedesPrintHash: 'f'.repeat(64), reason: 'x', windowOverride: null },
-				IN_WINDOW,
+				() => IN_WINDOW,
 			),
 		).rejects.toThrow(/has not settled/);
 	});
 
 	it('refuses after the window unless the override states why, and records the justification', async () => {
 		const original = await settled();
-		await expect(correctDay(store, DAY, request(original), AFTER_WINDOW)).rejects.toThrow(
+		await expect(correctDay(store, DAY, request(original), () => AFTER_WINDOW)).rejects.toThrow(
 			/corrections window closed at 2026-11-19T00:30:00.000Z/,
 		);
 		await expect(
-			correctDay(store, DAY, request(original, 'needed for once'), IN_WINDOW),
+			correctDay(store, DAY, request(original, 'needed for once'), () => IN_WINDOW),
 		).rejects.toThrow(/records none/);
 		expect(await readPrints(store, DAY)).toEqual([original]);
 
@@ -144,12 +145,28 @@ describe('correctDay', () => {
 			store,
 			DAY,
 			request(original, 'FAA confirmed the feed served stale data on D+1'),
-			AFTER_WINDOW,
+			() => AFTER_WINDOW,
 		);
 		expect(late.correction).toMatchObject({
 			issuedAt: AFTER_WINDOW.toISOString(),
 			windowOverride: 'FAA confirmed the feed served stale data on D+1',
 		});
+	});
+
+	it('judges the window when the print is written, not when the command started', async () => {
+		const original = await settled();
+		let now = new Date('2026-11-19T00:29:59Z');
+		// Reading the day's receipts takes the clock past the window's close, D+2 00:30Z.
+		class SlowStore extends FileStore {
+			override async list(prefix: string) {
+				if (prefix.startsWith('rounds/')) now = new Date('2026-11-19T00:30:01Z');
+				return super.list(prefix);
+			}
+		}
+		await expect(
+			correctDay(new SlowStore(root), DAY, request(original), () => now),
+		).rejects.toThrow(/corrections window closed/);
+		expect(await readPrints(store, DAY)).toEqual([original]);
 	});
 });
 
@@ -157,8 +174,8 @@ describe('correctionsView', () => {
 	it('lists every correction print, newest first, and nothing for an uncorrected day', async () => {
 		const original = await settled();
 		expect(await correctionsView(store)).toEqual([]);
-		const r2 = await correctDay(store, DAY, request(original), IN_WINDOW);
-		const r3 = await correctDay(store, DAY, request(r2), new Date('2026-11-18T07:00:00Z'));
+		const r2 = await correctDay(store, DAY, request(original), () => IN_WINDOW);
+		const r3 = await correctDay(store, DAY, request(r2), () => new Date('2026-11-18T07:00:00Z'));
 		expect(await correctionsView(store)).toEqual([
 			{
 				date: DAY,
@@ -175,5 +192,18 @@ describe('correctionsView', () => {
 				url: `/api/v1/days/${DAY}`,
 			},
 		]);
+	});
+
+	it('lists a correction whose history update was lost', async () => {
+		const original = await settled();
+		const r2 = buildPrint(DAY, [], { revision: 2, correction: correctionOf(original.printHash) });
+		await store.write(
+			`prints/${DAY}/r2.json`,
+			new TextEncoder().encode(JSON.stringify(r2)),
+			'application/json',
+			{ kind: 'if-absent' },
+		);
+		expect((await readHistory(store)).days).toMatchObject([{ revision: 1 }]);
+		expect(await correctionsView(store)).toMatchObject([{ revision: 2, printHash: r2.printHash }]);
 	});
 });

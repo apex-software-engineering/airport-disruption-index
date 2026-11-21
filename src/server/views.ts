@@ -17,7 +17,7 @@ import {
 	type UtcDate,
 } from '@/lib/index/time';
 
-import { readDayIndex, readHistory, readPrints } from './archive';
+import { readCorrectionPrints, readDayIndex, readHistory, readPrints } from './archive';
 import { CACHE } from './http';
 import type { ObjectStore } from './storage';
 
@@ -128,15 +128,9 @@ export type CorrectionEntry = Correction & {
 	url: string;
 };
 
-/**
- * Every correction print (revision 2 or later), most recently issued first. History cites each
- * day's latest revision, so only days it lists past revision 1 have their prints read.
- */
+/** Every stored correction print (revision 2 or later), most recently issued first. */
 export async function correctionsView(store: ObjectStore): Promise<CorrectionEntry[]> {
-	const { days } = await readHistory(store);
-	const corrected = days.filter((day) => day.revision > 1);
-	const prints = (await Promise.all(corrected.map((day) => readPrints(store, day.date)))).flat();
-	return prints
+	return (await readCorrectionPrints(store))
 		.flatMap(({ date, revision, printHash, correction }) =>
 			correction === null
 				? []

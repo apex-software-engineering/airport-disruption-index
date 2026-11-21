@@ -104,7 +104,7 @@ test('/incidents shows the operator log, the correction prints and the discussio
 	const none = corrections.getByText('No correction print has been issued.');
 	await expect(listed.first().or(none)).toBeVisible();
 	if (await listed.first().isVisible()) {
-		await expect(listed.first()).toContainText(/Revision\s*[2-9]/);
+		await expect(listed.first()).toContainText(/Revision\s*(?:[2-9]|[1-9]\d+)(?!\d)/);
 		await expect(listed.first().getByRole('link', { name: /\/api\/v1\/days\// })).toBeVisible();
 	}
 	await expect(

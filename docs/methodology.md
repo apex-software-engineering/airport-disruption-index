@@ -361,6 +361,10 @@ These notes bind whoever deploys the index.
 - **Rollbacks.** Receipts written from this release on record `adapterVersion` inside their hash. An
   older deployment cannot read the field and would rebuild them without it, so every rollback target
   must include this release's receipt reader (`src/lib/index/adapters.ts`). Never roll back past it.
+  Once any correction print exists, the floor rises: every rollback target must also include the
+  correction-aware print reader (`correction.issuedAt` and `correction.windowOverride` in
+  `src/lib/index/schemas.ts`). An older reader drops those fields when it parses the print, so it
+  would serve a correction whose contents no longer match its `printHash`.
 - **Never remove a release or an adapter.** Every entry in `src/lib/index/releases.ts` and
   `src/lib/index/adapters.ts` stays for as long as any receipt or print cites it. An adapter
   revision is frozen once any production receipt records it: a later fix is a new revision. Preview
