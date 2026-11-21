@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import { feedFixtureText } from '@/test/fixtures';
 
-import { FAA_ROOT_CHILDREN, parseFeed } from './feed';
+import { parseFeed } from './feed';
 
-/** The current rule (adapter faa-nas-xml/2): root children are allowlisted. */
-const parse = (xml: string) => parseFeed(xml, FAA_ROOT_CHILDREN);
+/** The current rule (adapter faa-nas-xml/2): structure is checked. */
+const parse = (xml: string) => parseFeed(xml, 'checked');
 
 function parseOk(xml: string) {
 	const result = parse(xml);
@@ -176,7 +176,7 @@ describe('parseFeed failures', () => {
 	});
 });
 
-describe('root children (adapter faa-nas-xml/2)', () => {
+describe('structure checks (adapter faa-nas-xml/2)', () => {
 	const UPDATE = '<Update_Time>Tue Nov 17 20:43:54 2026 GMT</Update_Time>';
 	const doc = (body: string) => `<AIRPORT_STATUS_INFORMATION>${body}</AIRPORT_STATUS_INFORMATION>`;
 	const renamed = doc(
@@ -191,6 +191,55 @@ describe('root children (adapter faa-nas-xml/2)', () => {
 			reason: 'unrecognized_structure',
 			detail:
 				'AIRPORT_STATUS_INFORMATION holds element(s) the feed has never carried: Delay_Type_V2',
+		});
+	});
+
+	const block = (name: string, inner: string) =>
+		doc(`${UPDATE}<Delay_type><Name>${name}</Name>${inner}</Delay_type>`);
+
+	// The last column is what adapter /1 made of it: an all-clear (true) or a parse_error (false).
+	it.each([
+		[
+			'a renamed GS list',
+			block('Ground Stop Programs', '<GS_List><Program><ARPT>ATL</ARPT></Program></GS_List>'),
+			true,
+		],
+		[
+			'a renamed GDP list',
+			block(
+				'Ground Delay Programs',
+				'<GDP_List><Ground_Delay><ARPT>SFO</ARPT></Ground_Delay></GDP_List>',
+			),
+			true,
+		],
+		[
+			'an extra list beside the GS list',
+			block('Ground Stop Programs', '<Ground_Stop_List/><Other_List/>'),
+			true,
+		],
+		['a counted name with no list', block('Ground Delay Programs', ''), true],
+		["the other program's list", block('Ground Stop Programs', '<Ground_Delay_List/>'), false],
+	])('fails closed on a counted-program block holding %s', (_label, xml, validUnderV1) => {
+		expect(parseFeed(xml, 'unchecked').ok).toBe(validUnderV1);
+		expect(parse(xml)).toMatchObject({
+			ok: false,
+			reason: 'unrecognized_structure',
+			detail: expect.stringMatching(/block must hold exactly (Ground_Stop_List|Ground_Delay_List)/),
+		});
+	});
+
+	it('still records an unknown block with an unknown list as unrecognized, not invalid', () => {
+		const xml = block(
+			'Deicing',
+			'<Deicing_List><Airport><ARPT>ORD</ARPT></Airport></Deicing_List>',
+		);
+		expect(parse(xml)).toMatchObject({
+			ok: true,
+			feed: {
+				otherDelayTypes: [
+					{ disposition: 'unrecognized', name: 'Deicing', element: 'Deicing_List', entries: 1 },
+				],
+			},
 		});
 	});
 

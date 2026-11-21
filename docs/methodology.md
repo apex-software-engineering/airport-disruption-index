@@ -59,8 +59,14 @@ One source: the FAA NAS Status airport feed,
 - The root may hold only `Update_Time`, `Dtd_File` and `Delay_type`, the elements every archived and
   sampled production payload carries (feed adapter `faa-nas-xml/2` onward). Any other root element
   fails the round (`unrecognized_structure`), because a renamed wrapper would otherwise read as an
-  all-clear. A calm payload with no `Delay_type` block is valid. Receipts parsed by `faa-nas-xml/1`,
-  which did not check the root, are still rebuilt with that rule.
+  all-clear. A calm payload with no `Delay_type` block is valid.
+- A `Delay_type` block named `Ground Stop Programs` or `Ground Delay Programs` must hold exactly its
+  own list (`Ground_Stop_List` or `Ground_Delay_List`) and nothing else (feed adapter
+  `faa-nas-xml/2` onward). A renamed list, an extra list, no list or the other program's list fails
+  the round (`unrecognized_structure`), because a renamed list under a counted name would otherwise
+  read as an all-clear.
+- Receipts parsed by `faa-nas-xml/1`, which made neither structure check, are still rebuilt with
+  that rule.
 
 The index is **sample-based**. The feed carries no start times, and its GS `End_Time` is
 airport-local text with no date. Neither is used: a program counts only in slots where a valid
@@ -79,14 +85,14 @@ verbatim in the receipt for reference.
 
 A round is **valid** when all of these hold; otherwise it is **invalid** with one reason:
 
-| Check                                                                                                                             | Reason if it fails       |
-| --------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| A response arrived (15 s timeout)                                                                                                 | `network_error`          |
-| HTTP status is 200                                                                                                                | `http_status`            |
-| The body is UTF-8, well-formed XML with root `AIRPORT_STATUS_INFORMATION`, a parseable `Update_Time` and well-formed GS/GDP lists | `parse_error`            |
-| The root holds only `Update_Time`, `Dtd_File` and `Delay_type` (feed adapter `faa-nas-xml/2` onward)                              | `unrecognized_structure` |
-| `Update_Time` is at most **900 s** before `fetchedAt`                                                                             | `stale_feed`             |
-| `Update_Time` is at most **120 s** after `fetchedAt`                                                                              | `feed_ahead_of_clock`    |
+| Check                                                                                                                                                  | Reason if it fails       |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ |
+| A response arrived (15 s timeout)                                                                                                                      | `network_error`          |
+| HTTP status is 200                                                                                                                                     | `http_status`            |
+| The body is UTF-8, well-formed XML with root `AIRPORT_STATUS_INFORMATION`, a parseable `Update_Time` and well-formed GS/GDP lists                      | `parse_error`            |
+| The root holds only `Update_Time`, `Dtd_File` and `Delay_type`, and each counted-program block holds exactly its list (adapter `faa-nas-xml/2` onward) | `unrecognized_structure` |
+| `Update_Time` is at most **900 s** before `fetchedAt`                                                                                                  | `stale_feed`             |
+| `Update_Time` is at most **120 s** after `fetchedAt`                                                                                                   | `feed_ahead_of_clock`    |
 
 The last check is a v1 refinement: a feed time well ahead of our clock means one of the two clocks
 is wrong, and slot assignment depends on ours. The feed updates about once a minute, so 120 s allows
@@ -206,19 +212,24 @@ this document disagree, the rule wins and the disagreement is a documentation bu
    value either, and `/api/v1/current` lists them in `foreignMethodologies`.
 5. **Feed data the index cannot read never settles.** Redirects are not followed, so a moved feed
    makes rounds invalid (`network_error` or `http_status`); a changed GS or GDP list fails the round
-   (`parse_error`), and so does an element at the root the feed has never carried
-   (`unrecognized_structure`). An invalid round counts as not received: it only lowers coverage, and
-   the coverage thresholds alone decide the status. A few rejected rounds therefore leave a day
-   `final` (up to 14 can be missing), and more make it `degraded` or `suspended`. The index never
-   reads a value from data it cannot parse. Restoring collection is a source-adapter fix or a
-   methodology change, as defined under
+   (`parse_error`), and so does an element at the root the feed has never carried or a
+   counted-program block that does not hold exactly its list (`unrecognized_structure`). An invalid
+   round counts as not received: it only lowers coverage, and the coverage thresholds alone decide
+   the status. A few rejected rounds therefore leave a day `final` (up to 14 can be missing), and
+   more make it `degraded` or `suspended`. The index never reads a value from data it cannot parse.
+   Restoring collection is a source-adapter fix or a methodology change, as defined under
    [Changes to the source or the methodology](#changes-to-the-source-or-the-methodology), and
    neither ever applies to a day already printed.
-6. **New list types are recorded and flagged, never counted.** A `Delay_type` list v1 does not know
-   is recorded in the receipt as `unrecognized`. Any unrecognized list seen in today's valid rounds
-   is listed in `unrecognizedLists` in `/api/v1/current` and on [/status](/status), so a feed change
-   that could hide a program is visible the same day. If the FAA starts reporting ground stops or
-   ground delay programs in a new list, v1 undercounts until a methodology change counts it.
+6. **New list types are recorded and flagged, never counted.** A `Delay_type` block with a name v1
+   does not count, holding a list v1 does not know, is recorded in the receipt as `unrecognized`:
+   the round stays valid, and any unrecognized list seen in today's valid rounds is listed in
+   `unrecognizedLists` in `/api/v1/current` and on [/status](/status), so a feed change that could
+   hide a program is visible the same day. A block named for a counted program
+   (`Ground Stop Programs` or `Ground Delay Programs`) is different: anything but exactly its own
+   list makes the round invalid (`unrecognized_structure`) under rule 5, so a renamed GS or GDP list
+   fails closed instead of reading as an all-clear. If the FAA starts reporting ground stops or
+   ground delay programs under a new name and list, v1 undercounts until a methodology change counts
+   it.
 7. **Publication deadline and retries.** The print for day D is due by **D+1 01:30Z**. The settle
    job runs at 00:30Z and retries at 00:45Z and 01:00Z. A run that finds no print reads every
    receipt of the day and checks it against its `receiptHash`; a receipt that cannot be read or

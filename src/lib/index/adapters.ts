@@ -4,7 +4,7 @@
  * not a methodology release: the methodology version and parameter hash stay the same, and each
  * receipt records the adapter that produced it so it is always rebuilt with that one.
  */
-import { FAA_ROOT_CHILDREN, parseFeed, type FeedParseResult } from './feed';
+import { parseFeed, type FeedParseResult } from './feed';
 
 export type FeedAdapter = {
 	readonly version: string;
@@ -22,11 +22,14 @@ const ADAPTERS: readonly FeedAdapter[] = [
 		url: FAA_FEED_URL,
 		parse: (xml) => parseFeed(xml, 'unchecked'),
 	},
-	/** Fails closed on any root element the feed has never carried (`unrecognized_structure`). */
+	/**
+	 * Fails closed (`unrecognized_structure`) on a root element the feed has never carried, or a
+	 * counted-program block that does not hold exactly its list.
+	 */
 	{
 		version: 'faa-nas-xml/2',
 		url: FAA_FEED_URL,
-		parse: (xml) => parseFeed(xml, FAA_ROOT_CHILDREN),
+		parse: (xml) => parseFeed(xml, 'checked'),
 	},
 ];
 
