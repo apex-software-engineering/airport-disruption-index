@@ -134,35 +134,25 @@ describe('pinProblems', () => {
 
 describe('publicationCutoff', () => {
 	it('is the start of D+2 in UTC for revision 1', () => {
-		expect(
-			publicationCutoff({ date: '2026-11-20', revision: 1, correction: null })?.toISOString(),
-		).toBe('2026-11-22T00:00:00.000Z');
-		expect(
-			publicationCutoff({ date: '2026-12-31', revision: 1, correction: null })?.toISOString(),
-		).toBe('2027-01-02T00:00:00.000Z');
+		expect(publicationCutoff({ date: '2026-11-20', revision: 1, correction: null })).toEqual(
+			new Date('2026-11-22T00:00:00.000Z'),
+		);
+		expect(publicationCutoff({ date: '2026-12-31', revision: 1, correction: null })).toEqual(
+			new Date('2027-01-02T00:00:00.000Z'),
+		);
 	});
-
-	const correction = { supersedesPrintHash: 'a'.repeat(64), reason: 'test' };
 
 	it('is 48 hours after correction.issuedAt for a correction', () => {
-		expect(
-			publicationCutoff({
-				date: '2026-11-20',
-				revision: 2,
-				correction: { ...correction, issuedAt: '2026-11-25T10:00:00Z' },
-			}),
-		).toEqual(new Date('2026-11-27T10:00:00Z'));
-	});
-
-	it('is unknown for a correction without issuedAt, and rejects a malformed one', () => {
-		expect(publicationCutoff({ date: '2026-11-20', revision: 2, correction })).toBeNull();
-		expect(() =>
-			publicationCutoff({
-				date: '2026-11-20',
-				revision: 2,
-				correction: { ...correction, issuedAt: 'yesterday' },
-			}),
-		).toThrow(/not an instant/);
+		const correction = buildPrint('2026-11-17', [], {
+			revision: 2,
+			correction: {
+				supersedesPrintHash: print.printHash,
+				reason: 'test correction',
+				issuedAt: '2026-11-18T10:00:00.000Z',
+				windowOverride: null,
+			},
+		});
+		expect(publicationCutoff(correction)).toEqual(new Date('2026-11-20T10:00:00.000Z'));
 	});
 });
 
@@ -174,11 +164,7 @@ describe('checkTimestamp', () => {
 		merkleRoot: '8a1b66ecb7cbd07d8139a7e7d7f2c41aab1f5009b8364aaf61d03ad245e47e00',
 		time: new Date('2015-05-28T15:41:18Z'),
 	};
-	const cutoff = (date: string) => {
-		const at = publicationCutoff({ date, revision: 1, correction: null });
-		if (at === null) throw new Error('revision 1 always has a cutoff');
-		return at;
-	};
+	const cutoff = (date: string) => publicationCutoff({ date, revision: 1, correction: null });
 	const explorer = async (height: number) => {
 		if (height !== 358391) throw new Error(`unexpected block ${height}`);
 		return block358391;

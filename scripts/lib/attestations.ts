@@ -11,7 +11,6 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { z } from 'zod';
 
 import {
-	CORRECTION_STAMP_HOURS,
 	checkTimestamp,
 	pinProblems,
 	publicationCutoff,
@@ -203,11 +202,6 @@ export async function verifyAttestedDay(
 		const served = revisions.find((r) => r.revision === pin.revision);
 		if (served === undefined) throw new Error(`pinProblems lets r${pin.revision} through unserved`);
 		const cutoff = publicationCutoff(served);
-		if (cutoff === null) {
-			throw new CannotVerify(
-				`${pin.name} attests a correction; its cutoff is ${CORRECTION_STAMP_HOURS} hours after the print's correction.issuedAt, which it does not record (#10)`,
-			);
-		}
 		const proofPath = `${directory}/${pin.name}.ots`;
 		if (!existsSync(proofPath)) {
 			problems.push(`${proofPath} does not exist`);

@@ -104,8 +104,12 @@ describe('dayResponseProblems', () => {
 	const first = buildPrint('2026-11-17', [summarizeReceipt(receipt)], { revision: 1 });
 	const second = buildPrint('2026-11-17', [], {
 		revision: 2,
-		supersedesPrintHash: first.printHash,
-		reason: 'test correction',
+		correction: {
+			supersedesPrintHash: first.printHash,
+			reason: 'test correction',
+			issuedAt: '2026-11-18T10:00:00.000Z',
+			windowOverride: null,
+		},
 	});
 
 	it('accepts a print that is the last of its revisions', () => {

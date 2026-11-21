@@ -7,7 +7,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildAttestation, serializeAttestation } from '@/lib/index/attestation';
 import { CURRENT_ADAPTER } from '@/lib/index/adapters';
-import { hashJson } from '@/lib/index/json';
 import { buildPrint } from '@/lib/index/print';
 import { summarizeReceipt } from '@/lib/index/round';
 import type { DailyPrint } from '@/lib/index/schemas';
@@ -20,7 +19,6 @@ import {
 	invalidProofs,
 	readPins,
 	verifyAttested,
-	verifyAttestedDay,
 	type BranchCheckout,
 } from './attestations';
 import { CannotVerify, getApi } from './public-api';
@@ -33,8 +31,12 @@ const receipt = collectedReceipt({
 const r1 = buildPrint('2026-11-17', [summarizeReceipt(receipt)], { revision: 1 });
 const r2 = buildPrint('2026-11-17', [], {
 	revision: 2,
-	supersedesPrintHash: r1.printHash,
-	reason: 'test correction',
+	correction: {
+		supersedesPrintHash: r1.printHash,
+		reason: 'test correction',
+		issuedAt: '2026-11-18T10:00:00.000Z',
+		windowOverride: null,
+	},
 });
 const pin1 = serializeAttestation(buildAttestation(r1, null));
 
@@ -226,31 +228,11 @@ describe('verifyAttested', () => {
 			verifyAttested('https://example.test', branch.checkout, '2026-11-17'),
 		).rejects.toThrow(/is revision 2; .*2026-11-17\.r2\.json is not on the branch/);
 	});
-
-	it('cannot verify a correction that records no correction.issuedAt', async () => {
-		const branch = branchCheckout();
-		branch.commit({ '2026-11-17.r2.json': serializeAttestation(buildAttestation(r2, null)) });
-		serveDay(r2, [r1, r2]);
-		await expect(
-			verifyAttested('https://example.test', branch.checkout, '2026-11-17'),
-		).rejects.toThrow(/correction; its cutoff is 48 hours after the print's correction.issuedAt/);
-	});
 });
 
-describe('verifyAttestedDay on a correction shaped like PR #22 prints it', () => {
-	// #22 records the issue time on the correction; the print hash covers it.
-	const { printHash: uncorrectedHash, ...rest } = r2;
-	const unsigned = {
-		...rest,
-		correction: {
-			supersedesPrintHash: r1.printHash,
-			reason: 'test correction',
-			issuedAt: '2026-11-25T10:00:00.000Z',
-			windowOverride: null,
-		},
-	};
-	const corrected = { ...unsigned, printHash: hashJson(unsigned) };
-	const file = serializeAttestation(buildAttestation(corrected, null));
+describe('verifyAttested on a correction', () => {
+	// r2 is built through main's correctionSchema; its cutoff is 48 hours after issuedAt.
+	const file = serializeAttestation(buildAttestation(r2, null));
 	const { proof, merkleRoot } = syntheticProof(new TextEncoder().encode(file), {
 		kind: 'bitcoin',
 		height: 100,
@@ -261,33 +243,32 @@ describe('verifyAttestedDay on a correction shaped like PR #22 prints it', () =>
 		branch.commit({ '2026-11-17.r2.json': file, '2026-11-17.r2.json.ots': proof });
 		vi.stubGlobal(
 			'fetch',
-			vi.fn(async (url: string) =>
-				url.endsWith('/block-height/100')
-					? new Response('00ff')
-					: Response.json({
-							height: 100,
-							merkle_root: merkleRoot,
-							timestamp: Date.parse(time) / 1000,
-						}),
-			),
+			vi.fn(async (url: string) => {
+				if (url.endsWith('/api/v1/days/2026-11-17'))
+					return Response.json({
+						date: '2026-11-17',
+						status: 'settled',
+						print: r2,
+						revisions: [r1, r2],
+					});
+				if (url.endsWith('/block-height/100')) return new Response('00ff');
+				return Response.json({
+					height: 100,
+					merkle_root: merkleRoot,
+					timestamp: Date.parse(time) / 1000,
+				});
+			}),
 		);
-		return verifyAttestedDay(
-			{ print: corrected, revisions: [r1, corrected], deployedCommit: null },
-			branch.checkout,
-		);
+		return verifyAttested('https://example.test', branch.checkout, '2026-11-17');
 	}
 
-	it('is a print whose hash covers correction.issuedAt', () => {
-		expect(corrected.printHash).not.toBe(uncorrectedHash);
-	});
-
 	it('matches when the block is within 48 hours of correction.issuedAt', async () => {
-		expect(await verifyWithBlockAt('2026-11-27T09:00:00Z')).toEqual([]);
+		expect(await verifyWithBlockAt('2026-11-20T09:00:00Z')).toEqual([]);
 	});
 
 	it('fails when the block is after that cutoff', async () => {
-		expect(await verifyWithBlockAt('2026-11-27T11:00:00Z')).toEqual([
-			expect.stringMatching(/after the publication cutoff 2026-11-27T10:00:00.000Z$/),
+		expect(await verifyWithBlockAt('2026-11-20T11:00:00Z')).toEqual([
+			expect.stringMatching(/after the publication cutoff 2026-11-20T10:00:00.000Z$/),
 		]);
 	});
 });

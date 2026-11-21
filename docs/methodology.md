@@ -375,12 +375,11 @@ retries.
 **Publication cutoff.** The attestation for revision 1 of day D counts only if the earliest Bitcoin
 block its proof reaches reports a header time before **D+2 00:00Z**. A correction (revision 2 or
 later) must be stamped within **48 hours of that revision's issue time**, as recorded in the print's
-`correction.issuedAt` (`correction` is null on revision 1). Until the correction process (#10)
-records it, a correction's attestation cannot be verified (exit 2). The check is against the header
-time the block's miner reported, not a wall clock. Consensus only bounds it: it must be later than
-the median of the previous 11 blocks' times, and no more than two hours ahead of the network's time
-when the block was accepted. So the cutoff is a rule about that reported time, and says only roughly
-when the attestation existed. The OpenTimestamps calendars keep the first commitment they receive,
+`correction.issuedAt` (`correction` is null on revision 1). The check is against the header time the
+block's miner reported, not a wall clock. Consensus only bounds it: it must be later than the median
+of the previous 11 blocks' times, and no more than two hours ahead of the network's time when the
+block was accepted. So the cutoff is a rule about that reported time, and says only roughly when the
+attestation existed. The OpenTimestamps calendars keep the first commitment they receive,
 independently of the operator, so a rewritten attestation would need a new and later timestamp,
 which the cutoff exposes. What this does not cover: between settlement (D+1 00:30Z) and the first
 stamp at 01:45Z the operator could still rewrite a print before it is attested. That window is about
