@@ -281,9 +281,9 @@ shape), while what is measured, the formula and every parameter stay the same.
 - It passes the same reproduce check as any release: every published round and print still
   reproduces with `MATCH`.
 - The repair time is a **target, not a guarantee**: one US federal business day (America/New_York)
-  from the monitor's first alert, a target, not a guarantee (**PROVISIONAL, pending owner
-  decision**). The clock starts at detection (the monitor's first alert). A business day is a US
-  federal business day in America/New_York.
+  from the monitor's first alert (**PROVISIONAL, pending owner decision**). The clock starts at
+  detection (the monitor's first alert). A business day is a US federal business day in
+  America/New_York.
 
 **A methodology change** is anything that changes what is measured or how: a parameter, the panel,
 or how events become airport-minutes. It is a new version with a new parameter hash (see
