@@ -346,9 +346,10 @@ not include; check out a later commit, or the tag for that version, e.g. `git ch
 
 Receipts and prints live in the operator's storage, so on their own the hashes prove only that the
 archive agrees with the code. Each settled day is also pinned outside that storage, on the
-`attestations` branch of the public repo. A ruleset blocks force-pushes and deletion of that branch,
-with no bypass, so its history only grows. That property comes from the ruleset: the workflow's
-`GITHUB_TOKEN` can write anywhere in the repo, and the workflow chooses to push only there.
+`attestations` branch of the public repo. A ruleset blocks force-pushes, deletion of that branch and
+merge commits, with no bypass, so its history only grows and stays linear. That property comes from
+the ruleset: the workflow's `GITHUB_TOKEN` can write anywhere in the repo, and the workflow chooses
+to push only there.
 
 At 01:45Z the attest workflow (`.github/workflows/attest.yml`) reconciles the last 7 days ending
 yesterday. For each settled day whose current print has no attestation, it reproduces the print from
@@ -399,14 +400,18 @@ npm run verify-attestation -- 2026-11-20 --base-url https://airports.apexsofteng
 (`git fetch origin` then `git -C attestations checkout --detach origin/attestations` updates it
 later.) The directory must be a full, not shallow, checkout whose HEAD is the tip of
 `origin/attestations` (`--dir` and `--branch` change either); anything else exits 2, because a stale
-or partial history could hide a rewrite. `verify-attestation` fetches the day and checks that
-`print` is the last of its `revisions`. It reads every attestation ever committed for that date from
-the branch history, as first committed, diffing each commit against its first parent so that a merge
-cannot hide anything: a later modification or deletion of one is a failure. Every attested revision
-must still be served by the API (a missing one is a rollback) and match it: `printHash` (which the
-print must hash to), `roundsDigest`, `parameterHash` and `methodologyVersion`. The current revision
-must have an attestation. For each attestation it then reads the proof, checks that it commits to
-the file's first-committed bytes, and looks up its earliest Bitcoin block at a public block explorer
+or partial history could hide a rewrite. It also asks GitHub for the branch's live tip
+(`git ls-remote`) and exits 2 ("stale checkout, fetch first") if that has moved on. Offline, it
+warns and checks the branch as of your last fetch: freshness then depends on having fetched.
+`verify-attestation` fetches the day and checks that `print` is the last of its `revisions`. It
+reads every attestation ever committed for that date from the branch history, as first committed,
+diffing each commit against its first parent: a later modification or deletion of one is a failure.
+Any merge commit in the branch history is also a failure, since the ruleset forbids them and a
+first-parent walk is only complete on a linear history. Every attested revision must still be served
+by the API (a missing one is a rollback) and match it: `printHash` (which the print must hash to),
+`roundsDigest`, `parameterHash` and `methodologyVersion`. The current revision must have an
+attestation. For each attestation it then reads the proof, checks that it commits to the file's
+first-committed bytes, and looks up its earliest Bitcoin block at a public block explorer
 (mempool.space) to check the merkle root and the cutoff. Exit codes: 0 `MATCH`, 1 `MISMATCH`
 (including an invalid proof or one after the cutoff), 2 could not verify, 3 `UNATTESTED` (the
 current print has no attestation), 4 `PENDING` (everything matches but the proof has not reached a

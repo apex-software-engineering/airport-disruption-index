@@ -46,6 +46,7 @@ afterEach(() => {
 		rmSync(directory, { recursive: true, force: true });
 	vi.unstubAllGlobals();
 	vi.unstubAllEnvs();
+	vi.restoreAllMocks();
 });
 
 type Files = Record<string, string | Uint8Array | null>;
@@ -142,22 +143,35 @@ describe('readPins', () => {
 		]);
 	});
 
-	it('flags a rewrite made inside a merge commit', () => {
+	const mergeCommit = expect.stringMatching(
+		/^publication history contains merge commit [0-9a-f]{40}; it must be linear$/,
+	);
+
+	it('flags a rewrite made inside a merge commit, and the merge itself', () => {
 		const branch = branchCheckout();
 		branch.commit({ '2026-11-17.r1.json': pin1 });
 		branch.evilMerge({ '2026-11-17.r1.json': rewritten });
 		expect(readPins(branch.checkout, '2026-11-17').problems).toEqual([
+			mergeCommit,
 			expect.stringMatching(/^2026-11-17\.r1\.json was modified in /),
 		]);
 	});
 
-	it('flags a deletion made inside a merge commit', () => {
+	it('flags a deletion made inside a merge commit, and the merge itself', () => {
 		const branch = branchCheckout();
 		branch.commit({ '2026-11-17.r1.json': pin1 });
 		branch.evilMerge({ '2026-11-17.r1.json': null });
 		expect(readPins(branch.checkout, '2026-11-17').problems).toEqual([
+			mergeCommit,
 			expect.stringMatching(/^2026-11-17\.r1\.json was deleted in /),
 		]);
+	});
+
+	it('flags any merge commit, even one that changes no attestation', () => {
+		const branch = branchCheckout();
+		branch.commit({ '2026-11-17.r1.json': pin1 });
+		branch.evilMerge({});
+		expect(readPins(branch.checkout, '2026-11-17').problems).toEqual([mergeCommit]);
 	});
 
 	it('refuses a directory that is not the root of its own checkout', () => {
@@ -186,6 +200,49 @@ describe('readPins', () => {
 		expect(() => readPins({ directory: shallow, branch: 'attestations' }, '2026-11-17')).toThrow(
 			/shallow checkout/,
 		);
+	});
+
+	/** A bare repo standing in for GitHub, holding the branch as published. */
+	function withRemote(branch: ReturnType<typeof branchCheckout>) {
+		const remote = mkdtempSync(path.join(tmpdir(), 'adi-remote-'));
+		directories.push(remote);
+		execFileSync('git', ['init', '--quiet', '--bare', remote]);
+		branch.git('remote', 'add', 'origin', remote);
+		branch.git('push', '--quiet', 'origin', 'HEAD:refs/heads/attestations');
+		return remote;
+	}
+
+	it('accepts a checkout at the live tip of the branch', () => {
+		const branch = branchCheckout();
+		branch.commit({ '2026-11-17.r1.json': pin1 });
+		withRemote(branch);
+		const warn = vi.spyOn(console, 'warn');
+		expect(readPins(branch.checkout, '2026-11-17').problems).toEqual([]);
+		expect(warn).not.toHaveBeenCalled();
+	});
+
+	it('refuses a stale checkout when the remote has moved on', () => {
+		const branch = branchCheckout();
+		branch.commit({ '2026-11-17.r1.json': pin1 });
+		const remote = withRemote(branch);
+		const other = mkdtempSync(path.join(tmpdir(), 'adi-other-'));
+		directories.push(other);
+		execFileSync('git', ['clone', '--quiet', '--branch', 'attestations', remote, other]);
+		writeFileSync(path.join(other, 'later.txt'), 'x');
+		const git = (...args: string[]) =>
+			execFileSync('git', ['-C', other, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args]);
+		git('add', '--all');
+		git('commit', '--quiet', '--no-gpg-sign', '-m', 'later');
+		git('push', '--quiet', 'origin', 'HEAD:refs/heads/attestations');
+		expect(() => readPins(branch.checkout, '2026-11-17')).toThrow(/^stale checkout, fetch first/);
+	});
+
+	it('warns and goes on when the remote cannot be reached', () => {
+		const branch = branchCheckout();
+		branch.commit({ '2026-11-17.r1.json': pin1 });
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		expect(readPins(branch.checkout, '2026-11-17').problems).toEqual([]);
+		expect(warn).toHaveBeenCalledWith(expect.stringMatching(/could not reach origin/));
 	});
 
 	it('refuses a checkout that is not at the tip of origin/{branch}', () => {
@@ -286,6 +343,21 @@ describe('invalidProofs', () => {
 			{
 				name: '2026-11-20.r1.json',
 				problem: expect.stringMatching(/2026-11-20\.r1\.json\.ots is not a valid proof/),
+			},
+		]);
+	});
+
+	it('reports a proof without its attestation for that name only, and checks the rest', async () => {
+		const { directory } = branchCheckout().checkout;
+		const write = (name: string, bytes: Uint8Array) =>
+			writeFileSync(path.join(directory, name), bytes);
+		write('2026-11-19.r1.json.ots', otsFixture('pending.json.ots'));
+		write('2026-11-20.r1.json', otsFixture('pending.json'));
+		write('2026-11-20.r1.json.ots', otsFixture('pending.json.ots'));
+		expect(await invalidProofs(directory, ['2026-11-19.r1.json', '2026-11-20.r1.json'])).toEqual([
+			{
+				name: '2026-11-19.r1.json',
+				problem: expect.stringMatching(/has no attestation file beside it$/),
 			},
 		]);
 	});

@@ -23,9 +23,17 @@ describe('check-proofs', () => {
 		write('2026-11-20.r1.json.ots', otsFixture('pending.json.ots'));
 		write('2026-11-19.r1.json', otsFixture('pending.json'));
 		write('2026-11-19.r1.json.ots', otsFixture('hello-world.txt.ots'));
+		write('2026-11-18.r1.json.ots', otsFixture('pending.json.ots')); // no attestation beside it
 		const run = spawnSync(
 			'npx',
-			['tsx', 'scripts/check-proofs.ts', directory, '2026-11-20.r1.json', '2026-11-19.r1.json'],
+			[
+				'tsx',
+				'scripts/check-proofs.ts',
+				directory,
+				'2026-11-18.r1.json',
+				'2026-11-20.r1.json',
+				'2026-11-19.r1.json',
+			],
 			{ encoding: 'utf8' },
 		);
 		expect(run.status).toBe(1);
@@ -33,6 +41,7 @@ describe('check-proofs', () => {
 			expect.arrayContaining([
 				'OK 2026-11-20.r1.json',
 				expect.stringMatching(/^INVALID 2026-11-19\.r1\.json: .*does not commit to/),
+				expect.stringMatching(/^INVALID 2026-11-18\.r1\.json: .*no attestation file/),
 			]),
 		);
 		expect(run.stdout).not.toContain('OK 2026-11-19.r1.json');

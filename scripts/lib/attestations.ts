@@ -102,12 +102,39 @@ function requireBranchCheckout({ directory, branch }: BranchCheckout): boolean {
 	const head = commitOf(directory, 'HEAD');
 	const tip = commitOf(directory, `refs/remotes/origin/${branch}`);
 	if (head === null && tip === null) return false;
+	const update = `run git fetch origin && git -C ${directory} checkout --detach origin/${branch}`;
 	if (head !== tip) {
 		throw new CannotVerify(
-			`${directory}/ is at ${head ?? 'no commit'}, not origin/${branch} (${tip ?? 'missing'}); run git fetch origin && git -C ${directory} checkout --detach origin/${branch}`,
+			`${directory}/ is at ${head ?? 'no commit'}, not origin/${branch} (${tip ?? 'missing'}); ${update}`,
+		);
+	}
+	const live = liveTip(directory, branch);
+	if (live === null) {
+		console.warn(
+			`warning: could not reach origin to check ${branch} is current; this checks the branch as of your last fetch`,
+		);
+	} else if (live !== head) {
+		throw new CannotVerify(
+			`stale checkout, fetch first: origin has ${branch} at ${live}; ${update}`,
 		);
 	}
 	return true;
+}
+
+/**
+ * The branch tip on the remote right now: a commit, 'missing' when the remote has no such
+ * branch, or null when the remote cannot be reached.
+ */
+function liveTip(directory: string, branch: string): string | null {
+	try {
+		const output = git(directory, ['ls-remote', '--exit-code', 'origin', `refs/heads/${branch}`]);
+		const [sha] = output.toString().split('\t');
+		return sha === undefined ? 'missing' : sha.trim();
+	} catch (error) {
+		// ls-remote --exit-code exits 2 when it reached the remote and found no matching ref.
+		if (error instanceof Error && 'status' in error && error.status === 2) return 'missing';
+		return null;
+	}
 }
 
 /**
@@ -121,6 +148,13 @@ export function readPins(
 ): { pins: Pin[]; problems: string[] } {
 	const { directory } = checkout;
 	if (!requireBranchCheckout(checkout)) return { pins: [], problems: [] };
+	// The branch ruleset requires linear history; a merge commit anywhere means it was bypassed,
+	// and a first-parent walk alone could then miss what the merged side changed.
+	const problems = git(directory, ['rev-list', '--merges', 'HEAD'])
+		.toString()
+		.split('\n')
+		.filter((sha) => sha !== '')
+		.map((sha) => `publication history contains merge commit ${sha}; it must be linear`);
 	const log = git(directory, [
 		'log',
 		'--reverse',
@@ -134,7 +168,6 @@ export function readPins(
 	]).toString();
 	const pattern = new RegExp(`^${date}\\.r([1-9]\\d*)\\.json$`);
 	const firstAdded = new Map<string, string>();
-	const problems: string[] = [];
 	let commit = '';
 	for (const line of log.split('\n')) {
 		if (line.startsWith('commit ')) commit = line.slice('commit '.length);
@@ -251,6 +284,10 @@ export async function invalidProofs(
 	const invalid: { name: string; problem: string }[] = [];
 	for (const name of names) {
 		const path = `${directory}/${name}`;
+		if (!existsSync(path)) {
+			invalid.push({ name, problem: `${path}.ots has no attestation file beside it` });
+			continue;
+		}
 		if (!existsSync(`${path}.ots`)) {
 			invalid.push({ name, problem: `${path}.ots does not exist` });
 			continue;

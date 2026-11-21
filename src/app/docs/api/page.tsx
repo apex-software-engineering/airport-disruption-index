@@ -197,9 +197,11 @@ export default async function ApiDocsPage() {
 				</Code>
 				<p className='text-ink-muted mt-4 max-w-2xl'>
 					It checks the live print against the attestation, then that the proof reached a Bitcoin
-					block before D+2 00:00Z. Exit code 0 is a match, 1 a mismatch or invalid proof, 2 could
-					not verify, 3 no attestation for the current print, 4 a proof still pending. Every API
-					response names the deployed commit in its <Mono>X-Deployed-Commit</Mono> header. See the{' '}
+					block in time: before D+2 00:00Z for the day&apos;s first print, and within 48 hours of{' '}
+					<Mono>correction.issuedAt</Mono> for a correction. Exit code 0 is a match, 1 a mismatch or
+					invalid proof, 2 could not verify, 3 no attestation for the current print, 4 a proof still
+					pending. Every API response names the deployed commit in its{' '}
+					<Mono>X-Deployed-Commit</Mono> header. See the{' '}
 					<a href='/methodology#attestations'>methodology</a>.
 				</p>
 			</Section>

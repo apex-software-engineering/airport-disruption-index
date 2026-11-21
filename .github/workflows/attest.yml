@@ -45,6 +45,7 @@ jobs:
       changed: ${{ steps.changes.outputs.changed }}
       unproven-commits: ${{ steps.commits.outputs.unproven }}
       withheld: ${{ steps.changes.outputs.withheld }}
+      stamp-failures: ${{ steps.stamp.outputs.failed }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -147,15 +148,23 @@ jobs:
           done < <(git -C attestations ls-files --others --exclude-standard -- '*.json')
           echo "unproven=$unproven" >> "$GITHUB_OUTPUT"
 
+      # Per file: one that fails to stamp is reported and left unproven (so it is withheld below),
+      # and the others still go out; the run fails at the end.
       - name: Stamp new attestations
+        id: stamp
         run: |
           shopt -s nullglob
+          failed=0
           for file in attestations/*.json; do
-            if [[ ! -e "$file.ots" ]]; then
-              ots stamp --timeout 30 "$file"
-              ots info "$file.ots"
+            [[ -e "$file.ots" ]] && continue
+            if ots stamp --timeout 30 "$file" && ots info "$file.ots"; then
+              echo "stamped $file"
+            else
+              echo "::error::$file: stamping failed"
+              failed=$((failed + 1))
             fi
           done
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
 
       # Only what this run wrote or upgraded is published, and only after its proof is parsed again
       # and found to commit to its attestation; a file that fails is withheld, the rest go out.
@@ -302,7 +311,7 @@ jobs:
       - name: Fail for anything not attested, proven or published
         if: >-
           needs.attest.outputs.status != '0' || needs.attest.outputs.unproven-commits != '0' ||
-          needs.attest.outputs.withheld != '0'
+          needs.attest.outputs.withheld != '0' || needs.attest.outputs.stamp-failures != '0'
         run: |
-          echo "::error::Days not attested, invalid proofs, withheld files or non-public deployed commits; see the attest job"
+          echo "::error::Days not attested, invalid proofs, failed stamps, withheld files or non-public deployed commits; see the attest job"
           exit 1
