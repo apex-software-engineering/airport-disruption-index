@@ -79,6 +79,7 @@ async function main(): Promise<number> {
 		);
 		console.log(`printHash ${print.printHash}`);
 		console.log(`supersedes ${args.request.supersedesPrintHash}`);
+		console.log(`The API serves it within 5 minutes; then run: npm run reproduce -- ${print.date}`);
 		return 0;
 	} catch (error) {
 		const message =

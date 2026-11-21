@@ -1,7 +1,11 @@
 /** Response helpers shared by the API route handlers. */
 import { createHash, timingSafeEqual } from 'node:crypto';
 
-/** Cache policies. Receipts of ended slots and their raw bodies never change. */
+/**
+ * Cache policies. Receipts of ended slots and their raw bodies never change. Prints and history
+ * use `live`, because settlement and corrections change them; `daily` is for what changes only
+ * with a release.
+ */
 export const CACHE = {
 	immutable: 'public, max-age=31536000, immutable',
 	live: 'public, max-age=0, s-maxage=60, stale-while-revalidate=240',

@@ -98,7 +98,7 @@ export default async function ApiDocsPage() {
 
 			<Endpoint
 				path={`${API_BASE}/history?from=YYYY-MM-DD&to=YYYY-MM-DD`}
-				cache={CACHE.daily}
+				cache={CACHE.live}
 				curl={`curl -s '${origin}${API_BASE}/history?from=${history.from}&to=${history.to}'`}
 				sample={history}>
 				Settled days in a date range, oldest first: status, value, GS-only value, coverage and print
@@ -107,7 +107,7 @@ export default async function ApiDocsPage() {
 
 			<Endpoint
 				path={`${API_BASE}/days/{date}`}
-				cache={`${CACHE.daily} (settled); ${CACHE.live} with HTTP 404 until then`}
+				cache={`${CACHE.live}, with HTTP 404 until the day settles`}
 				curl={`curl -s ${origin}${API_BASE}/days/${sampleDate}`}
 				sample={day}>
 				A day&apos;s settlement print, the latest revision first in <Mono>print</Mono> and every

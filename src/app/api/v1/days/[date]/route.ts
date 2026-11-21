@@ -9,5 +9,6 @@ export async function GET(_request: Request, context: { params: Promise<{ date: 
 	const { date } = await context.params;
 	if (parseUtcDate(date) === null) return problem(400, `invalid date ${date}`);
 	const view = await dayView(storeFromEnv(), date);
-	return view.status === 'settled' ? json(view, CACHE.daily) : json(view, CACHE.live, 404);
+	// Short-lived even when settled: a correction can replace the latest revision at any time.
+	return json(view, CACHE.live, view.status === 'settled' ? 200 : 404);
 }

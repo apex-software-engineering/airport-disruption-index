@@ -39,7 +39,8 @@ rm /tmp/adi-prod.env
 npm run reproduce -- 2026-11-20
 ```
 
-The command prints the store it writes to, the new revision and its `printHash`. Rehearse on a
+The command prints the store it writes to, the new revision and its `printHash`. The API serves the
+new revision within 5 minutes (its CDN cache), so wait that long before reproducing. Rehearse on a
 preview first: `--environment=preview` writes only to the `preview` namespace.
 
 ## Development
