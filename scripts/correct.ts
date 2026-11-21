@@ -14,7 +14,7 @@ import { z } from 'zod';
 
 import { parseUtcDate } from '@/lib/index/time';
 import { correctDay, type CorrectionRequest } from '@/server/archive';
-import { storeFromEnv, storeTarget } from '@/server/storage';
+import { storeFromEnv, storeTarget, type ObjectStore } from '@/server/storage';
 
 const USAGE =
 	'usage: npm run correct -- <YYYY-MM-DD> --supersedes <printHash> --reason "<text>" [--override-window "<justification>"]';
@@ -63,10 +63,17 @@ async function main(): Promise<number> {
 		);
 		return 2;
 	}
+	let objectStore: ObjectStore;
+	try {
+		objectStore = storeFromEnv(); // validates the token and VERCEL_ENV before the store is named
+	} catch (error) {
+		console.error(error instanceof Error ? error.message : String(error));
+		return 2;
+	}
 	if (store.warning !== null) console.warn(`warning: ${store.warning}`);
 	console.log(`store: ${store.name}`);
 	try {
-		const print = await correctDay(storeFromEnv(), args.date, args.request, () => new Date());
+		const print = await correctDay(objectStore, args.date, args.request, () => new Date());
 		const { result } = print;
 		console.log(
 			`wrote ${print.date} r${print.revision}: ${result.status}${result.status === 'suspended' ? '' : `, ADI ${result.value}`}, ${print.rounds.length} rounds`,

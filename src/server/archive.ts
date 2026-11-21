@@ -405,10 +405,12 @@ export type CorrectionRequest = {
 
 /**
  * Issues a correction: rebuilds the day from its stored receipts and writes it as the next
- * revision. It is issued at `clock()` read after the rebuild, just before the write, so a
- * rebuild that runs past the corrections window is judged at its real issue time. Refuses unless `supersedesPrintHash` is the day's latest revision,
- * and refuses a day whose print records a methodology other than the one the rebuild uses.
- * Earlier revisions are never touched; the history index then cites the new revision.
+ * revision. `clock()` is read after aggregation, just before the write, so a rebuild that runs
+ * past the corrections window is judged at its real issue time.
+ *
+ * Refuses unless `supersedesPrintHash` is the day's latest revision, and refuses a day whose
+ * print records a methodology other than the one the rebuild uses. Earlier revisions are never
+ * touched; the history index then cites the new revision.
  */
 export async function correctDay(
 	store: ObjectStore,
