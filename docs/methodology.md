@@ -56,6 +56,11 @@ One source: the FAA NAS Status airport feed,
   could silently drop an active program, which is worse than a visible gap. So does a document
   without exactly one `AIRPORT_STATUS_INFORMATION` root, or a GS/GDP list anywhere other than
   directly inside a `Delay_type` block.
+- The root may hold only `Update_Time`, `Dtd_File` and `Delay_type`, the elements every archived and
+  sampled production payload carries (feed adapter `faa-nas-xml/2` onward). Any other root element
+  fails the round (`unrecognized_structure`), because a renamed wrapper would otherwise read as an
+  all-clear. A calm payload with no `Delay_type` block is valid. Receipts parsed by `faa-nas-xml/1`,
+  which did not check the root, are still rebuilt with that rule.
 
 The index is **sample-based**. The feed carries no start times, and its GS `End_Time` is
 airport-local text with no date. Neither is used: a program counts only in slots where a valid
@@ -74,13 +79,14 @@ verbatim in the receipt for reference.
 
 A round is **valid** when all of these hold; otherwise it is **invalid** with one reason:
 
-| Check                                                                                                                             | Reason if it fails    |
-| --------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| A response arrived (15 s timeout)                                                                                                 | `network_error`       |
-| HTTP status is 200                                                                                                                | `http_status`         |
-| The body is UTF-8, well-formed XML with root `AIRPORT_STATUS_INFORMATION`, a parseable `Update_Time` and well-formed GS/GDP lists | `parse_error`         |
-| `Update_Time` is at most **900 s** before `fetchedAt`                                                                             | `stale_feed`          |
-| `Update_Time` is at most **120 s** after `fetchedAt`                                                                              | `feed_ahead_of_clock` |
+| Check                                                                                                                             | Reason if it fails       |
+| --------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| A response arrived (15 s timeout)                                                                                                 | `network_error`          |
+| HTTP status is 200                                                                                                                | `http_status`            |
+| The body is UTF-8, well-formed XML with root `AIRPORT_STATUS_INFORMATION`, a parseable `Update_Time` and well-formed GS/GDP lists | `parse_error`            |
+| The root holds only `Update_Time`, `Dtd_File` and `Delay_type` (feed adapter `faa-nas-xml/2` onward)                              | `unrecognized_structure` |
+| `Update_Time` is at most **900 s** before `fetchedAt`                                                                             | `stale_feed`             |
+| `Update_Time` is at most **120 s** after `fetchedAt`                                                                              | `feed_ahead_of_clock`    |
 
 The last check is a v1 refinement: a feed time well ahead of our clock means one of the two clocks
 is wrong, and slot assignment depends on ours. The feed updates about once a minute, so 120 s allows
@@ -200,11 +206,12 @@ this document disagree, the rule wins and the disagreement is a documentation bu
    value either, and `/api/v1/current` lists them in `foreignMethodologies`.
 5. **Feed data the index cannot read never settles.** Redirects are not followed, so a moved feed
    makes rounds invalid (`network_error` or `http_status`); a changed GS or GDP list fails the round
-   (`parse_error`). An invalid round counts as not received: it only lowers coverage, and the
-   coverage thresholds alone decide the status. A few rejected rounds therefore leave a day `final`
-   (up to 14 can be missing), and more make it `degraded` or `suspended`. The index never reads a
-   value from data it cannot parse. Restoring collection is a source-adapter fix or a methodology
-   change, as defined under
+   (`parse_error`), and so does an element at the root the feed has never carried
+   (`unrecognized_structure`). An invalid round counts as not received: it only lowers coverage, and
+   the coverage thresholds alone decide the status. A few rejected rounds therefore leave a day
+   `final` (up to 14 can be missing), and more make it `degraded` or `suspended`. The index never
+   reads a value from data it cannot parse. Restoring collection is a source-adapter fix or a
+   methodology change, as defined under
    [Changes to the source or the methodology](#changes-to-the-source-or-the-methodology), and
    neither ever applies to a day already printed.
 6. **New list types are recorded and flagged, never counted.** A `Delay_type` list v1 does not know
@@ -326,6 +333,31 @@ parameters. A source-adapter fix is not a methodology version (see
 that can move the value without any change in disruption (for example a different panel) is a
 **level break**. History is never rescaled or chain-linked, and a print always carries the version
 it was computed under.
+
+## Operations
+
+These notes bind whoever deploys the index.
+
+- **Rollbacks.** Receipts written from this release on record `adapterVersion` inside their hash. An
+  older deployment cannot read the field and would rebuild them without it, so every rollback target
+  must include this release's receipt reader (`src/lib/index/adapters.ts`). Never roll back past it.
+- **Never remove a release or an adapter.** Every entry in `src/lib/index/releases.ts` and
+  `src/lib/index/adapters.ts` stays for as long as any receipt or print cites it.
+
+### v2 rollout checklist
+
+1. Add v2 to `src/lib/index/releases.ts` with an `effectiveFrom` day at least [NOTICE] after the
+   announcement on the [incident log](#incident-log), and pin its parameter hash in
+   `src/lib/index/methodology.test.ts`. Keep v1 in the registry: v1 days keep settling under v1
+   until v1's last day has printed, and reproducing under v1 forever.
+2. Deploy before the effective day, so no collector runs v1-only code past the cutover (rounds it
+   writes would make the first v2 day `suspended`).
+3. Expect cached responses to lag the 00:00Z cutover: `/api/v1/methodology` caches for up to an hour
+   at the edge, the `/methodology` page re-renders hourly, and `/api/v1/current` can be up to five
+   minutes stale. Purge the edge cache just after 00:00Z, or say in the announcement that these may
+   show the previous version for up to an hour.
+4. After the first v2 day prints, run `npm run reproduce` on it and on the last v1 day; both must
+   print `MATCH`.
 
 ## Out of scope for v1
 

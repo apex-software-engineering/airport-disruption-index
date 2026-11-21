@@ -151,7 +151,9 @@ export default async function ApiDocsPage() {
 				curl={`curl -s ${origin}${API_BASE}/methodology`}
 				sample={methodology}>
 				The methodology parameters in force, their version and the parameter hash every receipt and
-				print carries.
+				print carries. <Mono>parameters.source</Mono> is the source as of the release;{' '}
+				<Mono>activeAdapter</Mono> is the source adapter collecting now (version and address), which
+				a source-adapter fix can change without a methodology release.
 			</Endpoint>
 
 			<Section id='reproduce' title='Reproducing a number'>

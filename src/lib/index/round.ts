@@ -37,7 +37,7 @@ export function evaluateObservation(
 	const text = decodeUtf8(outcome.body);
 	if (text === null) return invalid('parse_error', 'body is not valid UTF-8', null);
 	const parsed = adapter.parse(text);
-	if (!parsed.ok) return invalid('parse_error', parsed.detail, null);
+	if (!parsed.ok) return invalid(parsed.reason, parsed.detail, null);
 	const { updateTime, events, otherDelayTypes } = parsed.feed;
 	const ageSeconds = (fetchedAt.getTime() - Date.parse(updateTime)) / 1000;
 	if (ageSeconds > maxFeedAgeSeconds) {

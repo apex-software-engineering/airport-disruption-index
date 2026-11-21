@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import { feedFixtureText } from '@/test/fixtures';
 
-import { parseFeed } from './feed';
+import { FAA_ROOT_CHILDREN, parseFeed } from './feed';
+
+/** The current rule (adapter faa-nas-xml/2): root children are allowlisted. */
+const parse = (xml: string) => parseFeed(xml, FAA_ROOT_CHILDREN);
 
 function parseOk(xml: string) {
-	const result = parseFeed(xml);
+	const result = parse(xml);
 	if (!result.ok) throw new Error(`expected a parse, got: ${result.detail}`);
 	return result.feed;
 }
@@ -97,7 +100,7 @@ describe('parseFeed on markup that carries no data', () => {
 	it.each(['synthetic-gs-block-without-name.xml', 'synthetic-gdp-block-two-names.xml'])(
 		'rejects a counted block without exactly one matching Name (%s)',
 		(name) => {
-			const result = parseFeed(feedFixtureText(name));
+			const result = parse(feedFixtureText(name));
 			expect(result).toMatchObject({ ok: false, detail: expect.stringMatching(/needs one Name/) });
 		},
 	);
@@ -169,6 +172,45 @@ describe('parseFeed failures', () => {
 			'<!DOCTYPE A [<!ENTITY e SYSTEM "file:///etc/passwd">]><AIRPORT_STATUS_INFORMATION><Update_Time>&e;</Update_Time></AIRPORT_STATUS_INFORMATION>',
 		],
 	])('rejects %s', (_label, xml) => {
-		expect(parseFeed(xml).ok).toBe(false);
+		expect(parse(xml).ok).toBe(false);
+	});
+});
+
+describe('root children (adapter faa-nas-xml/2)', () => {
+	const UPDATE = '<Update_Time>Tue Nov 17 20:43:54 2026 GMT</Update_Time>';
+	const doc = (body: string) => `<AIRPORT_STATUS_INFORMATION>${body}</AIRPORT_STATUS_INFORMATION>`;
+	const renamed = doc(
+		`${UPDATE}<Delay_Type_V2><Name>Ground Stop Programs</Name><GS_List><Program><ARPT>ATL</ARPT></Program></GS_List></Delay_Type_V2>`,
+	);
+
+	it('fails closed on a renamed wrapper that the original rule read as an all-clear', () => {
+		const unchecked = parseFeed(renamed, 'unchecked');
+		expect(unchecked).toMatchObject({ ok: true, feed: { events: [], otherDelayTypes: [] } });
+		expect(parse(renamed)).toEqual({
+			ok: false,
+			reason: 'unrecognized_structure',
+			detail:
+				'AIRPORT_STATUS_INFORMATION holds element(s) the feed has never carried: Delay_Type_V2',
+		});
+	});
+
+	it('keeps a calm payload with no Delay_type valid', () => {
+		const calm = doc(`${UPDATE}<Dtd_File>http://www.fly.faa.gov/AirportStatus.dtd</Dtd_File>`);
+		expect(parse(calm)).toMatchObject({ ok: true, feed: { events: [], otherDelayTypes: [] } });
+		expect(parse(doc(UPDATE))).toMatchObject({ ok: true });
+	});
+
+	it.each([
+		'live-2026-11-17T20-43-56Z.xml',
+		'live-2026-11-17T20-58-29Z.xml',
+		'live-2026-11-20T01-03-33Z.xml',
+		'synthetic-edge-cases.xml',
+		'synthetic-gdp-block-two-names.xml',
+		'synthetic-gs-block-without-name.xml',
+		'synthetic-gs-gdp.xml',
+		'synthetic-processing-instructions.xml',
+	])('reads %s exactly as the original rule does', (name) => {
+		const xml = feedFixtureText(name);
+		expect(parse(xml)).toEqual(parseFeed(xml, 'unchecked'));
 	});
 });

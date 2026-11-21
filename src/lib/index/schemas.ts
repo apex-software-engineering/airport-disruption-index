@@ -92,6 +92,8 @@ export const invalidReasonSchema = z.enum([
 	'network_error',
 	'http_status',
 	'parse_error',
+	/** Adapter faa-nas-xml/2 onward: the root holds an element the feed has never carried. */
+	'unrecognized_structure',
 	'stale_feed',
 	'feed_ahead_of_clock',
 ]);

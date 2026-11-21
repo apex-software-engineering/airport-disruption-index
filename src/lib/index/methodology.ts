@@ -70,10 +70,15 @@ export const SLOT_MINUTES: MethodologyParameters['slotMinutes'] = 5;
 export const SLOTS_PER_DAY: MethodologyParameters['slotsPerDay'] = 288;
 export const SETTLEMENT_CUTOFF_MINUTES: MethodologyParameters['settlement']['cutoffMinutesAfterDayEnd'] = 30;
 
-/** The methodology in effect on `date`. Throws for a day before the first release. */
+/** The methodology in effect on `date`, or null for a day before the first release. */
+export function methodologyInEffect(date: UtcDate): Methodology | null {
+	return RELEASES.findLast((r) => r.effectiveFrom <= date) ?? null;
+}
+
+/** The methodology in effect on `date`, for a day that must have one (it has rounds). */
 export function methodologyFor(date: UtcDate): Methodology {
-	const release = RELEASES.findLast((r) => r.effectiveFrom <= date);
-	if (release === undefined) throw new Error(`no methodology is in effect on ${date}`);
+	const release = methodologyInEffect(date);
+	if (release === null) throw new Error(`no methodology is in effect on ${date}`);
 	return release;
 }
 

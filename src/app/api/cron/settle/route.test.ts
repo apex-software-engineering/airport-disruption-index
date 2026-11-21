@@ -97,4 +97,14 @@ describe('settle route', () => {
 		}
 		expect(await readPrints(new FileStore(root), DAY)).toHaveLength(1);
 	});
+
+	it('refuses a day before the first release instead of failing', async () => {
+		vi.setSystemTime(new Date('2026-11-21T00:30:00Z'));
+		const response = await GET(
+			new Request('http://test/api/cron/settle?date=2026-10-01', {
+				headers: { authorization: `Bearer ${SECRET}` },
+			}),
+		);
+		expect(response.status).toBe(400);
+	});
 });

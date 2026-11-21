@@ -147,13 +147,13 @@ describe('buildReceipt', () => {
 	it('records the adapter in new receipts, inside the hash, deterministically', () => {
 		const first = receiptAt(2, ok('synthetic-gs-gdp.xml'));
 		const second = receiptAt(2, ok('synthetic-gs-gdp.xml'));
-		expect(first.adapterVersion).toBe('faa-nas-xml/1');
+		expect(first.adapterVersion).toBe('faa-nas-xml/2');
 		expect(second).toEqual(first);
 		expect(receiptHashMatches(first)).toBe(true);
-		expect(receiptHashMatches({ ...first, adapterVersion: 'faa-nas-xml/2' })).toBe(false);
+		expect(receiptHashMatches({ ...first, adapterVersion: 'faa-nas-xml/1' })).toBe(false);
 		// The same round as the pre-adapter receipt above, now with the adapter in the hash.
 		expect(first.receiptHash).toBe(
-			'34ce41c582e9f4410fe036a65168e9620a9746bbd8222fa1a00f3f8d950d65d0',
+			'a947802e0a35ab345175be38e9294f1ed8b3fac086b7a1b1c1bde80830ae2380',
 		);
 	});
 

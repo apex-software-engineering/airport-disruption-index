@@ -1,6 +1,6 @@
 /** Read models for the public API, shaped for direct rendering. */
 import { aggregateDay, type SlotState } from '@/lib/index/day';
-import { methodologyFor } from '@/lib/index/methodology';
+import { methodologyInEffect } from '@/lib/index/methodology';
 import type { DailyPrint, RoundReceipt, RoundSummary, UnrecognizedList } from '@/lib/index/schemas';
 import {
 	elapsedSlots,
@@ -107,8 +107,8 @@ export async function historyView(store: ObjectStore, from: UtcDate, to: UtcDate
 	return {
 		from,
 		to,
-		/** In effect on `to`; each day's print records its own version. */
-		methodologyVersion: methodologyFor(to).parameters.version,
+		/** In effect on `to` (null before the first release); each print records its own. */
+		methodologyVersion: methodologyInEffect(to)?.parameters.version ?? null,
 		days: days
 			.filter((day) => day.date >= from && day.date <= to)
 			.map((day) => ({ ...day, url: `${API_BASE}/days/${day.date}` })),

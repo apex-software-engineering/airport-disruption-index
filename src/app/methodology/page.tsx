@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 
 import { DocBody } from '@/components/doc-body';
 import { Facts, Mono, Section, Table } from '@/components/ui';
+import { CURRENT_ADAPTER } from '@/lib/index/adapters';
 import { methodologyFor } from '@/lib/index/methodology';
 import { utcDateOf } from '@/lib/index/time';
 
@@ -26,7 +27,20 @@ export default function MethodologyPage() {
 					rows={[
 						{ term: 'Version', detail: parameters.version },
 						{ term: 'Parameter hash', detail: <Mono>{parameterHash}</Mono> },
-						{ term: 'Source', detail: <Mono>{parameters.source.url}</Mono> },
+						{
+							term: 'Source at release',
+							detail: <Mono>{parameters.source.url}</Mono>,
+						},
+						{
+							term: 'Active source adapter',
+							detail: (
+								<>
+									<Mono>{CURRENT_ADAPTER.version}</Mono>, fetching{' '}
+									<Mono>{CURRENT_ADAPTER.url}</Mono> (an adapter fix can change this without a
+									methodology release; each receipt records its own)
+								</>
+							),
+						},
 						{
 							term: 'Day',
 							detail: `UTC, ${parameters.slotsPerDay} slots of ${parameters.slotMinutes} minutes`,

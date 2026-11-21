@@ -4,7 +4,7 @@
  * not a methodology release: the methodology version and parameter hash stay the same, and each
  * receipt records the adapter that produced it so it is always rebuilt with that one.
  */
-import { parseFeed, type FeedParseResult } from './feed';
+import { FAA_ROOT_CHILDREN, parseFeed, type FeedParseResult } from './feed';
 
 export type FeedAdapter = {
 	readonly version: string;
@@ -13,12 +13,20 @@ export type FeedAdapter = {
 	readonly parse: (text: string) => FeedParseResult;
 };
 
+const FAA_FEED_URL = 'https://nasstatus.faa.gov/api/airport-status-information';
+
 /** Every adapter, oldest first. An entry is never edited or removed once a receipt cites it. */
 const ADAPTERS: readonly FeedAdapter[] = [
 	{
 		version: 'faa-nas-xml/1',
-		url: 'https://nasstatus.faa.gov/api/airport-status-information',
-		parse: parseFeed,
+		url: FAA_FEED_URL,
+		parse: (xml) => parseFeed(xml, 'unchecked'),
+	},
+	/** Fails closed on any root element the feed has never carried (`unrecognized_structure`). */
+	{
+		version: 'faa-nas-xml/2',
+		url: FAA_FEED_URL,
+		parse: (xml) => parseFeed(xml, FAA_ROOT_CHILDREN),
 	},
 ];
 

@@ -22,7 +22,26 @@ export type ParsedFeed = {
 	otherDelayTypes: OtherDelayType[];
 };
 
-export type FeedParseResult = { ok: true; feed: ParsedFeed } | { ok: false; detail: string };
+/**
+ * `unrecognized_structure` is a document whose root holds an element the feed has never carried
+ * (adapter faa-nas-xml/2 onward): a renamed wrapper could otherwise read as an all-clear.
+ */
+export type FeedParseResult =
+	| { ok: true; feed: ParsedFeed }
+	| { ok: false; reason: 'parse_error' | 'unrecognized_structure'; detail: string };
+
+/**
+ * Which elements the root may hold. `unchecked` is the original rule of adapter faa-nas-xml/1,
+ * kept so its archived receipts rebuild exactly.
+ */
+export type RootChildren = 'unchecked' | ReadonlySet<string>;
+
+/** Every root child seen in the archived fixtures and in sampled production bodies. */
+export const FAA_ROOT_CHILDREN: ReadonlySet<string> = new Set([
+	'Update_Time',
+	'Dtd_File',
+	'Delay_type',
+]);
 
 const ROOT = 'AIRPORT_STATUS_INFORMATION';
 const GROUND_STOP_LIST = 'Ground_Stop_List';
@@ -79,47 +98,60 @@ const groundDelaySchema = z.object({
 	Max: optionalText,
 });
 
-export function parseFeed(xml: string): FeedParseResult {
+export function parseFeed(xml: string, rootChildren: RootChildren): FeedParseResult {
 	const wellFormed = XMLValidator.validate(xml);
 	if (wellFormed !== true) {
-		return {
-			ok: false,
-			detail: `XML not well formed: ${wellFormed.err.msg} (line ${wellFormed.err.line})`,
-		};
+		return parseError(`XML not well formed: ${wellFormed.err.msg} (line ${wellFormed.err.line})`);
 	}
 	let tree: unknown;
 	try {
 		tree = parser.parse(xml);
 	} catch (error) {
-		return { ok: false, detail: `XML parser rejected the document: ${String(error)}` };
+		return parseError(`XML parser rejected the document: ${String(error)}`);
 	}
 	const document = documentSchema.safeParse(tree);
 	const roots = document.success ? Object.keys(document.data) : [];
 	if (roots.length !== 1 || roots[0] !== ROOT) {
-		return { ok: false, detail: `expected exactly one ${ROOT} root, found [${roots.join(', ')}]` };
+		return parseError(`expected exactly one ${ROOT} root, found [${roots.join(', ')}]`);
+	}
+	const unknown = unknownRootChildren(document.data?.[ROOT], rootChildren);
+	if (unknown.length > 0) {
+		return {
+			ok: false,
+			reason: 'unrecognized_structure',
+			detail: `${ROOT} holds element(s) the feed has never carried: ${unknown.join(', ')}`,
+		};
 	}
 	const root = rootSchema.safeParse(tree);
-	if (!root.success)
-		return { ok: false, detail: `not an ${ROOT} document: ${z.prettifyError(root.error)}` };
+	if (!root.success) return parseError(`not an ${ROOT} document: ${z.prettifyError(root.error)}`);
 	const { Update_Time: updateTimeText, Delay_type: blocks = [] } = root.data[ROOT];
 	for (const list of PROGRAM_BLOCK_NAMES.keys()) {
 		const inBlocks = blocks.filter((block) => block !== '' && Object.hasOwn(block, list)).length;
 		if (countKey(tree, list) !== inBlocks) {
-			return { ok: false, detail: `${list} found outside a Delay_type block` };
+			return parseError(`${list} found outside a Delay_type block`);
 		}
 	}
 	const updateTime = parseFeedUpdateTime(updateTimeText);
-	if (updateTime === null)
-		return { ok: false, detail: `unparseable Update_Time "${updateTimeText}"` };
+	if (updateTime === null) return parseError(`unparseable Update_Time "${updateTimeText}"`);
 	try {
 		const events: ProgramEvent[] = [];
 		const otherDelayTypes: OtherDelayType[] = [];
 		for (const block of blocks) readDelayType(block === '' ? {} : block, events, otherDelayTypes);
 		return { ok: true, feed: { updateTime, events, otherDelayTypes } };
 	} catch (error) {
-		if (error instanceof FeedFormatError) return { ok: false, detail: error.message };
+		if (error instanceof FeedFormatError) return parseError(error.message);
 		throw error;
 	}
+}
+
+function parseError(detail: string): FeedParseResult {
+	return { ok: false, reason: 'parse_error', detail };
+}
+
+/** Root children outside `allowed`. An empty root (text only) has none. */
+function unknownRootChildren(root: unknown, allowed: RootChildren): string[] {
+	if (allowed === 'unchecked' || typeof root !== 'object' || root === null) return [];
+	return Object.keys(root).filter((name) => !allowed.has(name));
 }
 
 function readDelayType(
