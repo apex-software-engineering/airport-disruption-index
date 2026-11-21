@@ -219,12 +219,19 @@ describe('structure checks (adapter faa-nas-xml/2)', () => {
 		],
 		['a counted name with no list', block('Ground Delay Programs', ''), true],
 		["the other program's list", block('Ground Stop Programs', '<Ground_Delay_List/>'), false],
+		[
+			'its list twice',
+			block('Ground Stop Programs', '<Ground_Stop_List/><Ground_Stop_List/>'),
+			false,
+		],
 	])('fails closed on a counted-program block holding %s', (_label, xml, validUnderV1) => {
 		expect(parseFeed(xml, 'unchecked').ok).toBe(validUnderV1);
 		expect(parse(xml)).toMatchObject({
 			ok: false,
 			reason: 'unrecognized_structure',
-			detail: expect.stringMatching(/block must hold exactly (Ground_Stop_List|Ground_Delay_List)/),
+			detail: expect.stringMatching(
+				/block must hold exactly one (Ground_Stop_List|Ground_Delay_List)/,
+			),
 		});
 	});
 

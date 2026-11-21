@@ -162,17 +162,23 @@ function unknownRootChildren(root: unknown): string[] {
 }
 
 /**
- * A block named for a counted program must hold exactly that program's list and nothing else.
- * A renamed list under a counted Name would otherwise be recorded as `unrecognized` and the
- * round read as an all-clear. Blocks with other names are left to readDelayType.
+ * A block named for a counted program must hold exactly one of that program's list and nothing
+ * else. A renamed list under a counted Name would otherwise be recorded as `unrecognized` and
+ * the round read as an all-clear. A repeated list parses to an array. Blocks with other names
+ * are left to readDelayType.
  */
 function requireCountedList(block: Record<string, unknown>): void {
 	const names = [block.Name].flat().filter((name) => typeof name === 'string');
 	const lists = Object.keys(block).filter((key) => key !== 'Name');
 	for (const [list, countedName] of PROGRAM_BLOCK_NAMES) {
-		if (names.includes(countedName) && !(lists.length === 1 && lists[0] === list)) {
+		if (!names.includes(countedName)) continue;
+		const found = lists.flatMap((key) => {
+			const value = block[key];
+			return Array.isArray(value) ? value.map(() => key) : [key];
+		});
+		if (!(found.length === 1 && found[0] === list)) {
 			throw new UnrecognizedStructure(
-				`a "${countedName}" block must hold exactly ${list}, found [${lists.join(', ')}]`,
+				`a "${countedName}" block must hold exactly one ${list}, found [${found.join(', ')}]`,
 			);
 		}
 	}

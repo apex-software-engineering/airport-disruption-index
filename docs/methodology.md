@@ -61,10 +61,10 @@ One source: the FAA NAS Status airport feed,
   fails the round (`unrecognized_structure`), because a renamed wrapper would otherwise read as an
   all-clear. A calm payload with no `Delay_type` block is valid.
 - A `Delay_type` block named `Ground Stop Programs` or `Ground Delay Programs` must hold exactly its
-  own list (`Ground_Stop_List` or `Ground_Delay_List`) and nothing else (feed adapter
-  `faa-nas-xml/2` onward). A renamed list, an extra list, no list or the other program's list fails
-  the round (`unrecognized_structure`), because a renamed list under a counted name would otherwise
-  read as an all-clear.
+  own list (`Ground_Stop_List` or `Ground_Delay_List`), once, and nothing else (feed adapter
+  `faa-nas-xml/2` onward). A renamed list, an extra or repeated list, no list or the other program's
+  list fails the round (`unrecognized_structure`), because a renamed list under a counted name would
+  otherwise read as an all-clear.
 - Receipts parsed by `faa-nas-xml/1`, which made neither structure check, are still rebuilt with
   that rule.
 
@@ -353,7 +353,9 @@ These notes bind whoever deploys the index.
   older deployment cannot read the field and would rebuild them without it, so every rollback target
   must include this release's receipt reader (`src/lib/index/adapters.ts`). Never roll back past it.
 - **Never remove a release or an adapter.** Every entry in `src/lib/index/releases.ts` and
-  `src/lib/index/adapters.ts` stays for as long as any receipt or print cites it.
+  `src/lib/index/adapters.ts` stays for as long as any receipt or print cites it. An adapter
+  revision is frozen once any production receipt records it: a later fix is a new revision. Preview
+  receipts are not authoritative and do not freeze one.
 
 ### v2 rollout checklist
 
