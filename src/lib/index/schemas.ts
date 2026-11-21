@@ -42,6 +42,10 @@ export const otherDelayTypeSchema = z.object({
 });
 export type OtherDelayType = z.infer<typeof otherDelayTypeSchema>;
 
+/** Which list an `unrecognized` Delay_type entry was: its element and its block's Name. */
+export const unrecognizedListSchema = otherDelayTypeSchema.pick({ name: true, element: true });
+export type UnrecognizedList = z.infer<typeof unrecognizedListSchema>;
+
 export const airportStateSchema = z.object({
 	airport: panelAirport,
 	groundStop: z.boolean(),
@@ -114,6 +118,13 @@ export const roundSummarySchema = z.object({
 			feedUpdateTime: instant,
 			/** Panel airports with at least one active program. */
 			active: z.array(airportStateSchema),
+			/**
+			 * The round's `unrecognized` Delay_type lists, which never count but are flagged. Day
+			 * indexes written before this field existed read as none; settlement rebuilds the index
+			 * from receipts, so the gap is limited to that one day's earlier rounds and never
+			 * reaches a print.
+			 */
+			unrecognized: z.array(unrecognizedListSchema).default([]),
 		}),
 		z.object({ status: z.literal('invalid'), reason: invalidReasonSchema }),
 	]),

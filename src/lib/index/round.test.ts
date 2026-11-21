@@ -56,6 +56,18 @@ describe('buildReceipt', () => {
 				{ airport: 'SFO', groundStop: false, groundDelayProgram: true },
 				{ airport: 'LGA', groundStop: true, groundDelayProgram: true },
 			],
+			unrecognized: [],
+		});
+	});
+
+	it('carries unrecognized lists into the summary, and only those', () => {
+		const summary = summarizeReceipt(receiptAt(60, ok('synthetic-edge-cases.xml')));
+		expect(summary.observation).toMatchObject({
+			status: 'valid',
+			unrecognized: [
+				{ name: 'Deicing', element: 'Deicing_List' },
+				{ name: 'Empty block', element: null },
+			],
 		});
 	});
 

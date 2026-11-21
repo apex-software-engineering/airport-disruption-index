@@ -142,6 +142,9 @@ export function summarizeReceipt(receipt: RoundReceipt): RoundSummary {
 						status: 'valid',
 						feedUpdateTime: observation.feedUpdateTime,
 						active: observation.panel.filter((row) => row.groundStop || row.groundDelayProgram),
+						unrecognized: observation.otherDelayTypes
+							.filter((list) => list.disposition === 'unrecognized')
+							.map(({ name, element }) => ({ name, element })),
 					}
 				: { status: 'invalid', reason: observation.reason },
 	};

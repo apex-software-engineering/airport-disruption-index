@@ -89,7 +89,11 @@ export default async function ApiDocsPage() {
 				curl={`curl -s ${origin}${API_BASE}/current`}
 				sample={current}>
 				Today&apos;s running (provisional) value: ADI and ADI-GS, per-airport and hourly series,
-				coverage so far, the latest slot&apos;s state and the last round with its receipt URL.
+				coverage so far, the latest slot&apos;s state and the last round with its receipt URL.{' '}
+				<Mono>publishBy</Mono> is the publication deadline for today&apos;s print.{' '}
+				<Mono>unrecognizedLists</Mono> names any feed list v1 does not know that today&apos;s valid
+				rounds carried (never counted), and <Mono>foreignMethodologies</Mono> any rounds under
+				another methodology (the day will print suspended).
 			</Endpoint>
 
 			<Endpoint
@@ -108,7 +112,8 @@ export default async function ApiDocsPage() {
 				sample={day}>
 				A day&apos;s settlement print, the latest revision first in <Mono>print</Mono> and every
 				revision in <Mono>revisions</Mono>. Before the cutoff the response is 404 with{' '}
-				<Mono>status: &quot;unsettled&quot;</Mono> and <Mono>settlesAt</Mono>.
+				<Mono>status: &quot;unsettled&quot;</Mono>, <Mono>settlesAt</Mono> and{' '}
+				<Mono>publishBy</Mono>.
 			</Endpoint>
 
 			<Endpoint

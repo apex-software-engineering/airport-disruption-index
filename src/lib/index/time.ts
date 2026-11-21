@@ -75,6 +75,18 @@ export function settlementCutoff(date: UtcDate): Date {
 	);
 }
 
+/**
+ * The print for a day is published by this long after the day ends. A publication commitment,
+ * not a methodology parameter: it decides when a print appears, never what it says, so it is
+ * kept out of the parameter hash.
+ */
+const PUBLICATION_DEADLINE_MINUTES_AFTER_DAY_END = 90;
+
+/** When the print for `date` is due: D+1 01:30Z. A print published later is still the print. */
+export function publicationDeadline(date: UtcDate): Date {
+	return new Date(dayStartMs(date) + DAY_MS + PUBLICATION_DEADLINE_MINUTES_AFTER_DAY_END * 60_000);
+}
+
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const UPDATE_TIME_PATTERN =

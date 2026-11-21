@@ -131,11 +131,57 @@ describe('one round per slot', () => {
 		expect(() => settle([validRound(5, [], 1), invalidRound(5, 100)])).toThrow(/two rounds/);
 	});
 
-	it('rejects rounds from another day or methodology', () => {
+	it('rejects a round from another day', () => {
 		const other = { ...validRound(0), roundId: '2026-11-18T00:00Z' };
 		expect(() => settle([other])).toThrow(/not on 2026-11-17/);
-		const oldMethod = { ...validRound(0), methodologyVersion: '0.9.0' };
-		expect(() => settle([oldMethod])).toThrow(/methodology/);
+	});
+
+	it('rejects two rounds for one slot even when one is under another methodology', () => {
+		const oldMethod = { ...validRound(5, [], 1), methodologyVersion: '0.9.0' };
+		expect(() => settle([oldMethod, validRound(5, [], 100)])).toThrow(/two rounds/);
+	});
+});
+
+describe('a day that mixes methodologies', () => {
+	const ATL = [{ airport: 'ATL' as const, gs: true }];
+	const under = (version: string, hash: string) => (round: ReturnType<typeof validRound>) => ({
+		...round,
+		methodologyVersion: version,
+		parameterHash: hash,
+	});
+	const OLD_HASH = 'a'.repeat(64);
+
+	it('counts rounds under another methodology as not received and tallies them', () => {
+		const day = settle([
+			...validRange(0, 100, ATL).map(under('0.9.0', OLD_HASH)),
+			...validRange(100, 288, ATL),
+		]);
+		expect(day.coverage.validRounds).toBe(188);
+		expect(day.value).toBe(188 * 5);
+		expect(day.foreignMethodologies).toEqual([
+			{ methodologyVersion: '0.9.0', parameterHash: OLD_HASH, rounds: 100 },
+		]);
+	});
+
+	it('tallies each version and parameter hash separately, in a stable order', () => {
+		const day = settle([
+			under('0.9.0', OLD_HASH)(validRound(0)),
+			under('0.9.0', 'b'.repeat(64))(validRound(1)),
+			under('0.8.0', OLD_HASH)(validRound(2)),
+			{ ...validRound(3), parameterHash: OLD_HASH },
+		]);
+		expect(day.foreignMethodologies.map((m) => [m.methodologyVersion, m.parameterHash[0]])).toEqual(
+			[
+				['0.8.0', 'a'],
+				['0.9.0', 'a'],
+				['0.9.0', 'b'],
+				['1.0.0', 'a'],
+			],
+		);
+	});
+
+	it('reports no foreign methodology on an ordinary day', () => {
+		expect(settle(validRange(0, 288)).foreignMethodologies).toEqual([]);
 	});
 });
 

@@ -6,7 +6,11 @@ import { addDays, parseUtcDate, settlementCutoff, utcDateOf } from '@/lib/index/
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
-/** Vercel Cron, daily at 00:30Z: settles yesterday. `?date=YYYY-MM-DD` settles another past day. */
+/**
+ * Vercel Cron at 00:30Z, with retries at 00:45Z and 01:00Z (vercel.json): settles yesterday,
+ * before the 01:30Z publication deadline. A retry after a settled run is a no-op that returns
+ * `already_settled`. `?date=YYYY-MM-DD` settles another past day.
+ */
 export async function GET(request: Request) {
 	if (!cronAuthorized(request)) return problem(401, 'unauthorized');
 	const now = new Date();

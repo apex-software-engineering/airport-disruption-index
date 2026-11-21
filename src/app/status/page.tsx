@@ -4,6 +4,7 @@ import { describeCoverage } from '@/components/coverage';
 import { formatInteger, formatPercent, formatUtc } from '@/components/format';
 import {
 	hasValidRound,
+	type Current,
 	readLastReceipt,
 	readSiteData,
 	RECENT_PRINT_DAYS,
@@ -37,6 +38,15 @@ export default async function StatusPage() {
 			</Section>
 
 			<Section title={`Today, ${current.date} (UTC)`}>
+				{current.foreignMethodologies.length > 0 && (
+					<Notice>
+						Some of today&apos;s rounds were collected under another methodology (
+						{current.foreignMethodologies
+							.map((m) => `${formatInteger(m.rounds)} under v${m.methodologyVersion}`)
+							.join(', ')}
+						). They are not counted, and the day will print suspended.
+					</Notice>
+				)}
 				<Facts
 					rows={[
 						{
@@ -44,9 +54,18 @@ export default async function StatusPage() {
 							detail: (
 								<>
 									<StatusLabel tone='neutral'>{current.status}</StatusLabel>, settles at{' '}
-									{formatUtc(current.settlesAt)}
+									{formatUtc(current.settlesAt)}, print due by {formatUtc(current.publishBy)}
 								</>
 							),
+						},
+						{
+							term: 'Unrecognized lists',
+							detail:
+								current.unrecognizedLists.length === 0 ? (
+									'none seen today'
+								) : (
+									<UnrecognizedLists lists={current.unrecognizedLists} />
+								),
 						},
 						{
 							term: 'Coverage',
@@ -102,6 +121,24 @@ export default async function StatusPage() {
 					/>
 				)}
 			</Section>
+		</>
+	);
+}
+
+/** Feed lists v1 does not know: never counted, flagged so a reshaped feed is seen at once. */
+function UnrecognizedLists({ lists }: { lists: Current['unrecognizedLists'] }) {
+	return (
+		<>
+			<StatusLabel tone='warn'>flagged</StatusLabel> not counted by v1:{' '}
+			{lists.map((list, i) => (
+				<span key={`${list.element} ${list.name}`}>
+					{i > 0 && '; '}
+					<Mono>{list.element ?? '(no list element)'}</Mono>
+					{list.name !== null && ` (“${list.name}”)`} in {formatInteger(list.rounds)} round
+					{list.rounds === 1 ? '' : 's'}, last{' '}
+					<a href={roundUrl(list.lastRoundId)}>{list.lastRoundId}</a>
+				</span>
+			))}
 		</>
 	);
 }

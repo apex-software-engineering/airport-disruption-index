@@ -24,6 +24,13 @@ export type SlotState =
 	| { status: 'missing' }
 	| { status: 'pending' };
 
+/** Rounds of the day collected under a methodology other than the one this code computes. */
+export type ForeignMethodology = {
+	methodologyVersion: string;
+	parameterHash: string;
+	rounds: number;
+};
+
 export type DayAggregate = {
 	date: UtcDate;
 	slots: SlotState[];
@@ -32,6 +39,8 @@ export type DayAggregate = {
 	airports: AirportMinutes[];
 	hourly: HourBucket[];
 	coverage: Coverage;
+	/** Empty unless the day mixes methodologies; such a day cannot settle (see print.ts). */
+	foreignMethodologies: ForeignMethodology[];
 };
 
 const SLOTS_PER_HOUR = 60 / METHODOLOGY.slotMinutes;
@@ -45,7 +54,7 @@ export function aggregateDay(
 	rounds: readonly RoundSummary[],
 	asOf: Date,
 ): DayAggregate {
-	const chosen = roundsBySlot(date, rounds);
+	const { chosen, foreignMethodologies } = roundsBySlot(date, rounds);
 	const slots = runLadder(chosen, elapsedSlots(date, asOf));
 	const airports = PANEL.map((airport) => ({ airport, airportMinutes: 0, groundStopMinutes: 0 }));
 	const hourly: HourBucket[] = Array.from({ length: 24 }, (_, hour) => ({
@@ -86,35 +95,48 @@ export function aggregateDay(
 		airports,
 		hourly,
 		coverage: coverageOf(slots),
+		foreignMethodologies,
 	};
 }
 
 /**
  * Places each round in its slot. The archive keeps one receipt per round id (the first valid one
- * written wins), so two rounds for one slot, a round from another day, or one under another
- * parameter set are a bug in the caller, not data, and throw.
+ * written wins), so two rounds for one slot or a round from another day are a bug in the caller,
+ * not data, and throw. A round under another methodology version or parameter hash is data (a
+ * release landed mid-day, or the day predates this code): it takes no slot, so it counts as not
+ * received, and it is tallied so the day can say why it does not settle.
  */
-function roundsBySlot(date: UtcDate, rounds: readonly RoundSummary[]): (RoundSummary | null)[] {
-	const bySlot: (RoundSummary | null)[] = Array.from(
+function roundsBySlot(
+	date: UtcDate,
+	rounds: readonly RoundSummary[],
+): { chosen: (RoundSummary | null)[]; foreignMethodologies: ForeignMethodology[] } {
+	const chosen: (RoundSummary | null)[] = Array.from(
 		{ length: METHODOLOGY.slotsPerDay },
 		() => null,
 	);
+	const filled = new Set<number>();
+	const foreign = new Map<string, ForeignMethodology>();
 	for (const round of rounds) {
 		const id = parseRoundId(round.roundId);
 		if (id === null || id.date !== date)
 			throw new Error(`round ${round.roundId} is not on ${date}`);
-		if (
-			round.methodologyVersion !== METHODOLOGY.version ||
-			round.parameterHash !== PARAMETER_HASH
-		) {
-			throw new Error(
-				`round ${round.roundId} uses methodology ${round.methodologyVersion}, not ${METHODOLOGY.version}`,
-			);
+		if (filled.has(id.slotIndex)) throw new Error(`two rounds for slot ${round.roundId}`);
+		filled.add(id.slotIndex);
+		const { methodologyVersion, parameterHash } = round;
+		if (methodologyVersion === METHODOLOGY.version && parameterHash === PARAMETER_HASH) {
+			chosen[id.slotIndex] = round;
+			continue;
 		}
-		if (bySlot[id.slotIndex] != null) throw new Error(`two rounds for slot ${round.roundId}`);
-		bySlot[id.slotIndex] = round;
+		const key = `${methodologyVersion} ${parameterHash}`;
+		const tally = foreign.get(key) ?? { methodologyVersion, parameterHash, rounds: 0 };
+		foreign.set(key, { ...tally, rounds: tally.rounds + 1 });
 	}
-	return bySlot;
+	const foreignMethodologies = [...foreign.values()].sort((x, y) =>
+		`${x.methodologyVersion} ${x.parameterHash}`.localeCompare(
+			`${y.methodologyVersion} ${y.parameterHash}`,
+		),
+	);
+	return { chosen, foreignMethodologies };
 }
 
 /**

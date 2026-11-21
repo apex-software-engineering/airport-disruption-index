@@ -16,6 +16,7 @@ export function validRound(slot: number, active: Active[] = [], delaySeconds = 3
 			groundStop: a.gs ?? false,
 			groundDelayProgram: a.gdp ?? false,
 		})),
+		unrecognized: [],
 	});
 }
 

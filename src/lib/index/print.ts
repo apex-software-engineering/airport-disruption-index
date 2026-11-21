@@ -2,7 +2,7 @@
  * The daily settlement print: an immutable, hashed statement of day D's value, built only from
  * day D's round receipts after the settlement cutoff.
  */
-import { aggregateDay, settledStatus } from './day';
+import { aggregateDay, settledStatus, type DayAggregate } from './day';
 import { hashJson } from './json';
 import { METHODOLOGY, PARAMETER_HASH } from './methodology';
 import { printSchema, type DailyPrint, type HistoryEntry, type RoundSummary } from './schemas';
@@ -21,8 +21,9 @@ export function buildPrint(
 ): DailyPrint {
 	const dayEnd = new Date(dayStartMs(date) + 86_400_000);
 	const day = aggregateDay(date, rounds, dayEnd);
-	const status = settledStatus(day.coverage.validRounds);
-	const { degradedMinPercent } = METHODOLOGY.coverage;
+	// A day settles under one methodology: any round under another suspends it, whatever the coverage.
+	const status =
+		day.foreignMethodologies.length > 0 ? 'suspended' : settledStatus(day.coverage.validRounds);
 	const unsigned: Omit<DailyPrint, 'printHash'> = {
 		schema: PRINT_SCHEMA,
 		date,
@@ -37,10 +38,7 @@ export function buildPrint(
 		coverage: day.coverage,
 		result:
 			status === 'suspended'
-				? {
-						status,
-						reason: `coverage ${day.coverage.validRounds}/${day.coverage.slotsPerDay} valid rounds is below ${degradedMinPercent}%`,
-					}
+				? { status, reason: suspensionReason(day) }
 				: {
 						status,
 						value: day.value,
@@ -58,6 +56,17 @@ export function buildPrint(
 	};
 	// The schema owns the print's invariants (revision 1 ⇔ no correction, a stated reason).
 	return printSchema.parse({ ...unsigned, printHash: hashJson(unsigned) });
+}
+
+function suspensionReason(day: DayAggregate): string {
+	if (day.foreignMethodologies.length > 0) {
+		const found = day.foreignMethodologies
+			.map((m) => `${m.rounds} under ${m.methodologyVersion} (${m.parameterHash})`)
+			.join(', ');
+		return `mixed methodology: ${found}, not ${METHODOLOGY.version} (${PARAMETER_HASH}); a day settles under one methodology`;
+	}
+	const { validRounds, slotsPerDay } = day.coverage;
+	return `coverage ${validRounds}/${slotsPerDay} valid rounds is below ${METHODOLOGY.coverage.degradedMinPercent}%`;
 }
 
 export function printHashMatches(print: DailyPrint): boolean {

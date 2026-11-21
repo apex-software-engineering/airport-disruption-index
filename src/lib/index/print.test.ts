@@ -45,6 +45,27 @@ describe('buildPrint', () => {
 		});
 	});
 
+	it('suspends a day that mixes methodologies, whatever its coverage, instead of throwing', () => {
+		const old = validRange(0, 10).map((round) => ({ ...round, methodologyVersion: '0.9.0' }));
+		const print = buildPrint(
+			DAY,
+			[...old, ...validRange(10, 288, [{ airport: 'JFK', gs: true }])],
+			{
+				revision: 1,
+			},
+		);
+		expect(print.result.status).toBe('suspended');
+		expect(print.result).toMatchObject({
+			reason: expect.stringMatching(
+				/^mixed methodology: 10 under 0\.9\.0 \([0-9a-f]{64}\), not 1\.0\.0/,
+			),
+		});
+		// Every round is still listed, so the suspended print is reproducible from the archive.
+		expect(print.rounds).toHaveLength(288);
+		expect(print.coverage.validRounds).toBe(278);
+		expect(printHashMatches(print)).toBe(true);
+	});
+
 	it('marks a degraded day but still publishes its value', () => {
 		const print = buildPrint(DAY, validRange(0, 250), { revision: 1 });
 		expect(print.result).toMatchObject({ status: 'degraded', value: 0 });

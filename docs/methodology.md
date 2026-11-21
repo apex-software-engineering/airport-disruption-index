@@ -136,19 +136,21 @@ reproducible from one day of data.
 Coverage = valid rounds / 288. Carried slots do not count. Status is compared in integers
 (`valid × 100 ≥ threshold × 288`), so float rounding cannot move a boundary:
 
-| Status      | Coverage        | Valid rounds | Print                                    |
-| ----------- | --------------- | ------------ | ---------------------------------------- |
-| `final`     | ≥ 95%           | ≥ 274        | Value published                          |
-| `degraded`  | ≥ 80% and < 95% | 231–273      | Value published, flagged degraded        |
-| `suspended` | < 80%           | ≤ 230        | **No settlement value**, only the reason |
+| Status      | Coverage        | Valid rounds | Print                                     |
+| ----------- | --------------- | ------------ | ----------------------------------------- |
+| `final`     | ≥ 95%           | ≥ 274        | Value published, settlement-eligible      |
+| `degraded`  | ≥ 80% and < 95% | 231–273      | Value published, flagged, does not settle |
+| `suspended` | < 80%           | ≤ 230        | **No settlement value**, only the reason  |
 
 `coverage.percent` in responses is rounded to 2 decimals for display. Status comes from the integer
 count.
 
 ## Settlement
 
-- Day D settles at **D+1 00:30Z**. A daily cron builds the print then; it can be run again safely
-  and never overwrites a print.
+- Day D settles at **D+1 00:30Z** (the cutoff), and its print is published by **D+1 01:30Z** (the
+  publication deadline). A cron builds the print at 00:30Z and runs again at 00:45Z and 01:00Z; a
+  run after the print exists changes nothing, and no run ever overwrites a print. See
+  [Settlement rules](#settlement-rules).
 - The print is built only from day D's stored receipts, each checked against its own `receiptHash`
   first. The day index that serves the running value is a cache of those receipts: each collect
   reconciles it against a listing of the day's receipts, and settlement rebuilds it. Settlement
@@ -165,7 +167,52 @@ count.
 None after settlement, except a **correction print**: revision 2 or later, naming the `printHash` it
 supersedes and a stated reason. The original stays published (`revisions` in the day response lists
 every revision; `print` is the latest). Corrections exist for operational faults such as a
-misconfigured deployment. They are never used to apply a later methodology to past days.
+misconfigured deployment. They are never used to apply a later methodology to past days. Who may
+issue one, and until when, is under [Settlement rules](#settlement-rules).
+
+## Settlement rules
+
+These rules decide what a contract that cites the index settles on. Where a rule and the rest of
+this document disagree, the rule wins and the disagreement is a documentation bug.
+
+1. **Only `final` prints are settlement-eligible.** A `degraded` print and a `suspended` print are
+   published, hashed and archived like any other, but neither is a settlement value. A `degraded`
+   value is shown for information only.
+2. **The print is revision 1 of `GET /api/v1/days/{date}`**, unless a correction replaces it under
+   rule 8. Nothing else (the running value, `/api/v1/history`, the site) is a settlement value.
+3. **Missing data only ever lowers the value.** A slot with no valid round contributes 0 after at
+   most 2 carried slots. A `final` day can lack up to 14 valid rounds and still settle, so a `final`
+   value can be lower than the disruption that happened, never higher. Nothing is estimated or
+   backfilled to compensate.
+4. **One methodology per day.** A new methodology version takes effect only at 00:00Z of a UTC day,
+   announced in advance on the incident log (`/incidents`). Every round records the version and
+   parameter hash it was collected under. If any of a day's rounds carries a version or parameter
+   hash other than the one the print is computed under, the day prints `suspended` with the reason
+   `mixed methodology` and the rounds found under each version; it never prints a value mixed from
+   two methodologies. A round under another methodology is not counted in the running value either,
+   and `/api/v1/current` lists such rounds in `foreignMethodologies`.
+5. **The feed moving or changing shape suspends rather than guesses.** Redirects are not followed: a
+   moved feed makes rounds invalid (`network_error` or `http_status`). A changed GS or GDP list
+   fails the round (`parse_error`). Either way the day loses coverage and falls to `degraded` or
+   `suspended`, so it does not settle; the index never reads a value from a source or shape v1 does
+   not know. The operator announces such a change on the incident log. Following the feed to a new
+   address or shape is a methodology release under rule 4 and never applies to past days.
+6. **New list types are recorded and flagged, never counted.** A `Delay_type` list v1 does not know
+   is recorded in the receipt as `unrecognized`. Any unrecognized list seen in today's valid rounds
+   is listed in `unrecognizedLists` in `/api/v1/current` and on [/status](/status), so a feed change
+   that could hide a program is visible the same day. If the FAA starts reporting ground stops or
+   ground delay programs in a new list, v1 undercounts until a new methodology version counts it.
+7. **Publication deadline and retries.** The print for day D is due by **D+1 01:30Z**. The settle
+   job runs at 00:30Z and retries at 00:45Z and 01:00Z; each run reads every receipt of the day and
+   checks it against its `receiptHash`, and one that cannot be read or verified stops that run
+   without printing anything. If no print exists at the deadline the operator opens an incident on
+   the incident log. **A late print is still the print**: it is built by the same rules from the
+   same receipts, and lateness alone never changes its status or value.
+8. **Corrections.** Only Apex Software Engineering LLC, the operator, issues a correction print
+   (revision 2 or later, see [Revisions](#revisions)). A correction may be published only within
+   **24 hours after the original print was published**; after that the print stands. Each correction
+   is announced on the incident log (`/incidents`) with the superseded `printHash` and the reason,
+   and both revisions stay published.
 
 ## Receipts
 
@@ -208,9 +255,9 @@ npm run reproduce -- "$ROUND_ID" --base-url https://airports.apexsofteng.com
 npm run reproduce -- 2026-11-20 --base-url https://airports.apexsofteng.com
 ```
 
-The first command reproduces one round. The second reproduces a settled day: every round, then the
-print. It works once 2026-11-20 settles, at 2026-11-21T00:30Z; before that it exits 2. Any round ID
-or settled date from the API works in place of these.
+The first command reproduces one round. The second reproduces a settled day (2026-11-20 settled
+`degraded` at 2026-11-21T00:30Z): every round, then the print. A day that has not settled yet
+exits 2. Any round ID or settled date from the API works in place of these.
 
 For a round, the script fetches the receipt and raw body from the public API, checks `rawSha256` and
 `receiptHash`, re-parses the body, rebuilds the receipt with the same calculation code and compares
@@ -222,9 +269,10 @@ version; check out the commit that released that version).
 ## Versioning
 
 Any change to a parameter, to the panel, or to how events become airport-minutes is a new
-methodology version with a new parameter hash. A change that can move the value without any change
-in disruption (for example a different panel) is a **level break**. History is never rescaled or
-chain-linked, and a print always carries the version it was computed under.
+methodology version with a new parameter hash. A version takes effect at a UTC day boundary only
+(see [Settlement rules](#settlement-rules), rule 4). A change that can move the value without any
+change in disruption (for example a different panel) is a **level break**. History is never rescaled
+or chain-linked, and a print always carries the version it was computed under.
 
 ## Out of scope for v1
 
