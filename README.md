@@ -41,7 +41,7 @@ this repo) and alerts the operator on Discord:
 - Quiet note: if the print first observed by the monitor has a status other than `final` (`degraded`
   or `suspended`), it sends one quieter note. Later revisions are not re-checked. The API status
   `settled` only means a print has been published; whether a day is eligible for settlement requires
-  `final` under the methodology change in PR #20 (open).
+  `final` under the Settlement rules in docs/methodology.md.
 
 The GitHub scheduled smoke run (`.github/workflows/smoke.yml`, every 6 hours) stays as a slower,
 independent check; GitHub does not run it on time.
