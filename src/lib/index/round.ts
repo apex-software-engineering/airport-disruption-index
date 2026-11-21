@@ -3,8 +3,8 @@
  * status, body bytes, fetch time), so anyone holding the archived body can rebuild the receipt.
  */
 import { hashJson, sha256Hex } from './json';
-import { METHODOLOGY, PANEL, PARAMETER_HASH } from './methodology';
-import { parseFeed } from './feed';
+import { methodologyOf, type Methodology } from './methodology';
+import { adapterOf, type FeedAdapter } from './adapters';
 import type {
 	AirportState,
 	Observation,
@@ -20,17 +20,23 @@ export type FetchOutcome =
 
 export const RECEIPT_SCHEMA = 'adi.round-receipt/1' as const;
 
-export function evaluateObservation(fetchedAt: Date, outcome: FetchOutcome): Observation {
+export function evaluateObservation(
+	fetchedAt: Date,
+	outcome: FetchOutcome,
+	methodology: Methodology,
+	adapter: FeedAdapter,
+): Observation {
 	if (outcome.kind === 'network_error') {
 		return invalid('network_error', outcome.detail, null);
 	}
-	const { requireHttpStatus, maxFeedAgeSeconds, maxFeedLeadSeconds } = METHODOLOGY.observation;
+	const { requireHttpStatus, maxFeedAgeSeconds, maxFeedLeadSeconds } =
+		methodology.parameters.observation;
 	if (outcome.httpStatus !== requireHttpStatus) {
 		return invalid('http_status', `HTTP ${outcome.httpStatus}`, null);
 	}
 	const text = decodeUtf8(outcome.body);
 	if (text === null) return invalid('parse_error', 'body is not valid UTF-8', null);
-	const parsed = parseFeed(text);
+	const parsed = adapter.parse(text);
 	if (!parsed.ok) return invalid('parse_error', parsed.detail, null);
 	const { updateTime, events, otherDelayTypes } = parsed.feed;
 	const ageSeconds = (fetchedAt.getTime() - Date.parse(updateTime)) / 1000;
@@ -53,7 +59,7 @@ export function evaluateObservation(fetchedAt: Date, outcome: FetchOutcome): Obs
 		feedUpdateTime: updateTime,
 		events,
 		otherDelayTypes,
-		panel: panelState(events),
+		panel: panelState(events, methodology.parameters.panel),
 	};
 }
 
@@ -74,8 +80,11 @@ function decodeUtf8(body: Uint8Array): string | null {
 }
 
 /** Per panel airport, whether any event of each program names it. */
-export function panelState(events: readonly ProgramEvent[]): AirportState[] {
-	return PANEL.map((airport) => ({
+export function panelState(
+	events: readonly ProgramEvent[],
+	panel: readonly string[],
+): AirportState[] {
+	return panel.map((airport) => ({
 		airport,
 		groundStop: events.some((e) => e.program === 'ground_stop' && e.airport === airport),
 		groundDelayProgram: events.some(
@@ -84,12 +93,21 @@ export function panelState(events: readonly ProgramEvent[]): AirportState[] {
 	}));
 }
 
+/**
+ * The receipt for one round, evaluated under `methodology` (see methodologyFor) and parsed by
+ * the adapter `adapterVersion` names. `adapterVersion` is undefined only when rebuilding a
+ * receipt written before receipts recorded it; the rebuilt receipt then omits it too.
+ */
 export function buildReceipt(input: {
 	fetchedAt: Date;
 	sourceUrl: string;
 	outcome: FetchOutcome;
+	methodology: Methodology;
+	adapterVersion: string | undefined;
 }): RoundReceipt {
-	const { fetchedAt, sourceUrl, outcome } = input;
+	const { fetchedAt, sourceUrl, outcome, methodology, adapterVersion } = input;
+	const adapter = adapterOf(adapterVersion);
+	if (adapter === null) throw new Error(`unknown feed adapter ${adapterVersion}`);
 	const body = outcome.kind === 'response' ? outcome.body : null;
 	const unsigned: Omit<RoundReceipt, 'receiptHash'> = {
 		schema: RECEIPT_SCHEMA,
@@ -97,14 +115,25 @@ export function buildReceipt(input: {
 		slotStart: new Date(slotStartMs(fetchedAt)).toISOString(),
 		fetchedAt: fetchedAt.toISOString(),
 		sourceUrl,
-		methodologyVersion: METHODOLOGY.version,
-		parameterHash: PARAMETER_HASH,
+		...(adapterVersion === undefined ? {} : { adapterVersion }),
+		methodologyVersion: methodology.parameters.version,
+		parameterHash: methodology.parameterHash,
 		httpStatus: outcome.kind === 'response' ? outcome.httpStatus : null,
 		rawSha256: body === null ? null : sha256Hex(body),
 		rawBytes: body === null ? null : body.byteLength,
-		observation: evaluateObservation(fetchedAt, outcome),
+		observation: evaluateObservation(fetchedAt, outcome, methodology, adapter),
 	};
 	return { ...unsigned, receiptHash: hashJson(unsigned) };
+}
+
+/** The release a receipt records. Stored receipts are schema-checked to record a known one. */
+export function recordedMethodology(receipt: RoundReceipt): Methodology {
+	const methodology = methodologyOf(receipt.methodologyVersion, receipt.parameterHash);
+	if (methodology === null)
+		throw new Error(
+			`round ${receipt.roundId} records unknown methodology ${receipt.methodologyVersion}`,
+		);
+	return methodology;
 }
 
 export function receiptHashMatches(receipt: RoundReceipt): boolean {

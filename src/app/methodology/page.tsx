@@ -2,13 +2,18 @@ import type { Metadata } from 'next';
 
 import { DocBody } from '@/components/doc-body';
 import { Facts, Mono, Section, Table } from '@/components/ui';
-import { METHODOLOGY, PARAMETER_HASH } from '@/lib/index/methodology';
+import { methodologyFor } from '@/lib/index/methodology';
+import { utcDateOf } from '@/lib/index/time';
 
 export const metadata: Metadata = { title: 'Methodology' };
 
+/** Re-rendered hourly, so the parameters shown follow a release's effective day. */
+export const revalidate = 3600;
+
 /** The prose is docs/methodology.md; the parameters block is the versioned module itself. */
 export default function MethodologyPage() {
-	const { carry, coverage, settlement } = METHODOLOGY;
+	const { parameters, parameterHash } = methodologyFor(utcDateOf(new Date()));
+	const { carry, coverage, settlement } = parameters;
 	return (
 		<>
 			<DocBody name='methodology' />
@@ -19,22 +24,22 @@ export default function MethodologyPage() {
 				</p>
 				<Facts
 					rows={[
-						{ term: 'Version', detail: METHODOLOGY.version },
-						{ term: 'Parameter hash', detail: <Mono>{PARAMETER_HASH}</Mono> },
-						{ term: 'Source', detail: <Mono>{METHODOLOGY.source.url}</Mono> },
+						{ term: 'Version', detail: parameters.version },
+						{ term: 'Parameter hash', detail: <Mono>{parameterHash}</Mono> },
+						{ term: 'Source', detail: <Mono>{parameters.source.url}</Mono> },
 						{
 							term: 'Day',
-							detail: `UTC, ${METHODOLOGY.slotsPerDay} slots of ${METHODOLOGY.slotMinutes} minutes`,
+							detail: `UTC, ${parameters.slotsPerDay} slots of ${parameters.slotMinutes} minutes`,
 						},
 						{
 							term: 'Airport-minutes per active slot',
-							detail: String(METHODOLOGY.minutesPerActiveSlot),
+							detail: String(parameters.minutesPerActiveSlot),
 						},
-						{ term: 'Headline programs', detail: METHODOLOGY.programs.headline.join(', ') },
-						{ term: 'GS-only programs', detail: METHODOLOGY.programs.groundStopOnly.join(', ') },
+						{ term: 'Headline programs', detail: parameters.programs.headline.join(', ') },
+						{ term: 'GS-only programs', detail: parameters.programs.groundStopOnly.join(', ') },
 						{
 							term: 'Valid observation',
-							detail: `HTTP ${METHODOLOGY.observation.requireHttpStatus}, feed at most ${METHODOLOGY.observation.maxFeedAgeSeconds} s old and ${METHODOLOGY.observation.maxFeedLeadSeconds} s ahead`,
+							detail: `HTTP ${parameters.observation.requireHttpStatus}, feed at most ${parameters.observation.maxFeedAgeSeconds} s old and ${parameters.observation.maxFeedLeadSeconds} s ahead`,
 						},
 						{
 							term: 'Carry',
@@ -55,7 +60,7 @@ export default function MethodologyPage() {
 					<Table
 						caption='Panel airports in rank order'
 						head={['Rank', 'Airport']}
-						rows={METHODOLOGY.panel.map((airport, index) => [String(index + 1), airport])}
+						rows={parameters.panel.map((airport, index) => [String(index + 1), airport])}
 					/>
 				</div>
 			</Section>

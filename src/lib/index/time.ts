@@ -1,6 +1,6 @@
-import { METHODOLOGY } from './methodology';
+import { SETTLEMENT_CUTOFF_MINUTES, SLOT_MINUTES, SLOTS_PER_DAY } from './methodology';
 
-const SLOT_MS = METHODOLOGY.slotMinutes * 60_000;
+const SLOT_MS = SLOT_MINUTES * 60_000;
 const DAY_MS = 86_400_000;
 
 /** `YYYY-MM-DD`, a UTC calendar day. */
@@ -49,8 +49,8 @@ export function parseRoundId(
 	if (!match || match[1] === undefined || parseUtcDate(match[1]) === null) return null;
 	const hour = Number(match[2]);
 	const minute = Number(match[3]);
-	if (hour > 23 || minute > 59 || minute % METHODOLOGY.slotMinutes !== 0) return null;
-	const slotIndex = (hour * 60 + minute) / METHODOLOGY.slotMinutes;
+	if (hour > 23 || minute > 59 || minute % SLOT_MINUTES !== 0) return null;
+	const slotIndex = (hour * 60 + minute) / SLOT_MINUTES;
 	return {
 		date: match[1],
 		slotIndex,
@@ -65,14 +65,12 @@ export function slotStartOf(date: UtcDate, slotIndex: number): Date {
 /** Number of slots of `date` that have fully ended at `asOf` (0..slotsPerDay). */
 export function elapsedSlots(date: UtcDate, asOf: Date): number {
 	const elapsed = Math.floor((asOf.getTime() - dayStartMs(date)) / SLOT_MS);
-	return Math.min(METHODOLOGY.slotsPerDay, Math.max(0, elapsed));
+	return Math.min(SLOTS_PER_DAY, Math.max(0, elapsed));
 }
 
 /** When the print for `date` may be built: day end plus the settlement cutoff. */
 export function settlementCutoff(date: UtcDate): Date {
-	return new Date(
-		dayStartMs(date) + DAY_MS + METHODOLOGY.settlement.cutoffMinutesAfterDayEnd * 60_000,
-	);
+	return new Date(dayStartMs(date) + DAY_MS + SETTLEMENT_CUTOFF_MINUTES * 60_000);
 }
 
 /**

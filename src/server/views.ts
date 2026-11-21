@@ -1,6 +1,6 @@
 /** Read models for the public API, shaped for direct rendering. */
 import { aggregateDay, type SlotState } from '@/lib/index/day';
-import { METHODOLOGY, PARAMETER_HASH } from '@/lib/index/methodology';
+import { methodologyFor } from '@/lib/index/methodology';
 import type { DailyPrint, RoundReceipt, RoundSummary, UnrecognizedList } from '@/lib/index/schemas';
 import {
 	elapsedSlots,
@@ -37,8 +37,8 @@ export async function currentView(store: ObjectStore, now: Date) {
 		status: 'provisional' as const,
 		settlesAt: settlementCutoff(date).toISOString(),
 		publishBy: publicationDeadline(date).toISOString(),
-		methodologyVersion: METHODOLOGY.version,
-		parameterHash: PARAMETER_HASH,
+		methodologyVersion: day.methodology.parameters.version,
+		parameterHash: day.methodology.parameterHash,
 		/** Rounds today under another methodology. Non-empty means today will print suspended. */
 		foreignMethodologies: day.foreignMethodologies,
 		/** Delay_type lists v1 does not know, seen in today's valid rounds. They never count. */
@@ -107,7 +107,8 @@ export async function historyView(store: ObjectStore, from: UtcDate, to: UtcDate
 	return {
 		from,
 		to,
-		methodologyVersion: METHODOLOGY.version,
+		/** In effect on `to`; each day's print records its own version. */
+		methodologyVersion: methodologyFor(to).parameters.version,
 		days: days
 			.filter((day) => day.date >= from && day.date <= to)
 			.map((day) => ({ ...day, url: `${API_BASE}/days/${day.date}` })),

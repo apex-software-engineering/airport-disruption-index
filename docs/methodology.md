@@ -180,49 +180,96 @@ this document disagree, the rule wins and the disagreement is a documentation bu
    value is shown for information only.
 2. **The print is revision 1 of `GET /api/v1/days/{date}`**, unless a correction replaces it under
    rule 8. Nothing else (the running value, `/api/v1/history`, the site) is a settlement value.
-3. **Missing data only ever lowers the value.** A slot with no valid round contributes 0 after at
-   most 2 carried slots. A `final` day can lack up to 14 valid rounds and still settle, so a `final`
-   value can be lower than the disruption that happened, never higher. Nothing is estimated or
-   backfilled to compensate.
-4. **One methodology per day.** A new methodology version takes effect only at 00:00Z of a UTC day,
-   announced in advance on the incident log (`/incidents`). Every round records the version and
-   parameter hash it was collected under. If any of a day's rounds carries a version or parameter
-   hash other than the one the print is computed under, the day prints `suspended` with the reason
-   `mixed methodology` and the rounds found under each version; it never prints a value mixed from
-   two methodologies. A round under another methodology is not counted in the running value either,
-   and `/api/v1/current` lists such rounds in `foreignMethodologies`.
-5. **The feed moving or changing shape suspends rather than guesses.** Redirects are not followed: a
-   moved feed makes rounds invalid (`network_error` or `http_status`). A changed GS or GDP list
-   fails the round (`parse_error`). Either way the day loses coverage and falls to `degraded` or
-   `suspended`, so it does not settle; the index never reads a value from a source or shape v1 does
-   not know. The operator announces such a change on the incident log. Following the feed to a new
-   address or shape is a methodology release under rule 4 and never applies to past days.
+3. **Gaps in the data can move the value either way, by a bounded amount.** A slot with no valid
+   round carries the last observed state for at most 2 slots (10 minutes), then contributes 0. A
+   carried slot can overcount (a program that ended during the gap is counted until the carry runs
+   out) or undercount (one that started during the gap is missed), by at most 10 airport-minutes per
+   airport per gap. A `missing` slot only ever undercounts. A `final` day can lack up to 14 valid
+   rounds and still settle. Nothing is estimated or backfilled to compensate, and the v1 calculation
+   is exactly as described above.
+4. **One methodology per day.** A new methodology version takes effect only at 00:00Z of a UTC day
+   and is announced on the [incident log](#incident-log) at least [NOTICE] before (see
+   [Changes to the source or the methodology](#changes-to-the-source-or-the-methodology)). Each
+   version stays in the code with the day it takes effect, so day D is always computed under the
+   version in effect on D, and an archived receipt is always validated and reproduced under the
+   version it records. Every round records the version and parameter hash it was collected under. If
+   any of a day's rounds carries a version or parameter hash other than the one in effect that day
+   (for example from a collector still running the previous release), the day prints `suspended`
+   with the reason `mixed methodology` and the number of rounds found under each other version; it
+   never prints a value mixed from two methodologies. Such rounds are not counted in the running
+   value either, and `/api/v1/current` lists them in `foreignMethodologies`.
+5. **Feed data the index cannot read never settles.** Redirects are not followed, so a moved feed
+   makes rounds invalid (`network_error` or `http_status`); a changed GS or GDP list fails the round
+   (`parse_error`). An invalid round counts as not received: it only lowers coverage, and the
+   coverage thresholds alone decide the status. A few rejected rounds therefore leave a day `final`
+   (up to 14 can be missing), and more make it `degraded` or `suspended`. The index never reads a
+   value from data it cannot parse. Restoring collection is a source-adapter fix or a methodology
+   change, as defined under
+   [Changes to the source or the methodology](#changes-to-the-source-or-the-methodology), and
+   neither ever applies to a day already printed.
 6. **New list types are recorded and flagged, never counted.** A `Delay_type` list v1 does not know
    is recorded in the receipt as `unrecognized`. Any unrecognized list seen in today's valid rounds
    is listed in `unrecognizedLists` in `/api/v1/current` and on [/status](/status), so a feed change
    that could hide a program is visible the same day. If the FAA starts reporting ground stops or
-   ground delay programs in a new list, v1 undercounts until a new methodology version counts it.
+   ground delay programs in a new list, v1 undercounts until a methodology change counts it.
 7. **Publication deadline and retries.** The print for day D is due by **D+1 01:30Z**. The settle
-   job runs at 00:30Z and retries at 00:45Z and 01:00Z; each run reads every receipt of the day and
-   checks it against its `receiptHash`, and one that cannot be read or verified stops that run
-   without printing anything. If no print exists at the deadline the operator opens an incident on
-   the incident log. **A late print is still the print**: it is built by the same rules from the
-   same receipts, and lateness alone never changes its status or value.
+   job runs at 00:30Z and retries at 00:45Z and 01:00Z. A run that finds no print reads every
+   receipt of the day and checks it against its `receiptHash`; a receipt that cannot be read or
+   verified stops that run without printing anything, and the next run tries again. A run that finds
+   a print already stored reads no receipts: it returns that print and points the history index at
+   the day's latest revision, which repairs a history update that failed after the print was
+   written. If no print exists at the deadline the operator opens an incident on the
+   [incident log](#incident-log). **A late print is still the print**: it is built by the same rules
+   from the same receipts, and lateness alone never changes its status or value.
 8. **Corrections.** Only Apex Software Engineering LLC, the operator, issues a correction print
    (revision 2 or later, see [Revisions](#revisions)). A correction may be published only within
    **24 hours after the original print was published**; after that the print stands. Each correction
-   is announced on the incident log (`/incidents`) with the superseded `printHash` and the reason,
-   and both revisions stay published.
+   is announced on the [incident log](#incident-log) with the superseded `printHash` and the reason,
+   and both revisions stay published. The command that publishes a correction is not built yet
+   (issue #10); until it is, no correction can be published.
+
+### Incident log
+
+Incidents, corrections and methodology announcements are published as
+[`incident` issues](https://github.com/apex-software-engineering/airport-disruption-index/issues?q=label%3Aincident)
+in the public repository, which the
+[README](https://github.com/apex-software-engineering/airport-disruption-index#incidents) links. A
+page on this site (`/incidents`, issue #17) replaces them when it ships.
+
+### Changes to the source or the methodology
+
+There are two kinds of change. In both, feed data that is invalid or not recognized stays
+fail-closed: it is recorded, never counted and never settles (rules 5 and 6).
+
+**A source-adapter fix** changes how the same FAA data is fetched or parsed (a new address or a new
+shape), while what is measured, the formula and every parameter stay the same.
+
+- The methodology version and parameter hash do not change.
+- It ships without the methodology notice period, with an entry on the [incident log](#incident-log)
+  and a line in the changelog (the pull request that ships it).
+- Each receipt records the adapter that produced it in `adapterVersion`, and is always rebuilt with
+  that adapter. Receipts written before the field existed omit it and were all produced by the first
+  adapter, `faa-nas-xml/1`; their hashes are unchanged.
+- It passes the same reproduce check as any release: every published round and print still
+  reproduces with `MATCH`.
+- The repair time is a **target, not a guarantee**: [TARGET]. The clock starts at detection (the
+  monitor's first alert). A business day is a US federal business day in America/New_York.
+
+**A methodology change** is anything that changes what is measured or how: a parameter, the panel,
+or how events become airport-minutes. It is a new version with a new parameter hash (see
+[Versioning](#versioning)), announced on the [incident log](#incident-log) at least [NOTICE] before
+it takes effect, and it takes effect at 00:00Z of a UTC day under rule 4.
 
 ## Receipts
 
 Every round, valid or not, is stored as a receipt (`GET /api/v1/rounds/{id}`) with its raw response
 body (`GET /api/v1/rounds/{id}/raw`, the bytes exactly as received):
 
-`roundId`, `slotStart`, `fetchedAt`, `sourceUrl`, `httpStatus`, `rawSha256` (sha256 of the body
-bytes), `rawBytes`, `methodologyVersion`, `parameterHash`, and `observation`. A valid observation
-holds `feedUpdateTime`, the parsed GS/GDP events, the ignored and unrecognized `Delay_type` lists,
-and per-panel-airport state. An invalid one holds the reason, a detail and `feedUpdateTime` when it
+`roundId`, `slotStart`, `fetchedAt`, `sourceUrl`, `adapterVersion` (absent on receipts written
+before it existed), `httpStatus`, `rawSha256` (sha256 of the body bytes), `rawBytes`,
+`methodologyVersion`, `parameterHash`, and `observation`. A valid observation holds
+`feedUpdateTime`, the parsed GS/GDP events, the ignored and unrecognized `Delay_type` lists, and
+per-panel-airport state. An invalid one holds the reason, a detail and `feedUpdateTime` when it
 could be read. Last is `receiptHash`, the sha256 of the canonical JSON of the receipt without
 `receiptHash`.
 
@@ -260,19 +307,25 @@ The first command reproduces one round. The second reproduces a settled day (202
 exits 2. Any round ID or settled date from the API works in place of these.
 
 For a round, the script fetches the receipt and raw body from the public API, checks `rawSha256` and
-`receiptHash`, re-parses the body, rebuilds the receipt with the same calculation code and compares
-every field. For a day, it does that for every round the print lists, then rebuilds the print and
-compares. It prints `MATCH` or `MISMATCH` with the differing fields. Exit codes: 0 match, 1
-mismatch, 2 could not verify (unreachable, not found, or published under a different methodology
-version; check out the commit that released that version).
+`receiptHash`, re-parses the body, rebuilds the receipt with the same calculation code under the
+methodology version and feed adapter the receipt records, and compares every field. For a day, it
+does that for every round the print lists, then rebuilds the print under the version in effect on
+that day and compares; a `suspended` mixed-methodology day reproduces like any other. It prints
+`MATCH` or `MISMATCH` with the differing fields. Exit codes: 0 match, 1 mismatch, 2 could not verify
+(unreachable, not found, or published under a methodology version or feed adapter this checkout does
+not include; check out a later commit).
 
 ## Versioning
 
 Any change to a parameter, to the panel, or to how events become airport-minutes is a new
 methodology version with a new parameter hash. A version takes effect at a UTC day boundary only
-(see [Settlement rules](#settlement-rules), rule 4). A change that can move the value without any
-change in disruption (for example a different panel) is a **level break**. History is never rescaled
-or chain-linked, and a print always carries the version it was computed under.
+(see [Settlement rules](#settlement-rules), rule 4). Every released version stays in the code with
+the day it takes effect, so older days keep settling, validating and reproducing under their own
+parameters. A source-adapter fix is not a methodology version (see
+[Changes to the source or the methodology](#changes-to-the-source-or-the-methodology)). A change
+that can move the value without any change in disruption (for example a different panel) is a
+**level break**. History is never rescaled or chain-linked, and a print always carries the version
+it was computed under.
 
 ## Out of scope for v1
 

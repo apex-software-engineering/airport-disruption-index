@@ -1,16 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
+import { CURRENT_ADAPTER } from '@/lib/index/adapters';
+import { collectedReceipt } from '@/test/receipts';
 import { feedFixture } from '@/test/fixtures';
 
-import { METHODOLOGY } from './methodology';
 import { buildPrint } from './print';
-import { buildReceipt, summarizeReceipt } from './round';
+import { summarizeReceipt } from './round';
 import { verifyPrint, verifyRound } from './verify';
 
 const raw = feedFixture('synthetic-gs-gdp.xml');
-const receipt = buildReceipt({
+const receipt = collectedReceipt({
 	fetchedAt: new Date('2026-11-17T20:45:02.123Z'),
-	sourceUrl: METHODOLOGY.source.url,
+	sourceUrl: CURRENT_ADAPTER.url,
 	outcome: { kind: 'response', httpStatus: 200, body: raw },
 });
 

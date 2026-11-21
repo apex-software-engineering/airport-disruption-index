@@ -4,11 +4,11 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { collectedReceipt } from '@/test/receipts';
 import { feedFixture } from '@/test/fixtures';
 import { DAY, validRound } from '@/test/rounds';
 
 import { buildPrint } from '@/lib/index/print';
-import { buildReceipt } from '@/lib/index/round';
 
 import {
 	readDayIndex,
@@ -178,12 +178,12 @@ class RacingStore extends FileStore {
 describe('archive write rules', () => {
 	const fetchedAt = new Date('2026-11-17T20:45:03Z');
 	const now = new Date('2026-11-17T20:45:04Z');
-	const valid = buildReceipt({
+	const valid = collectedReceipt({
 		fetchedAt,
 		sourceUrl: 'https://nasstatus.faa.gov/api/airport-status-information',
 		outcome: { kind: 'response', httpStatus: 200, body: feedFixture('synthetic-gs-gdp.xml') },
 	});
-	const invalid = buildReceipt({
+	const invalid = collectedReceipt({
 		fetchedAt: new Date('2026-11-17T20:45:01Z'),
 		sourceUrl: valid.sourceUrl,
 		outcome: { kind: 'network_error', detail: 'ECONNRESET' },
@@ -282,7 +282,7 @@ describe('archive write rules', () => {
 		// 17 invalid rounds, 19:20Z to 20:40Z.
 		for (let minute = 19 * 60 + 20; minute <= 20 * 60 + 40; minute += 5) {
 			const slot = Date.parse('2026-11-17T00:00:00Z') + minute * 60_000;
-			const failed = buildReceipt({
+			const failed = collectedReceipt({
 				fetchedAt: new Date(slot + 3000),
 				sourceUrl: valid.sourceUrl,
 				outcome: { kind: 'network_error', detail: 'ECONNRESET' },

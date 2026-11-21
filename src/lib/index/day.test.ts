@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { DAY, invalidRound, validRange, validRound } from '@/test/rounds';
 
 import { aggregateDay, settledStatus } from './day';
+import { METHODOLOGY_V1 } from './releases';
 import { dayStartMs } from './time';
 
 const END = new Date(dayStartMs(DAY) + 86_400_000);
@@ -194,7 +195,7 @@ describe('settled status thresholds', () => {
 		[230, 'suspended'], // 79.86%
 		[0, 'suspended'],
 	])('%i valid rounds -> %s', (valid, status) => {
-		expect(settledStatus(valid)).toBe(status);
+		expect(settledStatus(valid, METHODOLOGY_V1.coverage)).toBe(status);
 	});
 
 	it('reports coverage percent from valid rounds only', () => {

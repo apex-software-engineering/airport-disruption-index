@@ -1,14 +1,17 @@
-import { METHODOLOGY, PARAMETER_HASH } from '@/lib/index/methodology';
+import { methodologyFor } from '@/lib/index/methodology';
+import { utcDateOf } from '@/lib/index/time';
 import { CACHE, json } from '@/server/http';
 
+/** The methodology in effect today. */
 export function GET() {
+	const { parameters, parameterHash } = methodologyFor(utcDateOf(new Date()));
 	return json(
 		{
-			version: METHODOLOGY.version,
-			parameterHash: PARAMETER_HASH,
+			version: parameters.version,
+			parameterHash,
 			parameterHashAlgorithm:
 				'sha256 of the canonical JSON (sorted keys, no whitespace) of parameters',
-			parameters: METHODOLOGY,
+			parameters,
 		},
 		CACHE.daily,
 	);

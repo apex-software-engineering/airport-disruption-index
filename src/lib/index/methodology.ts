@@ -1,84 +1,97 @@
-import { hashJson } from './json';
+/**
+ * The methodology registry's types and lookups. Every released methodology lives in
+ * releases.ts with the UTC day it takes effect; nothing else in the code holds parameters.
+ *
+ * - A day is computed under the methodology in effect on that day (`methodologyFor`).
+ * - A stored receipt or print is validated and rebuilt under the methodology it records
+ *   (`methodologyOf`), so a later release never changes how an archived object is read.
+ */
+import { RELEASES } from './releases';
+import type { UtcDate } from './time';
+
+export type Program = 'ground_stop' | 'ground_delay_program';
 
 /**
- * Methodology v1. Every parameter that can change a published number lives here, and the
- * parameter hash is the sha256 of this object's canonical JSON. Changing any value is a
- * methodology release: bump `version` and pin the new hash in methodology.test.ts.
+ * Every parameter that can change a published number. The parameter hash is the sha256 of this
+ * object's canonical JSON. The slot grid and settlement timing are literal types: every release
+ * shares them, because round ids, slots and cutoffs are the same for every version.
  */
-export const METHODOLOGY = {
-	version: '1.0.0',
-	name: 'Airport Disruption Index',
-	unit: 'airport-minutes',
-	source: {
-		id: 'faa-nas-status-airport-status-information',
-		url: 'https://nasstatus.faa.gov/api/airport-status-information',
-		format: 'xml',
-	},
-	/** Top 20 of the FAA Core 30 by CY2024 enplanements, FAA 3-letter codes, rank order. */
-	panel: [
-		'ATL',
-		'DFW',
-		'DEN',
-		'ORD',
-		'LAX',
-		'JFK',
-		'CLT',
-		'LAS',
-		'MCO',
-		'MIA',
-		'PHX',
-		'SEA',
-		'SFO',
-		'EWR',
-		'IAH',
-		'BOS',
-		'MSP',
-		'FLL',
-		'LGA',
-		'DTW',
-	],
-	day: 'utc',
-	slotMinutes: 5,
-	slotsPerDay: 288,
-	roundAssignment: 'first-valid-observation-per-slot',
-	quorum: 1,
-	observation: {
-		requireHttpStatus: 200,
+export type MethodologyParameters = {
+	readonly version: string;
+	readonly name: string;
+	readonly unit: string;
+	readonly source: { readonly id: string; readonly url: string; readonly format: 'xml' };
+	/** FAA 3-letter codes, in rank order. */
+	readonly panel: readonly string[];
+	readonly day: 'utc';
+	readonly slotMinutes: 5;
+	readonly slotsPerDay: 288;
+	readonly roundAssignment: 'first-valid-observation-per-slot';
+	readonly quorum: 1;
+	readonly observation: {
+		readonly requireHttpStatus: number;
 		/** Update_Time may be at most this old at fetch time. */
-		maxFeedAgeSeconds: 900,
+		readonly maxFeedAgeSeconds: number;
 		/** Update_Time may be at most this far ahead of fetch time (clock disagreement). */
-		maxFeedLeadSeconds: 120,
-	},
-	programs: {
-		headline: ['ground_stop', 'ground_delay_program'],
-		groundStopOnly: ['ground_stop'],
-	},
+		readonly maxFeedLeadSeconds: number;
+	};
+	readonly programs: {
+		readonly headline: readonly Program[];
+		readonly groundStopOnly: readonly Program[];
+	};
 	/** Airport-minutes an active panel airport contributes per slot, at most once per slot. */
-	minutesPerActiveSlot: 5,
-	carry: {
+	readonly minutesPerActiveSlot: number;
+	readonly carry: {
 		/** A missing or invalid slot carries the last valid state for at most this many slots. */
-		maxCarriedSlots: 2,
-		crossesDayBoundary: false,
-	},
-	coverage: {
+		readonly maxCarriedSlots: number;
+		readonly crossesDayBoundary: false;
+	};
+	readonly coverage: {
 		/** Coverage = valid rounds / slotsPerDay, compared in integer percent. */
-		finalMinPercent: 95,
-		degradedMinPercent: 80,
-	},
-	settlement: {
-		cutoffMinutesAfterDayEnd: 30,
-		revisions: 'correction-prints-only',
-	},
-} as const;
+		readonly finalMinPercent: number;
+		readonly degradedMinPercent: number;
+	};
+	readonly settlement: {
+		readonly cutoffMinutesAfterDayEnd: 30;
+		readonly revisions: 'correction-prints-only';
+	};
+};
 
-export type Methodology = typeof METHODOLOGY;
-export type MethodologyVersion = Methodology['version'];
-export type PanelAirport = Methodology['panel'][number];
-export type Program = Methodology['programs']['headline'][number];
+/** A released methodology: its parameters, their hash, and the first UTC day it applies to. */
+export type Methodology = {
+	readonly parameters: MethodologyParameters;
+	readonly parameterHash: string;
+	/** Takes effect at 00:00Z of this day and applies until the next release's day. */
+	readonly effectiveFrom: UtcDate;
+};
 
-export const PANEL: readonly PanelAirport[] = METHODOLOGY.panel;
-export const PARAMETER_HASH: string = hashJson(METHODOLOGY);
+/** The grid every release shares (see the literal types above). */
+export const SLOT_MINUTES: MethodologyParameters['slotMinutes'] = 5;
+export const SLOTS_PER_DAY: MethodologyParameters['slotsPerDay'] = 288;
+export const SETTLEMENT_CUTOFF_MINUTES: MethodologyParameters['settlement']['cutoffMinutesAfterDayEnd'] = 30;
 
-export function isPanelAirport(code: string): code is PanelAirport {
-	return PANEL.some((airport) => airport === code);
+/** The methodology in effect on `date`. Throws for a day before the first release. */
+export function methodologyFor(date: UtcDate): Methodology {
+	const release = RELEASES.findLast((r) => r.effectiveFrom <= date);
+	if (release === undefined) throw new Error(`no methodology is in effect on ${date}`);
+	return release;
+}
+
+/** The release a stored object records, or null when this code does not know it. */
+export function methodologyOf(version: string, parameterHash: string): Methodology | null {
+	return (
+		RELEASES.find((r) => r.parameters.version === version && r.parameterHash === parameterHash) ??
+		null
+	);
+}
+
+/** Whether an object recording `recorded` was produced under `methodology`. */
+export function isUnder(
+	methodology: Methodology,
+	recorded: { methodologyVersion: string; parameterHash: string },
+): boolean {
+	return (
+		recorded.methodologyVersion === methodology.parameters.version &&
+		recorded.parameterHash === methodology.parameterHash
+	);
 }

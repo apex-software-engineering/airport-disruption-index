@@ -6,7 +6,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
-import { buildReceipt } from '@/lib/index/round';
+import { collectedReceipt } from '@/test/receipts';
 import { publicationDeadline, settlementCutoff } from '@/lib/index/time';
 import { readPrints, recordRound } from '@/server/archive';
 import { FileStore } from '@/server/storage';
@@ -82,7 +82,7 @@ describe('settle schedule', () => {
 
 describe('settle route', () => {
 	it('refuses before the cutoff, settles at it, and makes each retry a no-op', async () => {
-		const receipt = buildReceipt({
+		const receipt = collectedReceipt({
 			fetchedAt: new Date(`${DAY}T20:45:03Z`),
 			sourceUrl: 'https://nasstatus.faa.gov/api/airport-status-information',
 			outcome: { kind: 'network_error', detail: 'ECONNRESET' },

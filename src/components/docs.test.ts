@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { METHODOLOGY } from '@/lib/index/methodology';
+import { METHODOLOGY_V1 } from '@/lib/index/releases';
 
 import { DOC_NAMES, DOC_ROUTES, headingId, readDoc, renderDoc, siteHref } from './docs';
 
@@ -25,7 +25,7 @@ describe('docs rendering', () => {
 
 	it('documents the methodology version the code runs', async () => {
 		const [title] = (await readDoc('methodology')).split('\n');
-		expect(title).toContain(`v${METHODOLOGY.version}`);
+		expect(title).toContain(`v${METHODOLOGY_V1.version}`);
 	});
 
 	it('resolves every in-site anchor to a heading of the target doc', async () => {

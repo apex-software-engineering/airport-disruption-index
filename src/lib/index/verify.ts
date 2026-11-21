@@ -5,7 +5,13 @@
  */
 import { canonicalJson, sha256Hex, type Json } from './json';
 import { buildPrint, printHashMatches, type PrintRevision } from './print';
-import { buildReceipt, outcomeFromReceipt, receiptHashMatches, summarizeReceipt } from './round';
+import {
+	buildReceipt,
+	outcomeFromReceipt,
+	receiptHashMatches,
+	recordedMethodology,
+	summarizeReceipt,
+} from './round';
 import type { DailyPrint, RoundReceipt } from './schemas';
 
 /** Rebuilds a receipt from its archived body and compares every field. */
@@ -22,10 +28,13 @@ export function verifyRound(receipt: RoundReceipt, raw: Uint8Array | null): stri
 	return [
 		...problems,
 		...compareRebuilt(receipt, () =>
+			// Rebuilt under the methodology and adapter the receipt records, not the current ones.
 			buildReceipt({
 				fetchedAt: new Date(receipt.fetchedAt),
 				sourceUrl: receipt.sourceUrl,
 				outcome: outcomeFromReceipt(receipt, raw),
+				methodology: recordedMethodology(receipt),
+				adapterVersion: receipt.adapterVersion,
 			}),
 		),
 	];
