@@ -38,10 +38,10 @@ this repo) and alerts the operator on Discord:
   at or after 00:50Z. If the print is still unavailable on a poll at or after 01:40Z, ten minutes
   after the 01:30Z publication deadline, it sends one alert. A recovery message follows only an
   alert that was actually sent.
-- Quiet note: if the print first observed by the monitor has a status other than `final`
-  (`degraded` or `suspended`), it sends one quieter note. Later revisions are not re-checked. The
-  API status `settled` only means a print has been published; whether a day is eligible for
-  settlement requires `final` under the methodology change in PR #20 (open).
+- Quiet note: if the print first observed by the monitor has a status other than `final` (`degraded`
+  or `suspended`), it sends one quieter note. Later revisions are not re-checked. The API status
+  `settled` only means a print has been published; whether a day is eligible for settlement requires
+  `final` under the methodology change in PR #20 (open).
 
 The GitHub scheduled smoke run (`.github/workflows/smoke.yml`, every 6 hours) stays as a slower,
 independent check; GitHub does not run it on time.
