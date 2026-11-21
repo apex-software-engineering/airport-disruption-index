@@ -101,8 +101,18 @@ function requireBranchCheckout({ directory, branch }: BranchCheckout): boolean {
 		throw new CannotVerify(`${directory}/ is a shallow checkout, whose history is incomplete`);
 	const head = commitOf(directory, 'HEAD');
 	const tip = commitOf(directory, `refs/remotes/origin/${branch}`);
-	if (head === null && tip === null) return false;
 	const update = `run git fetch origin && git -C ${directory} checkout --detach origin/${branch}`;
+	if (head === null && tip === null) {
+		// Nothing here. Unpublished only if there is no remote, or the remote has no such branch.
+		if (!hasOrigin(directory)) return false;
+		const live = liveTip(directory, branch);
+		if (live === 'missing') return false;
+		throw new CannotVerify(
+			live === null
+				? `could not reach origin to check whether ${branch} is published`
+				: `fetch first: origin has ${branch} at ${live}, which this checkout lacks; ${update}`,
+		);
+	}
 	if (head !== tip) {
 		throw new CannotVerify(
 			`${directory}/ is at ${head ?? 'no commit'}, not origin/${branch} (${tip ?? 'missing'}); ${update}`,
@@ -119,6 +129,15 @@ function requireBranchCheckout({ directory, branch }: BranchCheckout): boolean {
 		);
 	}
 	return true;
+}
+
+function hasOrigin(directory: string): boolean {
+	try {
+		git(directory, ['remote', 'get-url', 'origin']);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /**

@@ -237,6 +237,26 @@ describe('readPins', () => {
 		expect(() => readPins(branch.checkout, '2026-11-17')).toThrow(/^stale checkout, fetch first/);
 	});
 
+	it('refuses an empty checkout when the remote has the branch: fetch first', () => {
+		const published = branchCheckout();
+		published.commit({ '2026-11-17.r1.json': pin1 });
+		const remote = withRemote(published);
+		const empty = branchCheckout();
+		empty.git('remote', 'add', 'origin', remote);
+		expect(() => readPins(empty.checkout, '2026-11-17')).toThrow(
+			/^fetch first: origin has attestations/,
+		);
+	});
+
+	it('treats an empty checkout as unpublished when the remote has no such branch', () => {
+		const remote = mkdtempSync(path.join(tmpdir(), 'adi-remote-'));
+		directories.push(remote);
+		execFileSync('git', ['init', '--quiet', '--bare', remote]);
+		const empty = branchCheckout();
+		empty.git('remote', 'add', 'origin', remote);
+		expect(readPins(empty.checkout, '2026-11-17')).toEqual({ pins: [], problems: [] });
+	});
+
 	it('warns and goes on when the remote cannot be reached', () => {
 		const branch = branchCheckout();
 		branch.commit({ '2026-11-17.r1.json': pin1 });
