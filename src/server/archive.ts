@@ -19,7 +19,13 @@ import {
 	indicativeReleaseFor,
 } from '@/lib/index/indicative';
 import { sha256Hex } from '@/lib/index/json';
-import { admits, isUnder, SLOT_MINUTES, type Methodology } from '@/lib/index/methodology';
+import {
+	admits,
+	isUnder,
+	methodologyOf,
+	SLOT_MINUTES,
+	type Methodology,
+} from '@/lib/index/methodology';
 import {
 	buildIndicativePrint,
 	buildPrint,
@@ -117,8 +123,29 @@ async function readJson<T>(
 	return object === null ? null : decode(schema, key, object);
 }
 
+/** A stored round's receipt, as `decodeReceipt` reads it, or null when none is stored. */
 export async function readReceipt(store: ObjectStore, id: RoundId): Promise<RoundReceipt | null> {
-	return readJson(store, receiptSchema, keys.receipt(dateOf(id), id));
+	const key = keys.receipt(dateOf(id), id);
+	const object = await store.read(key);
+	return object === null ? null : decodeReceipt(key, object);
+}
+
+/**
+ * A stored receipt. One that records a release this code does not know cannot pass
+ * `receiptSchema`; it is returned by its shape alone, once its hash matches, so it can be served
+ * and listed as a foreign round. It never counts: no day admits a release it does not know.
+ */
+function decodeReceipt(key: string, object: StoredObject): RoundReceipt {
+	const body: unknown = JSON.parse(new TextDecoder().decode(object.body));
+	const full = receiptSchema.safeParse(body);
+	if (full.success) return full.data;
+	const shape = receiptShapeSchema.safeParse(body);
+	const unknown =
+		shape.success &&
+		methodologyOf(shape.data.methodologyVersion, shape.data.parameterHash) === null &&
+		receiptHashMatches(shape.data);
+	if (unknown) return shape.data;
+	throw new Error(`stored object ${key} fails its schema: ${full.error.message}`);
 }
 
 /** The archived body a receipt cites, or null when the receipt has none. */
@@ -629,14 +656,10 @@ async function readIndicativeRounds(
 	return readInBatches(listed.flat(), async (key) => {
 		const object = await store.read(key);
 		if (object === null) throw new Error(`receipt ${key} is listed but could not be read`);
-		const body: unknown = JSON.parse(new TextDecoder().decode(object.body));
-		const shape = receiptShapeSchema.safeParse(body);
-		if (!shape.success)
-			throw new Error(`stored object ${key} fails its schema: ${shape.error.message}`);
-		if (!receiptHashMatches(shape.data))
+		const receipt = decodeReceipt(key, object);
+		if (!receiptHashMatches(receipt))
 			throw new Error(`receipt ${key} does not match its receiptHash`);
-		if (!admits(admission.accepts, shape.data)) return summarizeReceipt(shape.data);
-		const receipt = decode(receiptSchema, key, object);
+		if (!admits(admission.accepts, receipt)) return summarizeReceipt(receipt);
 		const problems = verifyRound(receipt, await readRaw(store, receipt));
 		if (problems.length > 0)
 			throw new Error(`receipt ${key} does not rebuild: ${problems.join('; ')}`);

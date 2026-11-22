@@ -140,6 +140,13 @@ describe('freezing an indicative ET day', () => {
 				/^mixed methodology: 1 under 9\.9\.9 \(e{0}(ef){32}\), not 1\.0\.0/,
 			),
 		});
+		// Served by the round endpoint (never counted), and the suspended day reproduces from it.
+		const served = await routeGet('http://test/api/v1/rounds/2026-11-20T06:00Z');
+		expect(served.status).toBe(200);
+		expect(await served.json()).toEqual(unknown);
+		expect(await reproduceIndicative(DAY, 'http://test', routeGet)).toMatchObject({
+			kind: 'match',
+		});
 	});
 
 	it('counts an admitted receipt only after it rebuilds: a valid one with no response stops the run', async () => {
