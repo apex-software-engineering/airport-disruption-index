@@ -102,7 +102,7 @@ export async function reproduceIndicative(
 		}
 		const results = await fetchRounds(
 			print.rounds.map((r) => r.roundId),
-			(id) => fetchIndicativeRound(api, id, print.admission.accepts),
+			(id) => fetchIndicativeRound(api, date, id, print.admission.accepts),
 		);
 		log.push(
 			`indicative ${print.date} (ET): ${print.result.status}, ${print.rounds.length} rounds, printHash ${print.printHash}`,
@@ -262,10 +262,14 @@ async function fetchRound(api: PublicApi, id: string): Promise<FetchedRound> {
  */
 async function fetchIndicativeRound(
 	api: PublicApi,
+	date: string,
 	id: string,
 	accepts: readonly Identity[],
 ): Promise<FetchedRound> {
-	const body: unknown = await (await api.fetch(`/api/v1/rounds/${id}`)).json();
+	// Scoped to the print: the only endpoint that serves a foreign receipt, and only as its evidence.
+	const body: unknown = await (
+		await api.fetch(`/api/v1/indicative/days/${date}/rounds/${id}`)
+	).json();
 	const recorded = recordedSchema.safeParse(body);
 	if (recorded.success && admits(accepts, recorded.data)) return verifyFetchedRound(api, id, body);
 	const shape = receiptShapeSchema.safeParse(body);

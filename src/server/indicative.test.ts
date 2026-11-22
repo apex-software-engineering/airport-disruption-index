@@ -140,10 +140,15 @@ describe('freezing an indicative ET day', () => {
 				/^mixed methodology: 1 under 9\.9\.9 \(e{0}(ef){32}\), not 1\.0\.0/,
 			),
 		});
-		// Served by the round endpoint (never counted), and the suspended day reproduces from it.
-		const served = await routeGet('http://test/api/v1/rounds/2026-11-20T06:00Z');
-		expect(served.status).toBe(200);
-		expect(await served.json()).toEqual(unknown);
+		// The default round endpoint never serves it; only the frozen print's evidence endpoint does.
+		expect((await routeGet('http://test/api/v1/rounds/2026-11-20T06:00Z')).status).toBe(422);
+		const evidence = await routeGet(
+			'http://test/api/v1/indicative/days/2026-11-20/rounds/2026-11-20T06:00Z',
+		);
+		expect(evidence.status).toBe(200);
+		expect(await evidence.json()).toEqual(unknown);
+		const unlisted = 'http://test/api/v1/indicative/days/2026-11-20/rounds/2026-11-20T07:00Z';
+		expect((await routeGet(unlisted)).status).toBe(404);
 		expect(await reproduceIndicative(DAY, 'http://test', routeGet)).toMatchObject({
 			kind: 'match',
 		});

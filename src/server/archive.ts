@@ -123,17 +123,52 @@ async function readJson<T>(
 	return object === null ? null : decode(schema, key, object);
 }
 
-/** A stored round's receipt, as `decodeReceipt` reads it, or null when none is stored. */
+/** A stored receipt that fails `receiptSchema`, e.g. one recording a release this code lacks. */
+export class UnrecognizedReceipt extends Error {}
+
+/**
+ * A stored round's receipt, validated against the release and adapter it records, or null when
+ * none is stored. A receipt this code cannot validate is never served here (UnrecognizedReceipt).
+ */
 export async function readReceipt(store: ObjectStore, id: RoundId): Promise<RoundReceipt | null> {
 	const key = keys.receipt(dateOf(id), id);
 	const object = await store.read(key);
-	return object === null ? null : decodeReceipt(key, object);
+	if (object === null) return null;
+	const parsed = receiptSchema.safeParse(JSON.parse(new TextDecoder().decode(object.body)));
+	if (!parsed.success) {
+		throw new UnrecognizedReceipt(`stored object ${key} fails its schema: ${parsed.error.message}`);
+	}
+	return parsed.data;
 }
 
 /**
- * A stored receipt. One that records a release this code does not know cannot pass
- * `receiptSchema`; it is returned by its shape alone, once its hash matches, so it can be served
- * and listed as a foreign round. It never counts: no day admits a release it does not know.
+ * A round a frozen indicative print lists, as evidence for that print only: null unless the day
+ * is frozen and lists `id`, and refused unless its hash is the one the print lists. A receipt from
+ * a release this code does not know is returned by its shape (it was foreign in the print).
+ */
+export async function readIndicativeRound(
+	store: ObjectStore,
+	label: string,
+	id: RoundId,
+): Promise<RoundReceipt | null> {
+	const listed = (await readIndicativePrint(store, label))?.rounds.find((r) => r.roundId === id);
+	if (listed === undefined) return null;
+	const key = keys.receipt(dateOf(id), id);
+	const object = await store.read(key);
+	if (object === null)
+		throw new Error(`${key} is listed by the indicative print of ${label} but missing`);
+	const receipt = decodeReceipt(key, object);
+	if (receipt.receiptHash !== listed.receiptHash || !receiptHashMatches(receipt)) {
+		throw new Error(`${key} is not the receipt the indicative print of ${label} lists`);
+	}
+	return receipt;
+}
+
+/**
+ * A stored receipt, for the indicative series only. One that records a release this code does not
+ * know cannot pass `receiptSchema`; it is returned by its shape alone, once its hash matches, so
+ * it can be listed and served as a foreign round. It never counts: no day admits a release this
+ * code does not know.
  */
 function decodeReceipt(key: string, object: StoredObject): RoundReceipt {
 	const body: unknown = JSON.parse(new TextDecoder().decode(object.body));
