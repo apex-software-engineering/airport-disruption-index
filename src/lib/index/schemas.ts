@@ -259,6 +259,7 @@ function checkSettlementDay(
 		settlesAt: string;
 		day?: string;
 		window?: { start: string; end: string };
+		coverage: { slotsPerDay: number };
 	},
 	release: Methodology,
 	ctx: z.RefinementCtx,
@@ -300,6 +301,14 @@ function checkSettlementDay(
 			code: 'custom',
 			message: `window is not the one ${release.parameters.version} gives ${print.date}`,
 			path: ['window'],
+		});
+		return null;
+	}
+	if (print.coverage.slotsPerDay !== window.slots) {
+		ctx.addIssue({
+			code: 'custom',
+			message: `coverage.slotsPerDay is ${print.coverage.slotsPerDay}, but ${print.date} has ${window.slots} slots`,
+			path: ['coverage', 'slotsPerDay'],
 		});
 		return null;
 	}
@@ -471,7 +480,7 @@ export type IndicativePrint = z.infer<typeof indicativePrintSchema>;
  * reader never needs tz data to trust what a print covers.
  */
 function checkIndicativeDay(
-	print: Pick<IndicativePrint, 'date' | 'day' | 'window' | 'freezesAt' | 'admission'>,
+	print: Pick<IndicativePrint, 'date' | 'day' | 'window' | 'freezesAt' | 'admission' | 'coverage'>,
 	release: Methodology,
 	ctx: z.RefinementCtx,
 ): void {
@@ -500,6 +509,13 @@ function checkIndicativeDay(
 		freezesAt: settlesAt(window).toISOString(),
 		admission,
 	};
+	if (print.coverage.slotsPerDay !== window.slots) {
+		ctx.addIssue({
+			code: 'custom',
+			message: `coverage.slotsPerDay is ${print.coverage.slotsPerDay}, but ${print.date} has ${window.slots} slots`,
+			path: ['coverage', 'slotsPerDay'],
+		});
+	}
 	for (const field of ['day', 'window', 'freezesAt', 'admission'] as const) {
 		if (canonicalJson(print[field]) !== canonicalJson(expected[field])) {
 			ctx.addIssue({

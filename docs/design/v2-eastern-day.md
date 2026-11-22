@@ -274,7 +274,12 @@ tested:
    can never occupy, block or overwrite the v2 print's key, and v2 code never serves it.
 2. **Misfiled-print detection.** v2 code treats any object at `prints/{date}/…` with `date ≥ E` (E
    read from the registry) as a misfiled stale write. The day view and the settle run report it as a
-   `misfiled_print` problem, and the monitor alerts on that. The real print is unaffected.
+   `misfiled_print` problem, and the monitor alerts on that. The real print is unaffected. The
+   shape, on `/api/v1/days/{date}` and in the settle response, is
+   `"misfiled": { "problem": "misfiled_print", "objects": ["<key>", …] }`. It lists print objects
+   under another root, print objects at the date's own root that fail the key contract (date,
+   revision, owning release), and another root's history entry for the date; the field is absent
+   when there are none.
 3. **Isolated history.** v2 days' history is its own object, `prints/et/history.json`, which only v2
    code writes. `prints/history.json` stays v1's and is the only one a stale deployment can touch.
    **Reads filter by canonical key, so nothing waits for repair:** `/api/v1/history` takes labels ≤
@@ -380,8 +385,8 @@ Clock maths leaves the shell. Every 5-minute tick:
 - **Daily prints:** the candidate dates are {UTC yesterday, ET yesterday} **∪ every date with an
   open late alert**, kept even after it leaves the window. For each, GET `/api/v1/days/{date}`:
   `200 settled` gives a recovery or non-final notice, as today. `404 unsettled` alerts once
-  `now ≥ publishBy + 10 min`, with `publishBy` taken from the response body. A `misfiled_print`
-  problem alerts immediately.
+  `now ≥ publishBy + 10 min`, with `publishBy` taken from the response body. A response with
+  `misfiled.problem == "misfiled_print"` alerts immediately, naming `misfiled.objects`.
 - It ships as its own PR in `lexabu/personal-configs` and is live **before** the v2 deployment.
   Dry-run tests are in section 8, item 10.
 

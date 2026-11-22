@@ -25,6 +25,7 @@ import {
 	methodologyOf,
 	settlementReleaseOrNull,
 	SLOT_MINUTES,
+	type DayLabel,
 	type DayTimeZone,
 	type Methodology,
 } from '@/lib/index/methodology';
@@ -502,8 +503,25 @@ async function readWindowReceipts(store: ObjectStore, window: DayWindow): Promis
 }
 
 /**
+ * Why `print`, stored at `key`, is not a print this archive serves, or null when it is: it must be
+ * revision `print.revision` of `print.date`, under the release that owns that date, at that
+ * release's root. The one check every print reader applies (day, corrections, misfiled).
+ */
+function printKeyProblem(key: string, print: DailyPrint): string | null {
+	const release = settlementReleaseOrNull(print.date);
+	if (release === null) return `${key} holds a print of ${print.date}, which no release owns`;
+	const expected = keys.print(printRoot(release), print.date, print.revision);
+	if (key !== expected) return `${key} holds the print for ${expected}`;
+	if (!isUnder(release, print)) {
+		return `${key} records ${print.methodologyVersion}, not the release that owns ${print.date}`;
+	}
+	return null;
+}
+
+/**
  * All revisions of a day's print, oldest first, read from the print root of the release that owns
- * the day. Empty when the day has not settled or no release owns it.
+ * the day. Empty when the day has not settled or no release owns it. An object at one of these
+ * keys that is not that revision of that day under that release is corruption, and throws.
  */
 export async function readPrints(store: ObjectStore, date: string): Promise<DailyPrint[]> {
 	const release = settlementReleaseOrNull(date);
@@ -513,41 +531,71 @@ export async function readPrints(store: ObjectStore, date: string): Promise<Dail
 		const key = keys.print(printRoot(release), date, revision);
 		const print = await readJson(store, printSchema, key);
 		if (print === null) return prints;
-		if (!isUnder(release, print)) throw new Error(`${key} records another methodology`);
+		const problem =
+			print.date === date && print.revision === revision
+				? printKeyProblem(key, print)
+				: `${key} holds revision ${print.revision} of ${print.date}`;
+		if (problem !== null) throw new Error(problem);
 		prints.push(print);
 	}
 }
 
+/** Objects for a date that no reader serves, reported under the design's problem code. */
+export type MisfiledPrints = { problem: 'misfiled_print'; objects: string[] };
+
 /**
- * Print objects stored for `date` under a root other than the one its release owns: what a stale
- * deployment would leave behind. Never served, never listed; reported so the monitor can alert.
+ * What a stale deployment would leave behind for `date`: print objects under a root other than
+ * the one its release owns, print objects under that root that fail `printKeyProblem`, and history
+ * entries for the date in another root's history. Never served, never listed; reported so the
+ * monitor can alert. Null when there are none.
  */
-export async function misfiledPrintKeys(store: ObjectStore, date: string): Promise<string[]> {
+export async function misfiledPrints(
+	store: ObjectStore,
+	date: string,
+): Promise<MisfiledPrints | null> {
 	const canonical = canonicalRoot(date);
-	const others = PRINT_ROOTS.filter((root) => root !== canonical);
-	return (await Promise.all(others.map((root) => store.list(`${root}${date}/`)))).flat();
+	const found = await Promise.all(
+		PRINT_ROOTS.map(async (root) => {
+			const listed = await store.list(`${root}${date}/`);
+			const history = await readJson(store, historyIndexSchema, keys.history(root));
+			const historyEntry = root !== canonical && history?.days.some((day) => day.date === date);
+			const prints =
+				root !== canonical
+					? listed
+					: (
+							await readInBatches(listed, async (key) => {
+								const print = tryDecodePrint(await store.read(key));
+								return print === null || printKeyProblem(key, print) !== null ? key : null;
+							})
+						).filter((key) => key !== null);
+			return historyEntry ? [...prints, keys.history(root)] : prints;
+		}),
+	);
+	const objects = found.flat();
+	return objects.length === 0 ? null : { problem: 'misfiled_print', objects };
 }
 
-const PRINT_KEY = /^(prints\/(?:[a-z]+\/)?)(\d{4}-\d{2}-\d{2})\/r(\d+)\.json$/;
+function tryDecodePrint(object: StoredObject | null): DailyPrint | null {
+	return object === null ? null : tryDecode(printSchema, object);
+}
+
+const PRINT_KEY = /^prints\/(?:[a-z]+\/)?\d{4}-\d{2}-\d{2}\/r(\d+)\.json$/;
 
 /**
  * Every stored correction print (revision 2 or later), found by listing the print keys. It does
  * not rely on the history index, which can lag a correction whose history update failed. Only a
- * print under the root that owns its day is listed: a misfiled one is never shown.
+ * print that passes `printKeyProblem` is listed: a misfiled one is never shown.
  */
 export async function readCorrectionPrints(store: ObjectStore): Promise<DailyPrint[]> {
-	const listed = (await store.list('prints/')).filter((key) => {
-		const match = PRINT_KEY.exec(key);
-		return match !== null && Number(match[3]) > 1 && match[1] === canonicalRoot(match[2] ?? '');
-	});
-	return readInBatches(listed, async (key) => {
+	const listed = (await store.list('prints/')).filter(
+		(key) => Number(PRINT_KEY.exec(key)?.[1]) > 1,
+	);
+	const prints = await readInBatches(listed, async (key) => {
 		const print = await readJson(store, printSchema, key);
 		if (print === null) throw new Error(`${key} is listed but could not be read`);
-		const root = canonicalRoot(print.date);
-		const expected = root === null ? null : keys.print(root, print.date, print.revision);
-		if (key !== expected) throw new Error(`${key} holds the print for ${expected}`);
-		return print;
+		return printKeyProblem(key, print) === null ? print : null;
 	});
+	return prints.filter((print) => print !== null);
 }
 
 /**
@@ -569,11 +617,12 @@ async function readSettlementReceipts(
 export type SettleOutcome = { status: 'settled' | 'already_settled'; print: DailyPrint };
 
 /**
- * Builds and stores revision 1 of a day's print from its receipts, and rebuilds the day index
- * from those same receipts. Never overwrites a print. Every path ends by pointing the history
- * index at the day's latest revision.
+ * Builds and stores revision 1 of a day's print from its receipts. A UTC day also rebuilds its
+ * partition's day index from those same receipts; a zoned day leaves both partitions' indexes to
+ * collect. Never overwrites a print. Every path ends by pointing the history index at the day's
+ * latest revision.
  */
-export async function settleDay(store: ObjectStore, date: UtcDate): Promise<SettleOutcome> {
+export async function settleDay(store: ObjectStore, date: DayLabel): Promise<SettleOutcome> {
 	const day = settlementDay(date);
 	const settled = (await readPrints(store, date)).at(-1);
 	if (settled !== undefined) {
@@ -620,7 +669,7 @@ export type CorrectionRequest = {
  */
 export async function correctDay(
 	store: ObjectStore,
-	date: UtcDate,
+	date: DayLabel,
 	request: CorrectionRequest,
 	clock: () => Date,
 ): Promise<DailyPrint> {

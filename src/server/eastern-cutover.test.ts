@@ -20,7 +20,14 @@ import { RELEASES } from '@/lib/index/releases';
 import { addDays } from '@/lib/index/time';
 import { collectAt as collectStoreRound } from '@/test/collect';
 
-import { correctDay, readHistory, settleDay } from './archive';
+import {
+	correctDay,
+	misfiledPrints,
+	readCorrectionPrints,
+	readHistory,
+	readPrints,
+	settleDay,
+} from './archive';
 import { FileStore } from './storage';
 import { correctionsView, currentView, dayView, historyView } from './views';
 
@@ -186,7 +193,10 @@ describe('settlement labels across the cutover', () => {
 		// Immediately, with no settle run: nothing stale is served, and it is reported.
 		expect(await dayView(store, E)).toMatchObject({
 			status: 'unsettled',
-			misfiled: [`prints/${E}/r1.json`, `prints/${E}/r2.json`],
+			misfiled: {
+				problem: 'misfiled_print',
+				objects: [`prints/${E}/r1.json`, `prints/${E}/r2.json`, 'prints/history.json'],
+			},
 		});
 		expect((await readHistory(store)).days).toEqual([]);
 		expect(await correctionsView(store)).toEqual([]);
@@ -202,7 +212,10 @@ describe('settlement labels across the cutover', () => {
 		expect(response.status).toBe(200);
 		expect(await response.json()).toMatchObject({
 			status: 'settled',
-			misfiled: [`prints/${E}/r1.json`, `prints/${E}/r2.json`],
+			misfiled: {
+				problem: 'misfiled_print',
+				objects: [`prints/${E}/r1.json`, `prints/${E}/r2.json`, 'prints/history.json'],
+			},
 		});
 		expect(await dayView(store, E)).toMatchObject({
 			status: 'settled',
@@ -211,10 +224,113 @@ describe('settlement labels across the cutover', () => {
 		expect((await readHistory(store)).days.map((d) => d.date)).toEqual([E]);
 	});
 
+	it('applies one key contract: date, revision and owning release, wherever a print is read', async () => {
+		// A valid ET print of 2027-01-02, stored at 2027-01-01's key: the day reader refuses it.
+		const nextDay = buildPrint(settlementDay('2027-01-02'), [], { revision: 1 });
+		await store.write(`prints/et/${E}/r1.json`, encode(nextDay), 'application/json', {
+			kind: 'if-absent',
+		});
+		await expect(readPrints(store, E)).rejects.toThrow(
+			`prints/et/${E}/r1.json holds revision 1 of 2027-01-02`,
+		);
+		// A valid v1 correction under the ET root: never listed, and reported.
+		await store.write(`prints/et/${E}/r2.json`, encode(staleV1Print(2)), 'application/json', {
+			kind: 'if-absent',
+		});
+		expect(await readCorrectionPrints(store)).toEqual([]);
+		expect(await misfiledPrints(store, E)).toEqual({
+			problem: 'misfiled_print',
+			objects: [`prints/et/${E}/r1.json`, `prints/et/${E}/r2.json`],
+		});
+	});
+
+	it('reports a prints/et object under a v1 label, which no v1 reader serves', async () => {
+		const v1Day = '2026-12-31';
+		const zoned = buildPrint(settlementDay(E), [], { revision: 1 });
+		await store.write(`prints/et/${v1Day}/r1.json`, encode(zoned), 'application/json', {
+			kind: 'if-absent',
+		});
+		expect(await dayView(store, v1Day)).toMatchObject({
+			status: 'unsettled',
+			day: 'UTC',
+			misfiled: { problem: 'misfiled_print', objects: [`prints/et/${v1Day}/r1.json`] },
+		});
+		expect(await readPrints(store, v1Day)).toEqual([]);
+	});
+
+	it('reports a stale history entry even when it is the only stale record', async () => {
+		await store.write(
+			'prints/history.json',
+			encode({ schema: 'adi.history/1', days: [historyEntryOf(staleV1Print(1))] }),
+			'application/json',
+			{ kind: 'if-absent' },
+		);
+		const misfiled = { problem: 'misfiled_print', objects: ['prints/history.json'] };
+		expect((await readHistory(store)).days).toEqual([]);
+		expect(await dayView(store, E)).toMatchObject({ status: 'unsettled', misfiled });
+		await collectAroundE();
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2027-01-02T05:30:00Z'));
+		const response = await settleRoute(
+			new Request(`http://test/api/cron/settle?date=${E}`, {
+				headers: { authorization: 'Bearer test-cron-secret' },
+			}),
+		);
+		expect(await response.json()).toMatchObject({ status: 'settled', misfiled });
+	});
+
+	it('reads only in-window receipts and writes only its own root when settling and correcting', async () => {
+		await collectAroundE();
+		// Corrupt receipts just outside the window, on both sides: never read, so never fatal.
+		for (const key of [
+			'rounds/2027-01-01/2027-01-01T04:55Z.json',
+			'rounds/2027-01-02/2027-01-02T05:05Z.json',
+		]) {
+			await store.write(key, new TextEncoder().encode('not json'), 'application/json', {
+				kind: 'if-absent',
+			});
+		}
+		const calls: string[] = [];
+		const recording = new (class extends FileStore {
+			override read(key: string) {
+				calls.push(`read ${key}`);
+				return super.read(key);
+			}
+			override write(...args: Parameters<FileStore['write']>) {
+				calls.push(`write ${args[0]}`);
+				return super.write(...args);
+			}
+		})(root);
+		const { print } = await settleDay(recording, E);
+		const corrected = await correctDay(
+			recording,
+			E,
+			{ supersedesPrintHash: print.printHash, reason: 'test', windowOverride: null },
+			() => new Date('2027-01-02T12:00:00Z'),
+		);
+		expect(corrected.revision).toBe(2);
+		const receiptReads = calls.filter((c) => c.startsWith('read rounds/'));
+		expect(new Set(receiptReads)).toEqual(
+			new Set([
+				'read rounds/2027-01-01/2027-01-01T05:00Z.json',
+				'read rounds/2027-01-01/2027-01-01T23:55Z.json',
+				'read rounds/2027-01-02/2027-01-02T04:55Z.json',
+			]),
+		);
+		expect(calls.filter((c) => c.startsWith('write '))).toEqual([
+			`write prints/et/${E}/r1.json`,
+			'write prints/et/history.json',
+			`write prints/et/${E}/r2.json`,
+			'write prints/et/history.json',
+		]);
+		expect(calls.some((c) => c.includes(' days/'))).toBe(false);
+	});
+
 	it('states each day’s envelope: v2 deadlines and window for E, v1’s for E−1', async () => {
 		expect(await dayView(store, E)).toEqual({
 			date: E,
 			standing: 'settlement',
+			methodologyVersion: '2.0.0',
 			day: 'America/New_York',
 			window: { start: '2027-01-01T05:00:00.000Z', end: '2027-01-02T05:00:00.000Z' },
 			status: 'unsettled',

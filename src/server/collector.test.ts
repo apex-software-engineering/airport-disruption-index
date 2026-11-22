@@ -141,6 +141,7 @@ describe('views and settlement', () => {
 		expect(await dayView(store, '2026-11-17')).toEqual({
 			date: '2026-11-17',
 			standing: 'settlement',
+			methodologyVersion: '1.0.0',
 			day: 'UTC',
 			window: { start: '2026-11-17T00:00:00.000Z', end: '2026-11-18T00:00:00.000Z' },
 			status: 'unsettled',

@@ -37,7 +37,8 @@ import type {
 import { addDays, parseRoundId, utcDateOf, type RoundId, type UtcDate } from '@/lib/index/time';
 
 import {
-	misfiledPrintKeys,
+	misfiledPrints,
+	type MisfiledPrints,
 	readCorrectionPrints,
 	readDayIndex,
 	readHistory,
@@ -190,6 +191,7 @@ function dayZoneOf(release: Methodology): 'UTC' | DayTimeZone {
 function settlementEnvelope({ release, window }: SettlementDay) {
 	return {
 		standing: 'settlement' as const,
+		methodologyVersion: release.parameters.version,
 		day: dayZoneOf(release),
 		window: windowOf(window),
 	};
@@ -199,8 +201,8 @@ type SettlementEnvelope = ReturnType<typeof settlementEnvelope>;
 
 export type DayView = SettlementEnvelope & {
 	date: string;
-	/** Print objects for this date under another release's root: a stale write, never served. */
-	misfiled?: string[];
+	/** Objects for this date no reader serves (a stale write), under `misfiled_print`. */
+	misfiled?: MisfiledPrints;
 } & (
 		| { status: 'settled'; print: DailyPrint; revisions: DailyPrint[] }
 		| { status: 'unsettled'; settlesAt: string; publishBy: string }
@@ -211,12 +213,12 @@ export async function dayView(store: ObjectStore, date: string): Promise<DayView
 	const day = settlementDay(date);
 	const [revisions, misfiled] = await Promise.all([
 		readPrints(store, date),
-		misfiledPrintKeys(store, date),
+		misfiledPrints(store, date),
 	]);
 	const stated = {
 		date,
 		...settlementEnvelope(day),
-		...(misfiled.length > 0 ? { misfiled } : {}),
+		...(misfiled === null ? {} : { misfiled }),
 	};
 	const print = revisions.at(-1);
 	if (print === undefined) {
@@ -249,7 +251,6 @@ export function historyWindow({ days }: HistoryIndex, from: UtcDate, to: UtcDate
 				const settled = settlementDay(day.date);
 				return {
 					...day,
-					methodologyVersion: settled.release.parameters.version,
 					...settlementEnvelope(settled),
 					url: `${API_BASE}/days/${day.date}`,
 				};
@@ -347,12 +348,13 @@ export async function indicativeHistoryView(store: ObjectStore, from: string, to
 	};
 }
 
-export type CorrectionEntry = Correction & {
-	date: UtcDate;
-	revision: number;
-	printHash: string;
-	url: string;
-};
+export type CorrectionEntry = Correction &
+	SettlementEnvelope & {
+		date: string;
+		revision: number;
+		printHash: string;
+		url: string;
+	};
 
 /** Every stored correction print (revision 2 or later), most recently issued first. */
 export async function correctionsView(store: ObjectStore): Promise<CorrectionEntry[]> {
@@ -360,7 +362,16 @@ export async function correctionsView(store: ObjectStore): Promise<CorrectionEnt
 		.flatMap(({ date, revision, printHash, correction }) =>
 			correction === null
 				? []
-				: [{ date, revision, printHash, ...correction, url: `${API_BASE}/days/${date}` }],
+				: [
+						{
+							date,
+							...settlementEnvelope(settlementDay(date)),
+							revision,
+							printHash,
+							...correction,
+							url: `${API_BASE}/days/${date}`,
+						},
+					],
 		)
 		.sort((x, y) => y.issuedAt.localeCompare(x.issuedAt));
 }

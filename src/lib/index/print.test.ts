@@ -175,6 +175,21 @@ describe('buildPrint', () => {
 		).toEqual(['adi.daily-print/2 holds zoned days; 1.0.0 uses UTC days']);
 	});
 
+	it('binds a zoned print’s slot count to its window, even when rehashed', () => {
+		const v2 = RELEASES[1];
+		if (v2 === undefined) throw new Error('the registry lists v2');
+		const spring = buildPrint({ release: v2, window: dayWindow(v2, '2027-03-14') }, [], {
+			revision: 1,
+		});
+		expect(spring.coverage.slotsPerDay).toBe(276);
+		const { printHash, ...unsigned } = {
+			...spring,
+			coverage: { ...spring.coverage, slotsPerDay: 288 },
+		};
+		const forged = { ...unsigned, printHash: hashJson(unsigned) };
+		expect(issuesOf(forged)).toEqual(['coverage.slotsPerDay is 288, but 2027-03-14 has 276 slots']);
+	});
+
 	it('detects a tampered print', () => {
 		const print = buildPrint(settlementDay(DAY), rounds, { revision: 1 });
 		expect(printHashMatches({ ...print, revision: 2 })).toBe(false);

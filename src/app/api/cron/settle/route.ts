@@ -1,4 +1,4 @@
-import { freezeIndicativeDay, misfiledPrintKeys, settleDay } from '@/server/archive';
+import { freezeIndicativeDay, misfiledPrints, settleDay } from '@/server/archive';
 import { CACHE, cronAuthorized, json, problem } from '@/server/http';
 import { storeFromEnv, type ObjectStore } from '@/server/storage';
 import { dayWindow, settlesAt } from '@/lib/index/calendar';
@@ -31,7 +31,7 @@ export async function GET(request: Request) {
 	const store = storeFromEnv();
 	const { status, print } = await settleDay(store, date);
 	// A print another release's deployment left under this date: never served, reported here.
-	const misfiled = await misfiledPrintKeys(store, date);
+	const misfiled = await misfiledPrints(store, date);
 	const indicative = [];
 	// Nothing is frozen into the series before its notice is published.
 	const due = indicativeSeriesPublished() ? dueIndicativeDays(now, INDICATIVE_LOOKBACK_DAYS) : [];
@@ -44,7 +44,7 @@ export async function GET(request: Request) {
 			date,
 			result: print.result.status,
 			printHash: print.printHash,
-			...(misfiled.length > 0 ? { misfiled } : {}),
+			...(misfiled === null ? {} : { misfiled }),
 			indicative,
 		},
 		CACHE.none,

@@ -203,9 +203,17 @@ describe('correctionsView', () => {
 		expect(await correctionsView(store)).toEqual([]);
 		const r2 = await correctDay(store, DAY, request(original), () => IN_WINDOW);
 		const r3 = await correctDay(store, DAY, request(r2), () => new Date('2026-11-18T07:00:00Z'));
+		// Each entry states its day's zone and window, as the day itself does.
+		const envelope = {
+			standing: 'settlement',
+			methodologyVersion: '1.0.0',
+			day: 'UTC',
+			window: { start: `${DAY}T00:00:00.000Z`, end: '2026-11-18T00:00:00.000Z' },
+		};
 		expect(await correctionsView(store)).toEqual([
 			{
 				date: DAY,
+				...envelope,
 				revision: 3,
 				printHash: r3.printHash,
 				...r3.correction,
@@ -213,6 +221,7 @@ describe('correctionsView', () => {
 			},
 			{
 				date: DAY,
+				...envelope,
 				revision: 2,
 				printHash: r2.printHash,
 				...r2.correction,
