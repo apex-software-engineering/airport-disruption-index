@@ -22,6 +22,7 @@ import {
 	identityOf,
 	methodologyOf,
 	settlementReleaseOrNull,
+	type DayTimeZone,
 	type Methodology,
 } from '@/lib/index/methodology';
 import type {
@@ -36,6 +37,7 @@ import type {
 import { addDays, parseRoundId, utcDateOf, type RoundId, type UtcDate } from '@/lib/index/time';
 
 import {
+	misfiledPrintKeys,
 	readCorrectionPrints,
 	readDayIndex,
 	readHistory,
@@ -97,6 +99,7 @@ async function provisionalView(store: ObjectStore, today: SettlementDay, now: Da
 		date: deadlines.date,
 		asOf: now.toISOString(),
 		status: 'provisional' as const,
+		...settlementEnvelope(today),
 		settlesAt: deadlines.settlesAt,
 		publishBy: deadlines.publishBy,
 		methodologyVersion: day.methodology.parameters.version,
@@ -173,24 +176,59 @@ function unrecognizedListsOf(rounds: readonly RoundSummary[]): UnrecognizedSight
 	return [...sightings.values()];
 }
 
-export type DayView =
-	| { date: UtcDate; status: 'settled'; print: DailyPrint; revisions: DailyPrint[] }
-	| { date: UtcDate; status: 'unsettled'; settlesAt: string; publishBy: string };
+/** The zone a settlement day is read in: `UTC` for v1, the IANA zone for a zoned release. */
+function dayZoneOf(release: Methodology): 'UTC' | DayTimeZone {
+	const { day } = release.parameters;
+	return day === 'utc' ? 'UTC' : day.timeZone;
+}
+
+/**
+ * What every settlement response states beside the data, outside any hashed print (design §5):
+ * its standing, the zone its date is read in and the exact window, so a v1 `/1` print, which
+ * states neither, keeps its bytes while every client still sees both.
+ */
+function settlementEnvelope({ release, window }: SettlementDay) {
+	return {
+		standing: 'settlement' as const,
+		day: dayZoneOf(release),
+		window: windowOf(window),
+	};
+}
+
+type SettlementEnvelope = ReturnType<typeof settlementEnvelope>;
+
+export type DayView = SettlementEnvelope & {
+	date: string;
+	/** Print objects for this date under another release's root: a stale write, never served. */
+	misfiled?: string[];
+} & (
+		| { status: 'settled'; print: DailyPrint; revisions: DailyPrint[] }
+		| { status: 'unsettled'; settlesAt: string; publishBy: string }
+	);
 
 /** A day's current print (latest revision) with every revision kept visible. */
-export async function dayView(store: ObjectStore, date: UtcDate): Promise<DayView> {
-	const revisions = await readPrints(store, date);
+export async function dayView(store: ObjectStore, date: string): Promise<DayView> {
+	const day = settlementDay(date);
+	const [revisions, misfiled] = await Promise.all([
+		readPrints(store, date),
+		misfiledPrintKeys(store, date),
+	]);
+	const stated = {
+		date,
+		...settlementEnvelope(day),
+		...(misfiled.length > 0 ? { misfiled } : {}),
+	};
 	const print = revisions.at(-1);
 	if (print === undefined) {
-		const deadlines = deadlinesOf(settlementDay(date).window);
+		const deadlines = deadlinesOf(day.window);
 		return {
-			date,
+			...stated,
 			status: 'unsettled',
 			settlesAt: deadlines.settlesAt,
 			publishBy: deadlines.publishBy,
 		};
 	}
-	return { date, status: 'settled', print, revisions };
+	return { ...stated, status: 'settled', print, revisions };
 }
 
 export async function historyView(store: ObjectStore, from: UtcDate, to: UtcDate) {
@@ -206,7 +244,16 @@ export function historyWindow({ days }: HistoryIndex, from: UtcDate, to: UtcDate
 		methodologyVersion: settlementReleaseOrNull(to)?.parameters.version ?? null,
 		days: days
 			.filter((day) => day.date >= from && day.date <= to)
-			.map((day) => ({ ...day, url: `${API_BASE}/days/${day.date}` })),
+			.map((day) => {
+				// History lists only days whose release owns them (archive.readHistory).
+				const settled = settlementDay(day.date);
+				return {
+					...day,
+					methodologyVersion: settled.release.parameters.version,
+					...settlementEnvelope(settled),
+					url: `${API_BASE}/days/${day.date}`,
+				};
+			}),
 	};
 }
 

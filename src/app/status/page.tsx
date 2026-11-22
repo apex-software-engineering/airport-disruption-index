@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 
 import { describeCoverage } from '@/components/coverage';
+import { ZONE_LABEL } from '@/components/day-name';
 import { formatInteger, formatPercent } from '@/components/format';
 import {
 	hasValidRound,
@@ -18,7 +19,7 @@ import {
 	PageTitle,
 	Section,
 	StatusLabel,
-	UtcDay,
+	DayLabel,
 } from '@/components/ui';
 import { TransitionNotice } from '@/components/transition';
 import type { RoundReceipt } from '@/lib/index/schemas';
@@ -49,7 +50,7 @@ export default async function StatusPage() {
 				{receipt === null ? (
 					<Notice>
 						{current.status === 'provisional'
-							? `No round has been recorded for ${current.date} (UTC) yet.`
+							? `No round has been recorded for ${current.date} (${ZONE_LABEL[current.day]}) yet.`
 							: `No round has been recorded since ${current.previousDay.date} ended.`}
 					</Notice>
 				) : (
@@ -69,7 +70,12 @@ export default async function StatusPage() {
 				) : (
 					<Facts
 						rows={[
-							{ term: 'Date (UTC)', detail: <UtcDay date={lastPrint.date} /> },
+							{
+								term: 'Date',
+								detail: (
+									<DayLabel date={lastPrint.date} day={lastPrint.day} window={lastPrint.window} />
+								),
+							},
 							{
 								term: 'Status',
 								detail: (
@@ -100,7 +106,12 @@ export default async function StatusPage() {
 function Today({ current }: { current: Provisional }) {
 	const coverage = describeCoverage(current.coverage);
 	return (
-		<Section title={<UtcDay date={current.date}>Today, {current.date} (UTC)</UtcDay>}>
+		<Section
+			title={
+				<DayLabel date={current.date} day={current.day} window={current.window}>
+					Today, {current.date} ({ZONE_LABEL[current.day]})
+				</DayLabel>
+			}>
 			{current.foreignMethodologies.length > 0 && (
 				<Notice>
 					Some of today&apos;s rounds were collected under another methodology (

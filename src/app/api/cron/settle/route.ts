@@ -1,4 +1,4 @@
-import { freezeIndicativeDay, settleDay } from '@/server/archive';
+import { freezeIndicativeDay, misfiledPrintKeys, settleDay } from '@/server/archive';
 import { CACHE, cronAuthorized, json, problem } from '@/server/http';
 import { storeFromEnv, type ObjectStore } from '@/server/storage';
 import { dayWindow, settlesAt } from '@/lib/index/calendar';
@@ -26,15 +26,12 @@ export async function GET(request: Request) {
 	const release = settlementReleaseOrNull(date);
 	if (release === null)
 		return problem(400, `no methodology is in effect on ${date}, so it has nothing to settle`);
-	if (release.parameters.day !== 'utc')
-		return problem(
-			409,
-			`${date} is an ${release.parameters.day.timeZone} day; settling those days is not available yet`,
-		);
 	const cutoff = settlesAt(dayWindow(release, date));
 	if (now < cutoff) return problem(409, `${date} settles at ${cutoff.toISOString()}`);
 	const store = storeFromEnv();
 	const { status, print } = await settleDay(store, date);
+	// A print another release's deployment left under this date: never served, reported here.
+	const misfiled = await misfiledPrintKeys(store, date);
 	const indicative = [];
 	// Nothing is frozen into the series before its notice is published.
 	const due = indicativeSeriesPublished() ? dueIndicativeDays(now, INDICATIVE_LOOKBACK_DAYS) : [];
@@ -42,7 +39,14 @@ export async function GET(request: Request) {
 		indicative.push(await freezeIndicative(store, day, now));
 	}
 	return json(
-		{ status, date, result: print.result.status, printHash: print.printHash, indicative },
+		{
+			status,
+			date,
+			result: print.result.status,
+			printHash: print.printHash,
+			...(misfiled.length > 0 ? { misfiled } : {}),
+			indicative,
+		},
 		CACHE.none,
 	);
 }

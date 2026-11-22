@@ -5,5 +5,8 @@ export function dayName(parameters: MethodologyParameters): string {
 	return parameters.day === 'utc' ? 'UTC day' : `${parameters.day.timeZone} day`;
 }
 
-/** The short label a zoned day carries beside its date, e.g. "2026-11-20 (ET)". */
-export const ZONE_LABEL: Record<DayTimeZone, string> = { 'America/New_York': 'ET' };
+/** The short label a day carries beside its date, e.g. "2026-11-20 (ET)" or "(UTC)". */
+export const ZONE_LABEL: Record<'UTC' | DayTimeZone, string> = {
+	UTC: 'UTC',
+	'America/New_York': 'ET',
+};

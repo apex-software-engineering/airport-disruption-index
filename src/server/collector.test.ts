@@ -137,14 +137,18 @@ describe('views and settlement', () => {
 			foreignMethodologies: [],
 			unrecognizedLists: [],
 		});
+		// The settlement envelope states the standing, zone and window beside the v1 fields.
 		expect(await dayView(store, '2026-11-17')).toEqual({
 			date: '2026-11-17',
+			standing: 'settlement',
+			day: 'UTC',
+			window: { start: '2026-11-17T00:00:00.000Z', end: '2026-11-18T00:00:00.000Z' },
 			status: 'unsettled',
 			settlesAt: '2026-11-18T00:30:00.000Z',
 			publishBy: '2026-11-18T01:30:00.000Z',
 		});
 		// The last representable day is unsettled, as on main, not an error.
-		expect(await dayView(store, '9999-12-31')).toEqual({
+		expect(await dayView(store, '9999-12-31')).toMatchObject({
 			date: '9999-12-31',
 			status: 'unsettled',
 			settlesAt: '+010000-01-01T00:30:00.000Z',

@@ -24,7 +24,7 @@ import {
 	Section,
 	StatusLabel,
 	Table,
-	UtcDay,
+	DayLabel,
 	ZonedDay,
 } from '@/components/ui';
 import { collectingRelease } from '@/lib/index/calendar';
@@ -82,7 +82,12 @@ function Today({ current }: { current: Provisional }) {
 	const { lastRound } = current;
 	const coverage = describeCoverage(current.coverage);
 	return (
-		<Section title={<UtcDay date={current.date}>Today, {current.date} (UTC)</UtcDay>}>
+		<Section
+			title={
+				<DayLabel date={current.date} day={current.day} window={current.window}>
+					Today, {current.date} ({ZONE_LABEL[current.day]})
+				</DayLabel>
+			}>
 			{hasValidRound(current) ? (
 				<div className='grid gap-6 sm:grid-cols-2'>
 					<Figure
@@ -137,13 +142,15 @@ function RecentPrints({
 			) : (
 				<Table
 					caption='Settled days, newest first'
-					head={['Date (UTC)', 'Status', 'ADI', 'ADI-GS', 'Coverage', 'Revision']}
+					head={['Date', 'Status', 'ADI', 'ADI-GS', 'Coverage', 'Revision']}
 					rows={days.map((day) => [
 						// A fixed width for the local line, so filling it cannot resize the column.
 						<div key='date' className='w-80'>
-							<UtcDay date={day.date}>
-								<a href={day.url}>{day.date}</a>
-							</UtcDay>
+							<DayLabel date={day.date} day={day.day} window={day.window}>
+								<a href={day.url}>
+									{day.date} ({ZONE_LABEL[day.day]})
+								</a>
+							</DayLabel>
 						</div>,
 						<StatusLabel key='status' tone={SETTLED_TONE[day.status]}>
 							{day.status}

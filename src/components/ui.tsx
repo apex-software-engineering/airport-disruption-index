@@ -1,8 +1,10 @@
 /** Small presentational pieces shared by the public pages. */
 import type { ReactNode } from 'react';
 
+import type { DayTimeZone } from '@/lib/index/methodology';
 import { addDays, dayStartMs, type UtcDate } from '@/lib/index/time';
 
+import { ZONE_LABEL } from './day-name';
 import { formatUtc } from './format';
 import { LocalTime } from './local-time';
 
@@ -107,6 +109,30 @@ export function ZonedDay({
 			<time dateTime={date}>{children}</time>
 			<LocalTime at={window.start} until={window.end} />
 		</>
+	);
+}
+
+/**
+ * A settlement day labelled with the zone its date is read in: a v1 UTC day or a zoned day, with
+ * the viewer's local stretch below. `children` replaces the default "date (zone)" label.
+ */
+export function DayLabel({
+	date,
+	day,
+	window,
+	children = `${date} (${ZONE_LABEL[day]})`,
+}: {
+	date: string;
+	day: 'UTC' | DayTimeZone;
+	window: { start: string; end: string };
+	children?: ReactNode;
+}) {
+	return day === 'UTC' ? (
+		<UtcDay date={date}>{children}</UtcDay>
+	) : (
+		<ZonedDay date={date} window={window} zone={ZONE_LABEL[day]}>
+			{children}
+		</ZonedDay>
 	);
 }
 

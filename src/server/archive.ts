@@ -23,9 +23,12 @@ import {
 	admits,
 	isUnder,
 	methodologyOf,
+	settlementReleaseOrNull,
 	SLOT_MINUTES,
+	type DayTimeZone,
 	type Methodology,
 } from '@/lib/index/methodology';
+import { RELEASES } from '@/lib/index/releases';
 import {
 	buildIndicativePrint,
 	buildPrint,
@@ -70,12 +73,35 @@ const keys = {
 	raw: (date: UtcDate, id: RoundId, sha256: string) => `rounds/${date}/${id}.${sha256}.raw`,
 	roundsOf: (date: UtcDate) => `rounds/${date}/`,
 	dayIndex: (date: UtcDate) => `days/${date}.json`,
-	print: (date: UtcDate, revision: number) => `prints/${date}/r${revision}.json`,
-	history: () => 'prints/history.json',
+	/** Under the release's print root (`printRoot`): v1's UTC days and zoned days never share a key. */
+	print: (root: PrintRoot, date: string, revision: number) => `${root}${date}/r${revision}.json`,
+	history: (root: PrintRoot) => `${root}history.json`,
 	/** Frozen, never revised: one object per indicative day, under the release it is computed in. */
 	indicative: (version: string, date: string) => `indicative/${version}/${date}.json`,
 	indicativeRoot: () => 'indicative/',
 };
+
+/**
+ * Where a release's settlement prints and history live. v1's UTC days keep `prints/`; a zoned
+ * release's days live under their zone (`prints/et/`), so a stale deployment settling a v2 label
+ * as a UTC day can never occupy, block or overwrite a v2 print's key (design §2).
+ */
+type PrintRoot = 'prints/' | 'prints/et/';
+const ZONE_ROOT: Record<DayTimeZone, PrintRoot> = { 'America/New_York': 'prints/et/' };
+
+function printRoot(release: Methodology): PrintRoot {
+	const { day } = release.parameters;
+	return day === 'utc' ? 'prints/' : ZONE_ROOT[day.timeZone];
+}
+
+/** Every print root a registered release uses, so stale writes under any of them can be found. */
+const PRINT_ROOTS: readonly PrintRoot[] = [...new Set(RELEASES.map(printRoot))];
+
+/** The print root that owns `date` as a settlement day, or null when no release does. */
+function canonicalRoot(date: string): PrintRoot | null {
+	const release = settlementReleaseOrNull(date);
+	return release === null ? null : printRoot(release);
+}
 
 /** The UTC storage partition a round lives in. */
 function dateOf(id: RoundId): UtcDate {
@@ -85,22 +111,18 @@ function dateOf(id: RoundId): UtcDate {
 }
 
 /**
- * The one storage partition holding every slot of a settlement day. Settlement here reads, and
- * re-indexes, a single partition, which is exactly a v1 UTC day. A day in a zoned release spans
- * two partitions and is refused until settlement reads windows across partitions.
+ * The storage partition a settlement day is exactly, or null when the day spans partitions (a
+ * zoned day). Only such a day is re-indexed by settlement; a partition's index stays owned by
+ * collect otherwise (design §5).
  */
-function partitionOfDay(window: DayWindow): UtcDate {
+function utcPartitionOf(window: DayWindow): UtcDate | null {
 	const partitions = partitionsOf(window);
 	const [partition] = partitions;
-	if (
-		partitions.length !== 1 ||
-		partition === undefined ||
-		dayStartMs(partition) !== window.start.getTime()
-	)
-		throw new Error(
-			`${window.date} spans storage partitions ${partitions.join(', ')}; only a UTC day can be settled here`,
-		);
-	return partition;
+	return partitions.length === 1 &&
+		partition !== undefined &&
+		dayStartMs(partition) === window.start.getTime()
+		? partition
+		: null;
 }
 
 function encode(value: unknown): Uint8Array {
@@ -441,33 +463,107 @@ export async function readDayReceipts(store: ObjectStore, date: UtcDate): Promis
 	return readReceipts(store, date, await listReceiptIds(store, date), 'throw');
 }
 
-/** All revisions of a day's print, oldest first. Empty when the day has not settled. */
-export async function readPrints(store: ObjectStore, date: UtcDate): Promise<DailyPrint[]> {
+/**
+ * The stored receipt ids whose slot is in `window`, with the UTC partition each is stored in.
+ * Filtered by id before anything is read, so a receipt outside the window is never read and can
+ * never stop a run.
+ */
+async function listWindowReceipts(
+	store: ObjectStore,
+	window: DayWindow,
+): Promise<{ partition: UtcDate; id: RoundId }[]> {
+	const inWindow = (id: RoundId) => {
+		const parsed = parseRoundId(id);
+		return parsed !== null && slotIndexIn(window, parsed.slotStart) !== null;
+	};
+	const listed = await Promise.all(
+		partitionsOf(window).map(async (partition) =>
+			(await listReceiptIds(store, partition)).filter(inWindow).map((id) => ({ partition, id })),
+		),
+	);
+	return listed.flat();
+}
+
+/** Every stored receipt whose slot is in `window`, across its partitions, each verified. */
+async function readWindowReceipts(store: ObjectStore, window: DayWindow): Promise<RoundReceipt[]> {
+	const listed = await listWindowReceipts(store, window);
+	const partitions = [...new Set(listed.map((entry) => entry.partition))];
+	const read = await Promise.all(
+		partitions.map((partition) =>
+			readReceipts(
+				store,
+				partition,
+				listed.filter((entry) => entry.partition === partition).map((entry) => entry.id),
+				'throw',
+			),
+		),
+	);
+	return read.flat();
+}
+
+/**
+ * All revisions of a day's print, oldest first, read from the print root of the release that owns
+ * the day. Empty when the day has not settled or no release owns it.
+ */
+export async function readPrints(store: ObjectStore, date: string): Promise<DailyPrint[]> {
+	const release = settlementReleaseOrNull(date);
+	if (release === null) return [];
 	const prints: DailyPrint[] = [];
 	for (let revision = 1; ; revision += 1) {
-		const print = await readJson(store, printSchema, keys.print(date, revision));
+		const key = keys.print(printRoot(release), date, revision);
+		const print = await readJson(store, printSchema, key);
 		if (print === null) return prints;
+		if (!isUnder(release, print)) throw new Error(`${key} records another methodology`);
 		prints.push(print);
 	}
 }
 
-const PRINT_KEY = /^prints\/(\d{4}-\d{2}-\d{2})\/r(\d+)\.json$/;
+/**
+ * Print objects stored for `date` under a root other than the one its release owns: what a stale
+ * deployment would leave behind. Never served, never listed; reported so the monitor can alert.
+ */
+export async function misfiledPrintKeys(store: ObjectStore, date: string): Promise<string[]> {
+	const canonical = canonicalRoot(date);
+	const others = PRINT_ROOTS.filter((root) => root !== canonical);
+	return (await Promise.all(others.map((root) => store.list(`${root}${date}/`)))).flat();
+}
+
+const PRINT_KEY = /^(prints\/(?:[a-z]+\/)?)(\d{4}-\d{2}-\d{2})\/r(\d+)\.json$/;
 
 /**
  * Every stored correction print (revision 2 or later), found by listing the print keys. It does
- * not rely on the history index, which can lag a correction whose history update failed.
+ * not rely on the history index, which can lag a correction whose history update failed. Only a
+ * print under the root that owns its day is listed: a misfiled one is never shown.
  */
 export async function readCorrectionPrints(store: ObjectStore): Promise<DailyPrint[]> {
-	const listed = (await store.list('prints/')).filter(
-		(key) => Number(PRINT_KEY.exec(key)?.[2]) > 1,
-	);
+	const listed = (await store.list('prints/')).filter((key) => {
+		const match = PRINT_KEY.exec(key);
+		return match !== null && Number(match[3]) > 1 && match[1] === canonicalRoot(match[2] ?? '');
+	});
 	return readInBatches(listed, async (key) => {
 		const print = await readJson(store, printSchema, key);
 		if (print === null) throw new Error(`${key} is listed but could not be read`);
-		const expected = keys.print(print.date, print.revision);
+		const root = canonicalRoot(print.date);
+		const expected = root === null ? null : keys.print(root, print.date, print.revision);
 		if (key !== expected) throw new Error(`${key} holds the print for ${expected}`);
 		return print;
 	});
+}
+
+/**
+ * A settlement day's receipts, each verified. A UTC day is one whole partition, read as v1
+ * always has and re-indexed from what was read; a zoned day spans two partitions, read through
+ * its window, and leaves their indexes to collect.
+ */
+async function readSettlementReceipts(
+	store: ObjectStore,
+	window: DayWindow,
+): Promise<RoundReceipt[]> {
+	const partition = utcPartitionOf(window);
+	if (partition === null) return readWindowReceipts(store, window);
+	const receipts = await readDayReceipts(store, partition);
+	await syncDayIndex(store, partition, { kind: 'settle', receipts });
+	return receipts;
 }
 
 export type SettleOutcome = { status: 'settled' | 'already_settled'; print: DailyPrint };
@@ -478,18 +574,16 @@ export type SettleOutcome = { status: 'settled' | 'already_settled'; print: Dail
  * index at the day's latest revision.
  */
 export async function settleDay(store: ObjectStore, date: UtcDate): Promise<SettleOutcome> {
-	// Resolved first, so a day this build cannot settle never reaches the history index either.
 	const day = settlementDay(date);
-	const partition = partitionOfDay(day.window);
 	const settled = (await readPrints(store, date)).at(-1);
 	if (settled !== undefined) {
 		await updateHistory(store, settled);
 		return { status: 'already_settled', print: settled };
 	}
-	const receipts = await readDayReceipts(store, partition);
-	await syncDayIndex(store, partition, { kind: 'settle', receipts });
+	const receipts = await readSettlementReceipts(store, day.window);
 	const print = buildPrint(day, receipts.map(summarizeReceipt), { revision: 1 });
-	const written = await store.write(keys.print(date, 1), encode(print), JSON_TYPE, {
+	const key = keys.print(printRoot(day.release), date, 1);
+	const written = await store.write(key, encode(print), JSON_TYPE, {
 		kind: 'if-absent',
 	});
 	if (written === 'conflict') {
@@ -548,9 +642,7 @@ export async function correctDay(
 			`r${latest.revision} records methodology ${latest.methodologyVersion} (${latest.parameterHash}), not the one in effect on ${date}; a correction never changes a day's methodology`,
 		);
 	}
-	const partition = partitionOfDay(day.window);
-	const receipts = await readDayReceipts(store, partition);
-	await syncDayIndex(store, partition, { kind: 'settle', receipts });
+	const receipts = await readSettlementReceipts(store, day.window);
 	const revision = latest.revision + 1;
 	const body = printBody(day, receipts.map(summarizeReceipt));
 	// Finalizing checks issuedAt against the window, so the clock is read after aggregation,
@@ -559,7 +651,8 @@ export async function correctDay(
 		revision,
 		correction: { ...request, issuedAt: clock().toISOString() },
 	});
-	const written = await store.write(keys.print(date, revision), encode(print), JSON_TYPE, {
+	const key = keys.print(printRoot(day.release), date, revision);
+	const written = await store.write(key, encode(print), JSON_TYPE, {
 		kind: 'if-absent',
 	});
 	if (written === 'conflict')
@@ -575,13 +668,30 @@ export async function correctDay(
 
 const EMPTY_HISTORY: HistoryIndex = { schema: 'adi.history/1', days: [] };
 
+/**
+ * The settled days of every release. Each root's history object is written only by its own
+ * release's settlements, and is read only for the days that release owns, so an entry a stale
+ * deployment wrote under the wrong root is never served, even before the next settle repairs it.
+ */
 export async function readHistory(store: ObjectStore): Promise<HistoryIndex> {
-	return (await readJson(store, historyIndexSchema, keys.history())) ?? EMPTY_HISTORY;
+	const histories = await Promise.all(
+		PRINT_ROOTS.map(async (root) => {
+			const history = await readJson(store, historyIndexSchema, keys.history(root));
+			return (history?.days ?? []).filter((day) => canonicalRoot(day.date) === root);
+		}),
+	);
+	return {
+		...EMPTY_HISTORY,
+		days: histories.flat().sort((x, y) => x.date.localeCompare(y.date)),
+	};
 }
 
 async function updateHistory(store: ObjectStore, print: DailyPrint): Promise<void> {
 	const entry = historyEntryOf(print);
-	await updateJson(store, historyIndexSchema, keys.history(), EMPTY_HISTORY, (history) => {
+	const release = methodologyOf(print.methodologyVersion, print.parameterHash);
+	if (release === null) throw new Error(`${print.date} records an unknown methodology`);
+	const key = keys.history(printRoot(release));
+	await updateJson(store, historyIndexSchema, key, EMPTY_HISTORY, (history) => {
 		const listed = history.days.find((d) => d.date === entry.date);
 		if (listed !== undefined && listed.revision > entry.revision) return history; // never regress
 		return {
@@ -677,18 +787,9 @@ async function readIndicativeRounds(
 	window: DayWindow,
 	admission: IndicativeAdmission,
 ): Promise<RoundSummary[]> {
-	const inWindow = (id: RoundId) => {
-		const parsed = parseRoundId(id);
-		return parsed !== null && slotIndexIn(window, parsed.slotStart) !== null;
-	};
-	const listed = await Promise.all(
-		partitionsOf(window).map(async (partition) =>
-			(await listReceiptIds(store, partition))
-				.filter(inWindow)
-				.map((id) => keys.receipt(partition, id)),
-		),
-	);
-	return readInBatches(listed.flat(), async (key) => {
+	const listed = await listWindowReceipts(store, window);
+	const receiptKeys = listed.map(({ partition, id }) => keys.receipt(partition, id));
+	return readInBatches(receiptKeys, async (key) => {
 		const object = await store.read(key);
 		if (object === null) throw new Error(`receipt ${key} is listed but could not be read`);
 		const receipt = decodeReceipt(key, object);

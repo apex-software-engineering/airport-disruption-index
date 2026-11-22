@@ -10,16 +10,19 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GET as settleRoute } from '@/app/api/cron/settle/route';
+import { GET as getDay } from '@/app/api/v1/days/[date]/route';
 import { collectingRelease, dayAt, dayWindow, settlementDay } from '@/lib/index/calendar';
 import { settlementReleaseFor } from '@/lib/index/methodology';
-import { buildPrint } from '@/lib/index/print';
+import { buildPrint, historyEntryOf } from '@/lib/index/print';
+import { reproduce } from '@/lib/reproduce';
+import { routeGet } from '@/test/api';
 import { RELEASES } from '@/lib/index/releases';
 import { addDays } from '@/lib/index/time';
 import { collectAt as collectStoreRound } from '@/test/collect';
 
 import { correctDay, readHistory, settleDay } from './archive';
 import { FileStore } from './storage';
-import { currentView, dayView } from './views';
+import { correctionsView, currentView, dayView, historyView } from './views';
 
 vi.mock('@/lib/index/releases', async (importOriginal) => {
 	const actual = await importOriginal<typeof import('@/lib/index/releases')>();
@@ -61,72 +64,195 @@ function v1Release() {
 /** Collects one round fetched at `at` into this test's store. */
 const collectAt = (at: string) => collectStoreRound(store, at);
 
+const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+
+/** Rounds around ET day E ([05:00Z, next 05:00Z)): two outside it, three inside it. */
+async function collectAroundE() {
+	for (const at of [
+		'2027-01-01T02:00:03Z', // the transition interval: outside every settlement day
+		'2027-01-01T05:00:03Z', // E's first slot
+		'2027-01-01T23:55:03Z', // the last slot in the first UTC partition
+		'2027-01-02T04:55:03Z', // E's last slot, in the second UTC partition
+		'2027-01-02T05:00:03Z', // the next ET day: outside
+	]) {
+		await collectAt(at);
+	}
+}
+
+/** What a stale v1-only deployment would write for label E: a UTC-day print under v1's root. */
+function staleV1Print(revision: 1 | 2) {
+	const day = { release: v1Release(), window: dayWindow(v1Release(), E) };
+	return revision === 1
+		? buildPrint(day, [], { revision: 1 })
+		: buildPrint(day, [], {
+				revision: 2,
+				correction: {
+					supersedesPrintHash: '0'.repeat(64),
+					reason: 'stale',
+					issuedAt: '2027-01-02T01:00:00.000Z',
+					windowOverride: null,
+				},
+			});
+}
+
 describe('settlement labels across the cutover', () => {
-	it('gives every label up to E−1 to v1 and every label from E to v2, on every settlement path', () => {
+	it('builds a /1 UTC print for every label up to E−1 and a /2 ET print from E', () => {
 		for (let offset = -3; offset <= 3; offset += 1) {
 			const label = addDays(E, offset);
-			const day = settlementDay(label);
+			const print = buildPrint(settlementDay(label), [], { revision: 1 });
 			if (offset < 0) {
-				expect(day.release.parameters.version).toBe('1.0.0');
-				expect(buildPrint(day, [], { revision: 1 }).methodologyVersion).toBe('1.0.0');
+				expect(print).toMatchObject({ schema: 'adi.daily-print/1', methodologyVersion: '1.0.0' });
+				expect(print).not.toHaveProperty('window');
 			} else {
-				// A v2 day can be built only as an adi.daily-print/2 print, which arrives later.
-				expect(settlementReleaseFor(label).parameters.version).toBe('2.0.0');
-				expect(() => buildPrint(day, [], { revision: 1 })).toThrow(/UTC days only/);
+				expect(print).toMatchObject({
+					schema: 'adi.daily-print/2',
+					standing: 'settlement',
+					day: 'America/New_York',
+					methodologyVersion: '2.0.0',
+					window: {
+						start: dayWindow(settlementReleaseFor(label), label).start.toISOString(),
+						end: dayWindow(settlementReleaseFor(label), label).end.toISOString(),
+					},
+				});
 			}
 		}
 	});
 
-	it('never moves a stale v1 print for a label from E into the history index', async () => {
-		// A v1-only deployment settling 2027-01-01 as a UTC day left this print behind.
-		const stale = buildPrint({ release: v1Release(), window: dayWindow(v1Release(), E) }, [], {
-			revision: 1,
+	it('settles ET day E from both UTC partitions under v2, at its own keys', async () => {
+		await collectAroundE();
+		const indexBefore = await store.read(`days/${E}.json`);
+		const { status, print } = await settleDay(store, E);
+		expect(status).toBe('settled');
+		expect(print).toMatchObject({
+			schema: 'adi.daily-print/2',
+			date: E,
+			window: { start: '2027-01-01T05:00:00.000Z', end: '2027-01-02T05:00:00.000Z' },
+			settlesAt: '2027-01-02T05:30:00.000Z',
+			methodologyVersion: '2.0.0',
+			coverage: { slotsPerDay: 288, validRounds: 3 },
 		});
-		const key = `prints/${E}/r1.json`;
-		await store.write(key, new TextEncoder().encode(JSON.stringify(stale)), 'application/json', {
-			kind: 'if-absent',
-		});
-		await expect(settleDay(store, E)).rejects.toThrow(/only a UTC day can be settled here/);
-		expect((await readHistory(store)).days).toEqual([]);
+		expect(print.rounds.map((r) => r.roundId)).toEqual([
+			'2027-01-01T05:00Z',
+			'2027-01-01T23:55Z',
+			'2027-01-02T04:55Z',
+		]);
+		expect(await store.list(`prints/et/${E}/`)).toEqual([`prints/et/${E}/r1.json`]);
+		expect(await store.list(`prints/${E}/`)).toEqual([]);
+		// A partition's index stays owned by collect: an ET settle never rewrites it.
+		expect((await store.read(`days/${E}.json`))?.body).toEqual(indexBefore?.body);
+		expect((await readHistory(store)).days.map((d) => [d.date, d.revision])).toEqual([[E, 1]]);
+		expect(await store.list('prints/et/history.json')).toEqual(['prints/et/history.json']);
+		// reproduce rebuilds it from the public API.
+		expect(await reproduce(E, 'http://test', routeGet)).toMatchObject({ kind: 'match' });
+		// History lists both releases' days, each with its own zone and window.
+		await settleDay(store, '2026-12-31');
+		const history = await historyView(store, '2026-12-31', E);
+		expect(history.days.map((d) => [d.date, d.methodologyVersion, d.day, d.window.start])).toEqual([
+			['2026-12-31', '1.0.0', 'UTC', '2026-12-31T00:00:00.000Z'],
+			[E, '2.0.0', 'America/New_York', '2027-01-01T05:00:00.000Z'],
+		]);
 	});
 
-	it('answers a zoned ?date on the settle route with a structured 409, not a 500', async () => {
+	it('corrects an ET day into its own root and history', async () => {
+		await collectAroundE();
+		const { print } = await settleDay(store, E);
+		const corrected = await correctDay(
+			store,
+			E,
+			{ supersedesPrintHash: print.printHash, reason: 'test', windowOverride: null },
+			() => new Date('2027-01-02T12:00:00Z'),
+		);
+		expect(corrected).toMatchObject({ schema: 'adi.daily-print/2', revision: 2 });
+		expect(await store.list(`prints/et/${E}/`)).toEqual([
+			`prints/et/${E}/r1.json`,
+			`prints/et/${E}/r2.json`,
+		]);
+		expect((await readHistory(store)).days).toEqual([
+			expect.objectContaining({ date: E, revision: 2 }),
+		]);
+	});
+
+	it('never serves a stale v1 print, history entry or correction for a label from E, even before repair', async () => {
+		const r1 = staleV1Print(1);
+		const r2 = staleV1Print(2);
+		await store.write(`prints/${E}/r1.json`, encode(r1), 'application/json', { kind: 'if-absent' });
+		await store.write(`prints/${E}/r2.json`, encode(r2), 'application/json', { kind: 'if-absent' });
+		await store.write(
+			'prints/history.json',
+			encode({ schema: 'adi.history/1', days: [historyEntryOf(r2)] }),
+			'application/json',
+			{ kind: 'if-absent' },
+		);
+		// Immediately, with no settle run: nothing stale is served, and it is reported.
+		expect(await dayView(store, E)).toMatchObject({
+			status: 'unsettled',
+			misfiled: [`prints/${E}/r1.json`, `prints/${E}/r2.json`],
+		});
+		expect((await readHistory(store)).days).toEqual([]);
+		expect(await correctionsView(store)).toEqual([]);
+		// The v2 settle is unaffected, and the settle route still reports the stale objects.
+		await collectAroundE();
 		vi.useFakeTimers({ toFake: ['Date'] });
-		vi.setSystemTime(new Date('2027-01-03T00:00:00Z'));
+		vi.setSystemTime(new Date('2027-01-02T05:30:00Z'));
 		const response = await settleRoute(
 			new Request(`http://test/api/cron/settle?date=${E}`, {
 				headers: { authorization: 'Bearer test-cron-secret' },
 			}),
 		);
-		expect(response.status).toBe(409);
-		expect(await response.json()).toEqual({
-			error: `${E} is an America/New_York day; settling those days is not available yet`,
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({
+			status: 'settled',
+			misfiled: [`prints/${E}/r1.json`, `prints/${E}/r2.json`],
 		});
+		expect(await dayView(store, E)).toMatchObject({
+			status: 'settled',
+			print: { schema: 'adi.daily-print/2', methodologyVersion: '2.0.0' },
+		});
+		expect((await readHistory(store)).days.map((d) => d.date)).toEqual([E]);
 	});
 
-	it('can never write a v1 print for a label from E: settling or correcting one is refused', async () => {
-		await expect(settleDay(store, E)).rejects.toThrow(/only a UTC day can be settled here/);
-		await expect(
-			correctDay(
-				store,
-				E,
-				{ supersedesPrintHash: '0'.repeat(64), reason: 'test', windowOverride: null },
-				() => new Date('2027-01-02T12:00:00Z'),
-			),
-		).rejects.toThrow(/has not settled/);
-		expect((await dayView(store, E)).status).toBe('unsettled');
-	});
-
-	it('states the v2 deadlines for E and the v1 deadlines for E−1', async () => {
+	it('states each day’s envelope: v2 deadlines and window for E, v1’s for E−1', async () => {
 		expect(await dayView(store, E)).toEqual({
 			date: E,
+			standing: 'settlement',
+			day: 'America/New_York',
+			window: { start: '2027-01-01T05:00:00.000Z', end: '2027-01-02T05:00:00.000Z' },
 			status: 'unsettled',
 			settlesAt: '2027-01-02T05:30:00.000Z',
 			publishBy: '2027-01-02T06:30:00.000Z',
 		});
 		expect(await dayView(store, '2026-12-31')).toMatchObject({
+			day: 'UTC',
+			window: { start: '2026-12-31T00:00:00.000Z', end: '2027-01-01T00:00:00.000Z' },
 			settlesAt: '2027-01-01T00:30:00.000Z',
 			publishBy: '2027-01-01T01:30:00.000Z',
+		});
+	});
+
+	it('answers a pinned parameter hash that does not own the day with parameter_hash_mismatch', async () => {
+		const get = (query: string) =>
+			getDay(new Request(`http://test/api/v1/days/${E}${query}`), {
+				params: Promise.resolve({ date: E }),
+			});
+		const v1 = v1Release();
+		const v2 = settlementReleaseFor(E);
+		const mismatch = await get(`?parameterHash=${v1.parameterHash}`);
+		expect(mismatch.status).toBe(404);
+		expect(await mismatch.json()).toEqual({
+			problem: 'parameter_hash_mismatch',
+			date: E,
+			expected: v1.parameterHash,
+			actual: v2.parameterHash,
+			release: {
+				version: '2.0.0',
+				parameterHash: v2.parameterHash,
+				effectiveFrom: E,
+				effectiveUntil: null,
+			},
+		});
+		// The right hash answers as without the parameter (unsettled here).
+		expect(await (await get(`?parameterHash=${v2.parameterHash}`)).json()).toMatchObject({
+			status: 'unsettled',
 		});
 	});
 });
