@@ -6,14 +6,16 @@
  *   npm run indicative -- --from <YYYY-MM-DD> [--to <YYYY-MM-DD>]   (--to defaults to yesterday, UTC)
  *
  * Exit codes: 0 every day frozen or already frozen, 1 some day failed (the others were still
- * attempted), 2 usage.
+ * attempted), 2 usage, or production before the series is published (rehearse on preview).
  */
 import { parseArgs } from 'node:util';
 
-import { indicativeReleaseFor } from '@/lib/index/indicative';
+import { indicativeReleaseFor, indicativeSeriesPublished } from '@/lib/index/indicative';
 import { addDays, parseUtcDate, utcDateOf } from '@/lib/index/time';
 import { freezeIndicativeDay } from '@/server/archive';
-import { storeFromEnv, storeTarget, type ObjectStore } from '@/server/storage';
+import { openStore, storeTarget, type ObjectStore } from '@/server/storage';
+
+import { indicativeWriteRefusal } from './lib/indicative-target';
 
 const USAGE = 'usage: npm run indicative -- --from <YYYY-MM-DD> [--to <YYYY-MM-DD>]';
 
@@ -50,9 +52,15 @@ async function main(): Promise<number> {
 		);
 		return 2;
 	}
+	// One resolved target decides both whether to write and what to open.
+	const refusal = indicativeWriteRefusal(target.target, indicativeSeriesPublished());
+	if (refusal !== null) {
+		console.error(refusal);
+		return 2;
+	}
 	let store: ObjectStore;
 	try {
-		store = storeFromEnv(); // validates the token and VERCEL_ENV before the store is named
+		store = openStore(target.target, process.env); // validates the token and VERCEL_ENV
 	} catch (error) {
 		console.error(error instanceof Error ? error.message : String(error));
 		return 2;
