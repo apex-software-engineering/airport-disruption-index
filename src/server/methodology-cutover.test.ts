@@ -38,7 +38,6 @@ vi.mock('@/lib/index/releases', async (importOriginal) => {
 			actual.release(actual.METHODOLOGY_V1, '2026-11-17', { effectiveUntil: '2026-11-17' }),
 			actual.release(v2, '2026-11-18', {
 				announcedAt: '2026-10-01T00:00:00.000Z',
-				announcedProofAt: '2026-10-01T01:00:00.000Z',
 			}),
 		],
 	};

@@ -4,7 +4,7 @@
  * methodology.test.ts). Older entries stay so that their days keep settling, validating and
  * reproducing under the parameters they were collected under.
  *
- * The schedule fields (`effectiveUntil`, `announcedAt`, `announcedProofAt`, `withdrawn`) are not
+ * The schedule fields (`effectiveUntil`, `announcedAt`, `withdrawn`) are not
  * hashed. They change only through the published cutover steps in docs/design/v2-eastern-day.md.
  */
 import { hashJson } from './json';
@@ -93,9 +93,7 @@ export const METHODOLOGY_V2 = {
 	settlement: METHODOLOGY_V1.settlement,
 } as const satisfies ZonedDayParameters;
 
-type Schedule = Partial<
-	Pick<Methodology, 'effectiveUntil' | 'announcedAt' | 'announcedProofAt' | 'withdrawn'>
->;
+type Schedule = Partial<Pick<Methodology, 'effectiveUntil' | 'announcedAt' | 'withdrawn'>>;
 
 export function release(
 	parameters: MethodologyParameters,
@@ -108,7 +106,6 @@ export function release(
 		effectiveFrom,
 		effectiveUntil: schedule.effectiveUntil ?? null,
 		announcedAt: schedule.announcedAt ?? null,
-		announcedProofAt: schedule.announcedProofAt ?? null,
 		withdrawn: schedule.withdrawn ?? false,
 	};
 }

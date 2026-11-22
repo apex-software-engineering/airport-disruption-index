@@ -20,6 +20,7 @@ import { addDays, parseUtcDate, utcDateOf, type UtcDate } from './time';
 const MINUTE_MS = 60_000;
 const SLOT_MS = SLOT_MINUTES * MINUTE_MS;
 const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
 
 /** One settlement day's instants: `[start, end)`, a whole number of slots and hours. */
 export type DayWindow = {
@@ -36,7 +37,9 @@ export type SettlementDay = { readonly release: Methodology; readonly window: Da
 /** The instants of day `label` under `release`'s day boundary, whether or not it governs it. */
 export function dayWindow(release: Methodology, label: DayLabel): DayWindow {
 	const start = dayStart(release, label);
-	const end = dayStart(release, addDays(label, 1));
+	// A UTC day is always 24 hours, which also keeps 9999-12-31 (whose next date has no label) valid.
+	const end =
+		release.parameters.day === 'utc' ? start + DAY_MS : dayStart(release, addDays(label, 1));
 	if (start % SLOT_MS !== 0 || (end - start) % HOUR_MS !== 0) {
 		throw new Error(`${label} under ${release.parameters.version} is not a whole number of hours`);
 	}

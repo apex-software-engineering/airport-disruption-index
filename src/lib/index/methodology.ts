@@ -84,8 +84,6 @@ export type Methodology = {
 	readonly effectiveUntil: DayLabel | null;
 	/** N: when its announcement was first publicly read back. Null until recorded. */
 	readonly announcedAt: string | null;
-	/** B: the block time of that readback's timestamp proof. Null until recorded. */
-	readonly announcedProofAt: string | null;
 	/** Set only by a withdrawal notice. A withdrawn release is never in effect. */
 	readonly withdrawn: boolean;
 };

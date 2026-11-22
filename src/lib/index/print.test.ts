@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { settlementDay } from './calendar';
 
 import { correctionOf, DAY, invalidRound, validRange, validRound } from '@/test/rounds';
 
+import { settlementDay } from './calendar';
+import { hashJson } from './json';
 import { buildPrint, historyEntryOf, printHashMatches } from './print';
+import { METHODOLOGY_V2 } from './releases';
 import { printSchema, type Correction } from './schemas';
+
+const issuesOf = (value: unknown) =>
+	printSchema.safeParse(value).error?.issues.map((issue) => issue.message) ?? [];
 
 const rounds = [
 	...validRange(0, 280, [{ airport: 'JFK', gs: true }]),
@@ -103,6 +108,37 @@ describe('buildPrint', () => {
 		expect(at('2026-11-19T00:30:00.000Z', 'feed outage confirmed by the FAA on D+2')).toBe(true);
 		expect(at('2026-11-19T00:30:00.000Z', ' ')).toBe(false);
 		expect(at('2026-11-18T12:00:00.000Z', 'not needed inside the window')).toBe(false);
+	});
+
+	it('takes the corrections window from the day, never from a settlesAt the print states', () => {
+		const original = buildPrint(settlementDay(DAY), rounds, { revision: 1 });
+		const late = buildUnchecked({
+			...correctionOf(original.printHash),
+			issuedAt: '2026-11-19T06:00:00.000Z',
+			windowOverride: null,
+		});
+		// As on main: after D+2 00:30Z a correction needs an override...
+		expect(printSchema.safeParse(late).success).toBe(false);
+		// ...and stating a later settlesAt cannot move the window to fit it.
+		const shifted = { ...late, settlesAt: '2026-11-18T12:00:00.000Z' };
+		expect(issuesOf(shifted)).toEqual([
+			'settlesAt is 2026-11-18T12:00:00.000Z, but 2026-11-17 settles at 2026-11-18T00:30:00.000Z',
+		]);
+		expect(printSchema.safeParse({ ...original, settlesAt: shifted.settlesAt }).success).toBe(
+			false,
+		);
+	});
+
+	it('holds UTC days only: a /1 print recording the America/New_York release is refused', () => {
+		const print = buildPrint(settlementDay(DAY), rounds, { revision: 1 });
+		const zoned = {
+			...print,
+			methodologyVersion: '2.0.0',
+			parameterHash: hashJson(METHODOLOGY_V2),
+		};
+		expect(issuesOf(zoned)).toEqual([
+			'adi.daily-print/1 holds UTC days only; 2.0.0 uses America/New_York days',
+		]);
 	});
 
 	it('detects a tampered print', () => {

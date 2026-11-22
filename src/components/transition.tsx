@@ -14,8 +14,8 @@ export function TransitionNotice({ current }: { current: Transition }) {
 				Day {previousDay.date} has ended. Its print settles at{' '}
 				<Instant at={previousDay.settlesAt} /> and is due by{' '}
 				<Instant at={previousDay.publishBy} punctuation='.' /> The next settlement day,{' '}
-				{nextDay.date}, starts at <Instant at={nextDay.startsAt} punctuation='.' /> Rounds collected
-				until then belong to no settlement day. Collection continues
+				{nextDay.date}, starts at <Instant at={nextDay.window.start} punctuation='.' /> Rounds
+				collected until then belong to no settlement day. Collection continues
 				{lastRound === null ? (
 					'.'
 				) : (

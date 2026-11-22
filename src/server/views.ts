@@ -19,7 +19,7 @@ import type {
 	RoundSummary,
 	UnrecognizedList,
 } from '@/lib/index/schemas';
-import { parseRoundId, utcDateOf, type RoundId, type UtcDate } from '@/lib/index/time';
+import { addDays, parseRoundId, utcDateOf, type RoundId, type UtcDate } from '@/lib/index/time';
 
 import { readCorrectionPrints, readDayIndex, readHistory, readPrints } from './archive';
 import { CACHE } from './http';
@@ -36,16 +36,29 @@ export const roundUrl = (id: string) => `${API_BASE}/rounds/${id}`;
 export async function currentView(store: ObjectStore, now: Date) {
 	const at = dayAt(now);
 	if (at.kind === 'transition') {
-		const rounds = (await readDayIndex(store, utcDateOf(now))).rounds;
 		return {
 			status: 'transition' as const,
 			asOf: now.toISOString(),
-			previousDay: deadlinesOf(at.previous),
-			nextDay: { date: at.next.date, startsAt: at.next.start.toISOString() },
-			lastRound: lastRoundOf(rounds),
+			previousDay: { ...deadlinesOf(at.previous), window: windowOf(at.previous) },
+			nextDay: { date: at.next.date, window: windowOf(at.next) },
+			lastRound: await heartbeat(store, now),
 		};
 	}
 	return provisionalView(store, at, now);
+}
+
+function windowOf(window: DayWindow) {
+	return { start: window.start.toISOString(), end: window.end.toISOString() };
+}
+
+/**
+ * The latest round in today's UTC partition, or, while that is still empty (the first minutes
+ * after 00:00Z), in yesterday's.
+ */
+async function heartbeat(store: ObjectStore, now: Date) {
+	const today = utcDateOf(now);
+	const latest = lastRoundOf((await readDayIndex(store, today)).rounds);
+	return latest ?? lastRoundOf((await readDayIndex(store, addDays(today, -1))).rounds);
 }
 
 async function provisionalView(store: ObjectStore, today: SettlementDay, now: Date) {

@@ -391,13 +391,14 @@ export type SettleOutcome = { status: 'settled' | 'already_settled'; print: Dail
  * index at the day's latest revision.
  */
 export async function settleDay(store: ObjectStore, date: UtcDate): Promise<SettleOutcome> {
+	// Resolved first, so a day this build cannot settle never reaches the history index either.
+	const day = settlementDay(date);
+	const partition = partitionOfDay(day.window);
 	const settled = (await readPrints(store, date)).at(-1);
 	if (settled !== undefined) {
 		await updateHistory(store, settled);
 		return { status: 'already_settled', print: settled };
 	}
-	const day = settlementDay(date);
-	const partition = partitionOfDay(day.window);
 	const receipts = await readDayReceipts(store, partition);
 	await syncDayIndex(store, partition, { kind: 'settle', receipts });
 	const print = buildPrint(day, receipts.map(summarizeReceipt), { revision: 1 });

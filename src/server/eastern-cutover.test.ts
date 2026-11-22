@@ -9,13 +9,15 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { collectingRelease, dayAt, settlementDay } from '@/lib/index/calendar';
+import { GET as settleRoute } from '@/app/api/cron/settle/route';
+import { collectingRelease, dayAt, dayWindow, settlementDay } from '@/lib/index/calendar';
 import { settlementReleaseFor } from '@/lib/index/methodology';
 import { buildPrint } from '@/lib/index/print';
+import { RELEASES } from '@/lib/index/releases';
 import { addDays } from '@/lib/index/time';
 import { feedFixtureText } from '@/test/fixtures';
 
-import { correctDay, settleDay } from './archive';
+import { correctDay, readHistory, settleDay } from './archive';
 import { collectRound } from './collector';
 import { FileStore } from './storage';
 import { currentView, dayView } from './views';
@@ -28,7 +30,6 @@ vi.mock('@/lib/index/releases', async (importOriginal) => {
 			actual.release(actual.METHODOLOGY_V1, '2026-11-17', { effectiveUntil: '2026-12-31' }),
 			actual.release(actual.METHODOLOGY_V2, '2027-01-01', {
 				announcedAt: '2026-11-25T15:00:00.000Z',
-				announcedProofAt: '2026-11-25T16:00:00.000Z',
 			}),
 		],
 	};
@@ -42,10 +43,21 @@ let store: FileStore;
 beforeEach(async () => {
 	root = await mkdtemp(path.join(tmpdir(), 'adi-eastern-'));
 	store = new FileStore(root);
+	vi.stubEnv('ADI_DATA_DIR', root);
+	vi.stubEnv('CRON_SECRET', 'test-cron-secret');
 });
 afterEach(async () => {
+	vi.useRealTimers();
+	vi.unstubAllEnvs();
 	await rm(root, { recursive: true, force: true });
 });
+
+/** The v1 release of the mocked registry, as a stale v1-only deployment would use it. */
+function v1Release() {
+	const v1 = RELEASES[0];
+	if (v1 === undefined) throw new Error('the mocked registry lists v1');
+	return v1;
+}
 
 /** Collects one all-clear round fetched at `at`, as the deployed collector would. */
 function collectAt(at: string) {
@@ -71,11 +83,43 @@ describe('settlement labels across the cutover', () => {
 	it('gives every label up to E−1 to v1 and every label from E to v2, on every settlement path', () => {
 		for (let offset = -3; offset <= 3; offset += 1) {
 			const label = addDays(E, offset);
-			const expected = offset < 0 ? '1.0.0' : '2.0.0';
-			expect(settlementReleaseFor(label).parameters.version).toBe(expected);
-			const print = buildPrint(settlementDay(label), [], { revision: 1 });
-			expect(print.methodologyVersion).toBe(expected);
+			const day = settlementDay(label);
+			if (offset < 0) {
+				expect(day.release.parameters.version).toBe('1.0.0');
+				expect(buildPrint(day, [], { revision: 1 }).methodologyVersion).toBe('1.0.0');
+			} else {
+				// A v2 day can be built only as an adi.daily-print/2 print, which arrives later.
+				expect(settlementReleaseFor(label).parameters.version).toBe('2.0.0');
+				expect(() => buildPrint(day, [], { revision: 1 })).toThrow(/UTC days only/);
+			}
 		}
+	});
+
+	it('never moves a stale v1 print for a label from E into the history index', async () => {
+		// A v1-only deployment settling 2027-01-01 as a UTC day left this print behind.
+		const stale = buildPrint({ release: v1Release(), window: dayWindow(v1Release(), E) }, [], {
+			revision: 1,
+		});
+		const key = `prints/${E}/r1.json`;
+		await store.write(key, new TextEncoder().encode(JSON.stringify(stale)), 'application/json', {
+			kind: 'if-absent',
+		});
+		await expect(settleDay(store, E)).rejects.toThrow(/only a UTC day can be settled here/);
+		expect((await readHistory(store)).days).toEqual([]);
+	});
+
+	it('answers a zoned ?date on the settle route with a structured 409, not a 500', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2027-01-03T00:00:00Z'));
+		const response = await settleRoute(
+			new Request(`http://test/api/cron/settle?date=${E}`, {
+				headers: { authorization: 'Bearer test-cron-secret' },
+			}),
+		);
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({
+			error: `${E} is an America/New_York day; settling those days is not available yet`,
+		});
 	});
 
 	it('can never write a v1 print for a label from E: settling or correcting one is refused', async () => {
@@ -139,9 +183,22 @@ describe('the running value across the cutover', () => {
 				date: '2026-12-31',
 				settlesAt: '2027-01-01T00:30:00.000Z',
 				publishBy: '2027-01-01T01:30:00.000Z',
+				window: { start: '2026-12-31T00:00:00.000Z', end: '2027-01-01T00:00:00.000Z' },
 			},
-			nextDay: { date: E, startsAt: '2027-01-01T05:00:00.000Z' },
+			nextDay: {
+				date: E,
+				window: { start: '2027-01-01T05:00:00.000Z', end: '2027-01-02T05:00:00.000Z' },
+			},
 			lastRound: expect.objectContaining({ roundId: '2027-01-01T02:00Z', status: 'valid' }),
+		});
+	});
+
+	it('keeps the heartbeat at 00:00Z, from the previous UTC partition until a round arrives', async () => {
+		await collectAt('2026-12-31T23:55:03Z');
+		const current = await currentView(store, new Date('2027-01-01T00:00:30Z'));
+		expect(current).toMatchObject({
+			status: 'transition',
+			lastRound: { roundId: '2026-12-31T23:55Z', status: 'valid' },
 		});
 	});
 

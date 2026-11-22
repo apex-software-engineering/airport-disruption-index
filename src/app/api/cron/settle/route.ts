@@ -21,6 +21,11 @@ export async function GET(request: Request) {
 	const release = settlementReleaseOrNull(date);
 	if (release === null)
 		return problem(400, `no methodology is in effect on ${date}, so it has nothing to settle`);
+	if (release.parameters.day !== 'utc')
+		return problem(
+			409,
+			`${date} is an ${release.parameters.day.timeZone} day; settling those days is not available yet`,
+		);
 	const cutoff = settlesAt(dayWindow(release, date));
 	if (now < cutoff) return problem(409, `${date} settles at ${cutoff.toISOString()}`);
 	const { status, print } = await settleDay(storeFromEnv(), date);

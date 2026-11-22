@@ -5,8 +5,8 @@
 import { z } from 'zod';
 
 import { adapterOf } from './adapters';
-import { methodologyOf } from './methodology';
-import { correctionDeadline } from './calendar';
+import { correctionDeadline, dayWindow, settlesAt } from './calendar';
+import { methodologyOf, type Methodology } from './methodology';
 import { parseRoundId, parseUtcDate } from './time';
 
 const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
@@ -60,13 +60,13 @@ export type AirportState = z.infer<typeof airportStateSchema>;
  * Checks a stored object against the methodology it records: the release must be one this code
  * knows, and `rows` (when given) must list that release's panel in panel order. Validating
  * against the recorded release, not the current one, keeps archived objects readable after a
- * later release changes the panel.
+ * later release changes the panel. Returns the recorded release, or null when it is unknown.
  */
 function checkRecordedMethodology(
 	recorded: { methodologyVersion: string; parameterHash: string },
 	rows: readonly { airport: string }[] | null,
 	ctx: z.RefinementCtx,
-): void {
+): Methodology | null {
 	const { methodologyVersion, parameterHash } = recorded;
 	const methodology = methodologyOf(methodologyVersion, parameterHash);
 	if (methodology === null) {
@@ -75,7 +75,7 @@ function checkRecordedMethodology(
 			message: `methodology ${methodologyVersion} (${parameterHash}) is not a known release`,
 			path: ['methodologyVersion'],
 		});
-		return;
+		return null;
 	}
 	const { panel } = methodology.parameters;
 	if (
@@ -87,6 +87,7 @@ function checkRecordedMethodology(
 			message: `must list every airport of the ${methodologyVersion} panel in panel order`,
 		});
 	}
+	return methodology;
 }
 
 export const invalidReasonSchema = z.enum([
@@ -238,22 +239,53 @@ export const correctionSchema = z.object({
 });
 export type Correction = z.infer<typeof correctionSchema>;
 
+/**
+ * An `adi.daily-print/1` print is a UTC day: its recorded release must use the UTC day boundary,
+ * and its `settlesAt` must be that day's cutoff. Returns the cutoff, which every deadline is
+ * computed from, so a print can never move its own corrections window by stating another time.
+ */
+function checkUtcDay(
+	print: { date: string; settlesAt: string },
+	release: Methodology,
+	ctx: z.RefinementCtx,
+): Date | null {
+	if (release.parameters.day !== 'utc') {
+		ctx.addIssue({
+			code: 'custom',
+			message: `adi.daily-print/1 holds UTC days only; ${release.parameters.version} uses ${release.parameters.day.timeZone} days`,
+			path: ['methodologyVersion'],
+		});
+		return null;
+	}
+	const cutoff = settlesAt(dayWindow(release, print.date));
+	if (print.settlesAt !== cutoff.toISOString()) {
+		ctx.addIssue({
+			code: 'custom',
+			message: `settlesAt is ${print.settlesAt}, but ${print.date} settles at ${cutoff.toISOString()}`,
+			path: ['settlesAt'],
+		});
+		return null;
+	}
+	return cutoff;
+}
+
 /** A correction is issued after its day settles, and after the window only with a justification. */
 function checkCorrectionTiming(
-	print: { settlesAt: string; correction: Correction | null },
+	print: { correction: Correction | null },
+	cutoff: Date,
 	ctx: z.RefinementCtx,
 ): void {
 	const { correction } = print;
 	if (correction === null) return;
 	const issuedAt = new Date(correction.issuedAt);
-	if (issuedAt < new Date(print.settlesAt)) {
+	if (issuedAt < cutoff) {
 		ctx.addIssue({
 			code: 'custom',
-			message: `issued at ${correction.issuedAt}, before the day settled at ${print.settlesAt}`,
+			message: `issued at ${correction.issuedAt}, before the day settled at ${cutoff.toISOString()}`,
 			path: ['correction', 'issuedAt'],
 		});
 	}
-	const deadline = correctionDeadline(new Date(print.settlesAt));
+	const deadline = correctionDeadline(cutoff);
 	if (issuedAt >= deadline !== (correction.windowOverride !== null)) {
 		ctx.addIssue({
 			code: 'custom',
@@ -297,12 +329,14 @@ export const printSchema = z
 		message: 'revision 1 has no correction; every later revision is a correction',
 	})
 	.superRefine((print, ctx) => {
-		checkRecordedMethodology(
+		const release = checkRecordedMethodology(
 			print,
 			print.result.status === 'suspended' ? null : print.result.airports,
 			ctx,
 		);
-		checkCorrectionTiming(print, ctx);
+		if (release === null) return;
+		const cutoff = checkUtcDay(print, release, ctx);
+		if (cutoff !== null) checkCorrectionTiming(print, cutoff, ctx);
 	});
 export type DailyPrint = z.infer<typeof printSchema>;
 

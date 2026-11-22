@@ -143,6 +143,13 @@ describe('views and settlement', () => {
 			settlesAt: '2026-11-18T00:30:00.000Z',
 			publishBy: '2026-11-18T01:30:00.000Z',
 		});
+		// The last representable day is unsettled, as on main, not an error.
+		expect(await dayView(store, '9999-12-31')).toEqual({
+			date: '9999-12-31',
+			status: 'unsettled',
+			settlesAt: '+010000-01-01T00:30:00.000Z',
+			publishBy: '+010000-01-01T01:30:00.000Z',
+		});
 		const settled = await settleDay(store, '2026-11-17');
 		expect(settled.status).toBe('settled');
 		expect(settled.print.result).toEqual({

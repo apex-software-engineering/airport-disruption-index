@@ -1,6 +1,7 @@
 import Link from 'next/link';
 
 import { describeCoverage } from '@/components/coverage';
+import { dayName } from '@/components/day-name';
 import { formatInteger, formatPercent } from '@/components/format';
 import { HourlyChart } from '@/components/hourly-chart';
 import {
@@ -36,7 +37,7 @@ export default async function HomePage() {
 		<>
 			<PageTitle
 				title={site.name}
-				lede={`Airport-minutes under FAA ground stops and ground delay programs across ${parameters.panel.length} US hub airports, per UTC day. Methodology v${parameters.version}.`}
+				lede={`Airport-minutes under FAA ground stops and ground delay programs across ${parameters.panel.length} US hub airports, per ${dayName(parameters)}. Methodology v${parameters.version}.`}
 			/>
 			{current.status === 'transition' ? (
 				<TransitionNotice current={current} />
@@ -128,8 +129,8 @@ function RecentPrints({
 			{days.length === 0 ? (
 				<Notice>
 					No day has settled in the last {RECENT_PRINT_DAYS} days. A day&apos;s print is published{' '}
-					{parameters.settlement.cutoffMinutesAfterDayEnd} minutes after the UTC day ends, and the
-					index is live-only from its first production round.
+					{parameters.settlement.cutoffMinutesAfterDayEnd} minutes after the {dayName(parameters)}{' '}
+					ends, and the index is live-only from its first production round.
 				</Notice>
 			) : (
 				<Table
