@@ -115,14 +115,32 @@ deployment, after the first has been read back:
    The file is stamped with OpenTimestamps like a print. **N = the later of the run's
    `run_started_at` and the response `Date` headers.** Choosing the later is conservative: it can
    only push E later. What proves it: GitHub's run record (a third party), the bodies' hashes, and
-   an OTS proof that the file existed no later than its Bitcoin block. A reviewer can check that
-   proof time is ≥ N. If the proof's block time is earlier than N, the readback is invalid and the
-   next run retries.
+   an OTS proof that the file existed no later than its Bitcoin block.
+
+   **N is not usable until its proof is verified.** A readback record counts only once `ots verify`
+   (or the same check against mempool.space) shows that the proof commits to the record's
+   first-committed bytes, reaches an existing Bitcoin block, and that block's header time is **≥
+   N**. While the proof is pending, step 2 waits.
+
+   **Recovery.** A record is never overwritten or deleted. If a record's proof is rejected, the
+   operator runs the readback again (for example because the block time is earlier than N, the
+   merkle root does not match, or the calendars lost the commitment). The new record is written
+   write-once as the next revision, `notices/2.0.0.readback.r2.json`, then `.r3.json`, and so on;
+   the first record is revision 1. Each revision has its own run, its own N and its own proof. The
+   **first revision whose proof verifies** is the one used. Its N is necessarily later than every
+   rejected revision's N, so N only moves later. E is then recomputed under the lower-bound rule
+   (the first ET day with `start(E) ≥ N + 30 × 24 h`). If that moves E past the date the notice
+   states, the operator adds an incidents entry giving the new E and the reason, before step 2. v2
+   is not in effect yet, so this is not a postponement, and nothing has printed under v2. **Rollback
+   floor:** unaffected. Until step 2 deploys there is no cutover to protect, and the floor is the
+   step-2 deployment, whichever readback revision it cites.
 
 3. **Step 2, the registry deploy.** A follow-up PR sets v2 `announcedAt: N` and v1
-   `effectiveUntil: E−1`, copied from `notices/2.0.0.readback.json`. It adds "public from N
-   (readback run `<id>`, `notices/2.0.0.readback.json`)" to the incidents entry. A registry test
-   asserts `start(E) ≥ announcedAt + 30 × 24 h`. **This deployment is the rollback floor** (below).
+   `effectiveUntil: E−1`, copied from the verified readback revision, which the PR names by path. It
+   adds "public from N (readback run `<id>`, `notices/2.0.0.readback[.rK].json`)" to the incidents
+   entry. The registry test asserts `start(E) ≥ announcedAt + 30 × 24 h`. CI re-verifies the cited
+   record's proof, checking block time ≥ N, and refuses the PR otherwise. **This deployment is the
+   rollback floor** (below).
 
 **When the rule-4 amendment authorizes the cutover.** All three must hold:
 
@@ -196,16 +214,21 @@ release up themselves (section 4).
   returns the release in effect whose `[effectiveFrom, effectiveUntil]` contains the label, and
   throws otherwise. A release after the first counts as in effect only once its `announcedAt` is
   set. Every pre-E label gives v1, by design.
-- **Indicative entry points** (the indicative builder and `reproduce --indicative`) take the release
-  **by role, never by date**:
-  - building: `upcomingRelease()`, the registry's next release after the one in effect. That is v2
-    during the notice period, in step 1 (`announcedAt: null`, v1 `effectiveUntil` null) and in step
-    2 alike. The indicative bound comes from it: labels from 2026-11-20 to
-    `upcomingRelease().effectiveFrom − 1`. It never depends on v1's `effectiveUntil`, which is null
-    in step 1. With no upcoming release, nothing new is built.
-  - reproducing: the release **recorded in the indicative print** (`methodologyOf`). The label must
-    precede that release's `effectiveFrom`, so old indicative prints still reproduce after v2 takes
-    effect.
+- **Indicative entry points** (the indicative builder and `reproduce --indicative`) select the
+  release **by label**, through `indicativeReleaseFor(label)`, and never through the settlement
+  lookup:
+  - It takes the release registered **immediately after** the last release with
+    `effectiveFrom ≤ label`, in registry order. It ignores which release is currently in effect and
+    whether `announcedAt` or `effectiveUntil` are set.
+  - It returns that successor only if the successor is v2.0.0, the only release with an indicative
+    admission policy, and `2026-11-20 ≤ label < v2.effectiveFrom`. Otherwise it returns none.
+  - So for every label up to E−1 it is **v2's ET definition, explicitly**. The answer depends only
+    on the label and the registry, and is the same in step 1, step 2 and after v2 takes effect. That
+    matters for E−1: its print freezes at its cutoff, about 30 minutes after v2 takes effect
+    (2027-01-01T05:30Z), when v2 is no longer "upcoming". A role-based lookup would skip it.
+    `indicativeReleaseFor('2026-12-31')` is still v2.
+  - Reproducing uses the release **recorded in the indicative print** (`methodologyOf`). The check
+    fails unless that equals `indicativeReleaseFor(label)`.
 
   Neither path calls `settlementReleaseFor`. If they did, they would get v1 and build a UTC day.
 
@@ -370,8 +393,9 @@ collection. (ET `2026-11-19` has 6 rounds.)
 
 The indicative series runs **the same aggregation code** as settlement (`aggregateDay`, the ladder,
 coverage, `printBody`). That code no longer looks anything up for itself. The caller injects three
-things: the **release** (from `settlementReleaseFor` or `upcomingRelease()`), its **`DayWindow`**,
-and the **admission predicate**. The two series differ in all three, and in nothing else:
+things: the **release** (from `settlementReleaseFor` or `indicativeReleaseFor`), its
+**`DayWindow`**, and the **admission predicate**. The two series differ in all three, and in nothing
+else:
 
 - settlement: `isUnder(dayRelease)`, strict and frozen (section 2).
 - indicative: the hashed **indicative admission policy** `adi.indicative-admission/1`, which admits
@@ -415,35 +439,45 @@ included**:
 The two sets must be equal. Nothing may be omitted and nothing added. `reproduce --indicative D`
 also rebuilds the print from those receipts. Outcomes, each with its own exit code:
 
-| Outcome    | Exit | Meaning                                                                                                                                                  |
-| ---------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MATCH`    | 0    | Rebuild matches and the sets are equal against verified v1 references.                                                                                   |
-| `MISMATCH` | 1    | Rebuild differs, sets differ, or verified revisions of one v1 day disagree.                                                                              |
-| `PENDING`  | 4    | Rebuild matches, but a v1 reference is not yet verified (not attested, or the proof is pending).                                                         |
-| `PARTIAL`  | 5    | E−1 only, when the gap pin is absent: the 228 v1-covered slots are equal both ways, and the gap slots are listed as unpinned. Never reported as `MATCH`. |
+| Outcome           | Exit | Meaning                                                                                                                         |
+| ----------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `MATCH`           | 0    | Rebuild matches and the sets are equal against verified v1 references.                                                          |
+| `MISMATCH`        | 1    | Rebuild differs, sets differ, or verified revisions of one v1 day disagree.                                                     |
+| `PENDING`         | 4    | Rebuild matches, but a v1 reference is not yet verified (not attested, or the proof is pending). No set comparison has run yet. |
+| `PARTIAL`         | 5    | E−1 only: the 228 v1-covered slots are equal both ways, and the gap pin is absent. The gap receipts are listed as unpinned.     |
+| `PARTIAL_PENDING` | 6    | E−1 only: the 228 v1-covered slots are equal both ways, and the gap pin exists but its proof has not reached a block yet.       |
 
-The attest workflow runs this for each indicative day once both of its v1 references verify, and
-fails the run on `MISMATCH`. It writes no indicative attestation files.
+The attest workflow runs this for each indicative day once **its** v1 references verify. That is
+both UTC days D and D+1 for every day up to E−2, and **only UTC day E−1 for E−1**, through the
+explicit E−1 path below. The workflow never waits for a second reference, because none exists for
+E−1. The run fails on `MISMATCH`. `PARTIAL` and `PARTIAL_PENDING` are reported in the run summary,
+not as failures. They are rechecked on every run until E−1 reaches `MATCH`. The workflow writes no
+indicative attestation files.
 
 **E−1 has its own branch.** The last indicative day (2026-12-31 ET) has **only one** v1 reference.
 Its window `[2026-12-31T05:00Z, 2027-01-01T05:00Z)` spans v1 UTC day 2026-12-31 (228 slots) and the
 gap `[2027-01-01T00:00Z, 05:00Z)` (60 slots). The gap's partition, 2027-01-01, has no v1 print. The
-branch is chosen by role, not by date: the label is the last day before the cutover registered in
-step 2, and the gap is that cutover's transition interval. `reproduce --indicative` for that label
-runs:
+branch is chosen from the registry, not from a constant: the label is `v2.effectiveFrom − 1` (the
+last label `indicativeReleaseFor` maps to v2), and the gap is the transition interval of the
+activated cutover. `reproduce --indicative` for that label runs, in this order, and stops at the
+first outcome:
 
-1. Verify the single v1 reference (UTC day E−1), as above. If it is unverified, the result is
-   `PENDING`.
-2. Look for the gap pin (D8) at its derived path. If it is absent, compare only the 228 v1-covered
-   slots both ways. Equal gives **`PARTIAL`**, with the gap receipts listed as unpinned. Unequal
-   gives `MISMATCH`.
-3. If the pin is present, **verify it**. It must be the first-committed bytes on the attestations
-   branch, its window must equal the transition interval derived from the registry, and its OTS
-   proof must reach a Bitcoin block before the pin's cutoff (gap end + 24 h). A pending proof gives
-   `PENDING`. An invalid or late proof, or a wrong window, gives `MISMATCH`.
-4. With the pin verified, the reference set is {v1 pairs in the window} ∪ {pin pairs}. **Rerun the
-   full both-ways comparison** over all 288 slots. Equal gives **`MATCH`**, unequal gives
-   `MISMATCH`.
+1. **Rebuild** the print from the archive. If it differs from the published print, the result is
+   `MISMATCH` (exit 1).
+2. **Verify the single v1 reference** (UTC day E−1), as above. If it is not yet verified, the result
+   is `PENDING` (exit 4). If its verified revisions disagree, the result is `MISMATCH` (exit 1).
+3. **Compare the 228 covered slots both ways, before looking at the pin.** The reference pairs of
+   UTC E−1 inside the window must equal the indicative pairs in those slots. Any difference gives
+   `MISMATCH` (exit 1). So a missing or pending pin can never hide a mismatch in the covered part.
+4. **Then consider the pin** (D8), at its derived path:
+   - absent: `PARTIAL` (exit 5);
+   - present, but its window differs from the derived transition interval, its bytes differ from the
+     first-committed bytes, or its proof is invalid or reaches a block after the pin's cutoff (gap
+     end + 24 h): `MISMATCH` (exit 1);
+   - present with a valid but pending proof: `PARTIAL_PENDING` (exit 6);
+   - present and verified: go to step 5.
+5. **Compare the 60 gap slots both ways** against the pin. With step 3 that is the full 288-slot
+   comparison. Equal gives `MATCH` (exit 0). Any difference gives `MISMATCH` (exit 1).
 
 **D8, the gap pin (opt-in, recommended, and we will do it).** It is cheap: one file and one stamp,
 and nothing in it is a constant. It is written only once a cutover is **activated**, meaning step 2
@@ -784,9 +818,10 @@ v2.
    correction CLI, settlement `reproduce`): the release is v1 if and only if the label is ≤ E−1, and
    a v1 print for a label ≥ E is impossible on every path. `printBody` and `aggregateDay` have no
    registry import (a lint rule enforces it), so they can only use the release they are given. The
-   indicative builder uses `upcomingRelease()`, `reproduce --indicative` uses the print's recorded
-   release, and neither calls the settlement lookup. For `2026-12-15`, the settlement and indicative
-   prints have the distinct windows given in section 2, live at different keys and each `MATCH`.
+   indicative builder uses `indicativeReleaseFor(label)`, `reproduce --indicative` checks the
+   print's recorded release against it, and neither calls the settlement lookup. For `2026-12-15`,
+   the settlement and indicative prints have the distinct windows given in section 2, live at
+   different keys and each `MATCH`.
 5. **Rollback and stale writes:** on one `FileStore`, a stale v1 settle (with its history update)
    and a stale v1 correction for label E, run before and after the v2 settle. **Immediately after
    each stale write**, with no repair run, the v2 print, `/api/v1/days`, `/api/v1/history` and
@@ -796,11 +831,13 @@ v2.
 
    **Two-step publication:** with `announcedAt: null`, v2 is never in effect (no `effectiveUntil`,
    no transition, collector tags v1), and the indicative series still works, bounded by
-   `upcomingRelease().effectiveFrom − 1`. The `notice-readback` job succeeds only when both public
-   responses show the notice. It writes its file once, takes N as the later of `run_started_at` and
-   the `Date` headers, and is rejected if its proof's block time precedes N. No gap pin is written
-   before the cutover is activated. A test registry with a postponed `effectiveFrom` moves the pin's
-   path and window with it. Step 2 is refused by the registry test unless
+   `v2.effectiveFrom − 1` through `indicativeReleaseFor`. The `notice-readback` job succeeds only
+   when both public responses show the notice. It writes its file once and takes N as the later of
+   `run_started_at` and the `Date` headers. Step 2's CI refuses a readback record whose proof is
+   pending, invalid or in a block earlier than N. A rejected `readback.json` stays untouched; the
+   next run writes `readback.r2.json` with a later N, and E is recomputed from it. No gap pin is
+   written before the cutover is activated. A test registry with a postponed `effectiveFrom` moves
+   the pin's path and window with it. Step 2 is refused by the registry test unless
    `start(E) ≥ announcedAt + 30 d`. A postponement entry after the 14-day close is refused. A
    rollback-floor check rejects deployments older than the latest cutover registry change.
 
@@ -836,11 +873,18 @@ v2.
     - the reference is the latest `verify-attestation` `MATCH` revision, and two verified revisions
       that disagree give `MISMATCH`;
     - `PENDING` before the v1 references verify;
-    - the E−1 branch: an unverified v1 reference gives `PENDING`; with no pin, `PARTIAL` (exit 5)
-      with exactly the 60 gap slots listed, never `MATCH`; with a pending pin proof, `PENDING`; with
-      a late or invalid pin, or a pin whose window differs from the derived transition interval,
-      `MISMATCH`; with a verified pin, the full 288-slot rerun gives `MATCH`, and gives `MISMATCH`
-      when a gap receipt is altered.
+    - the E−1 branch, one test per exit: a rebuild difference gives 1; an unverified UTC E−1
+      reference gives 4; a covered-slot difference gives 1 **with the pin absent and with it
+      pending** (a pin never masks a covered mismatch); no pin gives 5, with exactly the 60 gap
+      slots listed; a pending pin gives 6; a late or invalid pin, a wrong window or rewritten pin
+      bytes give 1; a verified pin with equal gap slots gives 0; an altered gap receipt gives 1;
+    - the attest workflow checks E−1 with only UTC E−1 attested, and never waits for a second
+      reference;
+    - **after activation**, with v2 in effect: at `2027-01-01T05:30Z` the settle run still builds
+      and freezes the E−1 indicative print, because `indicativeReleaseFor('2026-12-31')` is v2. The
+      05:45Z attest run writes and stamps `transition/2027-01-01.json`. `indicativeReleaseFor` gives
+      v2 for every label from 2026-11-20 to E−1 in step 1, in step 2 and after E, and none for
+      labels ≥ E.
 13. **v1 end-to-end fixtures** (section 6): `MATCH` with every pinned byte and deadline.
 14. **API and UI at both boundaries** (`E 00:00Z` and `E 05:00Z`): `/current` switches `provisional`
     → `transition` → `provisional`; `/days`, `/methodology` and `/` render each state; ET, UTC and
@@ -889,6 +933,14 @@ Normative for v2. Copied into `docs/methodology.md` at release.
 6. **Deadlines are durations, on instants:** `settlesAt` = end + 30 min; `publishBy` = end + 90 min;
    corrections until `settlesAt` + 24 h; r1 attestation cutoff = end + 24 h; correction attestation
    cutoff = `issuedAt` + 48 h. On a fall-back night, `publishBy` is the first 01:30 ET (EDT).
+
+## Round 4 review dispositions
+
+| Id  | Disposition                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S5  | Done. (a) The attest workflow has an explicit E−1 path that needs only UTC E−1 and never waits for a second reference. (b) The E−1 branch now runs: rebuild, then the v1 reference, then the 228 covered slots compared both ways (`MISMATCH` on any difference), and only then the pin. Exits: 0 `MATCH`, 1 `MISMATCH`, 4 `PENDING`, 5 `PARTIAL` (no pin), 6 `PARTIAL_PENDING` (pin proof pending) (section 4, test 12).                                                                |
+| S6  | Done. Step 2 uses N only once its readback proof is verified (an existing block, header time ≥ N, committing to the first-committed bytes), and CI re-checks this. A rejected record is never overwritten; the next readback is `notices/2.0.0.readback.r2.json` (then `.r3`…), the first verified revision wins, N only moves later, and E is recomputed under the lower bound, with an incidents entry if it moves. The rollback floor is unaffected until step 2 deploys (section 2). |
+| O12 | Done. `indicativeReleaseFor(label)` selects by label: the registered successor of the last release with `effectiveFrom ≤ label`, only if that is v2 and the label is before `v2.effectiveFrom`. It is independent of what is in effect, so E−1 still freezes and pins after activation. Tested at 2027-01-01T05:30Z and 05:45Z (sections 2, 4, tests 4, 5, 12).                                                                                                                          |
 
 ## Round 3 review dispositions
 
