@@ -34,24 +34,69 @@ export function formatUtcHour(iso: string): string {
 	return instant(iso).toISOString().slice(11, 16);
 }
 
-/** Always with the date, since the local day often differs from the UTC day. */
-function localFormat(timeZone: string): Intl.DateTimeFormat {
-	return new Intl.DateTimeFormat('en-US', {
-		timeZone,
+const LOCAL_OPTIONS = {
+	// Always with the date, since the local day often differs from the UTC day.
+	full: {
 		month: 'short',
 		day: 'numeric',
 		hour: 'numeric',
 		minute: '2-digit',
 		timeZoneName: 'short',
-	});
+	},
+	hour: { hour: 'numeric', minute: '2-digit' },
+	wallClock: {
+		year: 'numeric',
+		month: 'numeric',
+		day: 'numeric',
+		hour: 'numeric',
+		minute: 'numeric',
+		hourCycle: 'h23',
+	},
+} as const satisfies Record<string, Intl.DateTimeFormatOptions>;
+
+const localFormats = new Map<string, Intl.DateTimeFormat>();
+
+/** Building a formatter is costly and a page formats many times in one zone. */
+function localFormat(timeZone: string, kind: keyof typeof LOCAL_OPTIONS): Intl.DateTimeFormat {
+	const key = `${kind} ${timeZone}`;
+	let format = localFormats.get(key);
+	if (format === undefined) {
+		format = new Intl.DateTimeFormat('en-US', { timeZone, ...LOCAL_OPTIONS[kind] });
+		localFormats.set(key, format);
+	}
+	return format;
 }
 
 /** `2026-11-22T00:30:00Z` in America/New_York → `Nov 21, 7:30 PM EST`. */
 export function formatLocal(iso: string, timeZone: string): string {
-	return localFormat(timeZone).format(instant(iso));
+	return localFormat(timeZone, 'full').format(instant(iso));
 }
 
-/** Each end carries its own zone abbreviation, so a range across a DST change reads right. */
+/**
+ * Both ends in full, each with its own zone abbreviation, so a range across a DST change reads
+ * right even when both ends fall on the same local date.
+ */
 export function formatLocalRange(startIso: string, endIso: string, timeZone: string): string {
-	return localFormat(timeZone).formatRange(instant(startIso), instant(endIso));
+	return `${formatLocal(startIso, timeZone)} – ${formatLocal(endIso, timeZone)}`;
+}
+
+/** A compact clock time for chart axes: `6 PM`, or `5:30 AM` off the hour. */
+export function formatLocalHour(iso: string, timeZone: string): string {
+	return localFormat(timeZone, 'hour').format(instant(iso)).replace(':00', '');
+}
+
+/** Whether local time in `timeZone` equals UTC at that instant, so a local time repeats it. */
+export function isUtcOffsetZero(iso: string, timeZone: string): boolean {
+	const at = instant(iso);
+	const parts = localFormat(timeZone, 'wallClock').formatToParts(at);
+	const part = (type: Intl.DateTimeFormatPartTypes) =>
+		Number(parts.find((p) => p.type === type)?.value);
+	const wallClockAsUtc = Date.UTC(
+		part('year'),
+		part('month') - 1,
+		part('day'),
+		part('hour'),
+		part('minute'),
+	);
+	return wallClockAsUtc === Math.floor(at.getTime() / 60_000) * 60_000;
 }

@@ -53,12 +53,7 @@ export default async function StatusPage() {
 				)}
 			</Section>
 
-			<Section
-				title={
-					<>
-						Today, <UtcDay date={current.date} />
-					</>
-				}>
+			<Section title={<UtcDay date={current.date}>Today, {current.date} (UTC)</UtcDay>}>
 				{current.foreignMethodologies.length > 0 && (
 					<Notice>
 						Some of today&apos;s rounds were collected under another methodology (
@@ -119,7 +114,7 @@ export default async function StatusPage() {
 				) : (
 					<Facts
 						rows={[
-							{ term: 'Date (UTC)', detail: lastPrint.date },
+							{ term: 'Date (UTC)', detail: <UtcDay date={lastPrint.date} /> },
 							{
 								term: 'Status',
 								detail: (

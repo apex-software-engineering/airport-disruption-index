@@ -67,14 +67,17 @@ export function Instant({ at }: { at: string }) {
 	);
 }
 
-/** A UTC calendar day, with the stretch of the viewer's local time it covers. */
-export function UtcDay({ date }: { date: UtcDate }) {
+/**
+ * A UTC calendar day, labelled by `children` (the date by default), with the stretch of the
+ * viewer's local time it covers on a line below.
+ */
+export function UtcDay({ date, children = date }: { date: UtcDate; children?: ReactNode }) {
 	const start = new Date(dayStartMs(date)).toISOString();
 	const end = new Date(dayStartMs(addDays(date, 1))).toISOString();
 	return (
 		<>
-			<time dateTime={date}>{date} UTC</time>
-			<LocalTime at={start} until={end} />
+			<time dateTime={date}>{children}</time>
+			<LocalTime at={start} until={end} line />
 		</>
 	);
 }

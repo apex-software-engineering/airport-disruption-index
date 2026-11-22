@@ -68,12 +68,7 @@ function Today({ current }: { current: Current }) {
 	const { lastRound } = current;
 	const coverage = describeCoverage(current.coverage);
 	return (
-		<Section
-			title={
-				<>
-					Today, <UtcDay date={current.date} />
-				</>
-			}>
+		<Section title={<UtcDay date={current.date}>Today, {current.date} (UTC)</UtcDay>}>
 			{hasValidRound(current) ? (
 				<div className='grid gap-6 sm:grid-cols-3'>
 					<Figure
@@ -135,9 +130,9 @@ function RecentPrints({
 					caption='Settled days, newest first'
 					head={['Date (UTC)', 'Status', 'ADI', 'ADI-GS', 'Coverage', 'Revision']}
 					rows={days.map((day) => [
-						<a key='date' href={day.url}>
-							{day.date}
-						</a>,
+						<UtcDay key='date' date={day.date}>
+							<a href={day.url}>{day.date}</a>
+						</UtcDay>,
 						<StatusLabel key='status' tone={SETTLED_TONE[day.status]}>
 							{day.status}
 						</StatusLabel>,
