@@ -175,6 +175,17 @@ describe('buildPrint', () => {
 		).toEqual(['adi.daily-print/2 holds zoned days; 1.0.0 uses UTC days']);
 	});
 
+	it('binds a /1 print’s slot count to its UTC day, even when rehashed', () => {
+		const print = buildPrint(settlementDay(DAY), rounds, { revision: 1 });
+		const { printHash, ...unsigned } = {
+			...print,
+			coverage: { ...print.coverage, slotsPerDay: 287 },
+		};
+		expect(issuesOf({ ...unsigned, printHash: hashJson(unsigned) })).toEqual([
+			'coverage.slotsPerDay is 287, but 2026-11-17 has 288 slots',
+		]);
+	});
+
 	it('binds a zoned print’s slot count to its window, even when rehashed', () => {
 		const v2 = RELEASES[1];
 		if (v2 === undefined) throw new Error('the registry lists v2');

@@ -176,7 +176,21 @@ describe('settlement labels across the cutover', () => {
 		]);
 		expect((await readHistory(store)).days).toEqual([
 			expect.objectContaining({ date: E, revision: 2 }),
+		]); // The correction is listed with its day's zone and window, and the day states its version.
+		expect(await correctionsView(store)).toEqual([
+			expect.objectContaining({
+				date: E,
+				revision: 2,
+				standing: 'settlement',
+				methodologyVersion: '2.0.0',
+				day: 'America/New_York',
+				window: { start: '2027-01-01T05:00:00.000Z', end: '2027-01-02T05:00:00.000Z' },
+			}),
 		]);
+		expect(await dayView(store, E)).toMatchObject({
+			status: 'settled',
+			methodologyVersion: '2.0.0',
+		});
 	});
 
 	it('never serves a stale v1 print, history entry or correction for a label from E, even before repair', async () => {
@@ -224,23 +238,63 @@ describe('settlement labels across the cutover', () => {
 		expect((await readHistory(store)).days.map((d) => d.date)).toEqual([E]);
 	});
 
-	it('applies one key contract: date, revision and owning release, wherever a print is read', async () => {
-		// A valid ET print of 2027-01-02, stored at 2027-01-01's key: the day reader refuses it.
+	it('reports a print at another day’s key from both routes, instead of failing', async () => {
+		// A valid ET print of 2027-01-02, stored at 2027-01-01's r1 key.
 		const nextDay = buildPrint(settlementDay('2027-01-02'), [], { revision: 1 });
 		await store.write(`prints/et/${E}/r1.json`, encode(nextDay), 'application/json', {
 			kind: 'if-absent',
 		});
-		await expect(readPrints(store, E)).rejects.toThrow(
-			`prints/et/${E}/r1.json holds revision 1 of 2027-01-02`,
+		const misfiled = { problem: 'misfiled_print', objects: [`prints/et/${E}/r1.json`] };
+		const day = await getDay(new Request(`http://test/api/v1/days/${E}`), {
+			params: Promise.resolve({ date: E }),
+		});
+		expect(day.status).toBe(404);
+		expect(await day.json()).toMatchObject({ status: 'unsettled', misfiled });
+		await collectAroundE();
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2027-01-02T05:30:00Z'));
+		const settle = await settleRoute(
+			new Request(`http://test/api/cron/settle?date=${E}`, {
+				headers: { authorization: 'Bearer test-cron-secret' },
+			}),
 		);
-		// A valid v1 correction under the ET root: never listed, and reported.
+		expect(settle.status).toBe(409);
+		expect(await settle.json()).toEqual({ status: 'blocked', date: E, misfiled });
+		// The misfiled object is left in place, and nothing is served for E.
+		expect(await readPrints(store, E)).toEqual([]);
+	});
+
+	it('never lists a v1 correction under the ET root, and reports it', async () => {
 		await store.write(`prints/et/${E}/r2.json`, encode(staleV1Print(2)), 'application/json', {
 			kind: 'if-absent',
 		});
 		expect(await readCorrectionPrints(store)).toEqual([]);
 		expect(await misfiledPrints(store, E)).toEqual({
 			problem: 'misfiled_print',
-			objects: [`prints/et/${E}/r1.json`, `prints/et/${E}/r2.json`],
+			objects: [`prints/et/${E}/r2.json`],
+		});
+	});
+
+	it('never lets wrong-root corruption break a canonical read; it is reported instead', async () => {
+		const garbage = new TextEncoder().encode('not json');
+		const v1Day = '2026-12-31';
+		// A malformed ET history next to a settled v1 day: the v1 day still serves.
+		await settleDay(store, v1Day);
+		await store.write('prints/et/history.json', garbage, 'application/json', { kind: 'if-absent' });
+		const settled = await getDay(new Request(`http://test/api/v1/days/${v1Day}`), {
+			params: Promise.resolve({ date: v1Day }),
+		});
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toMatchObject({
+			status: 'settled',
+			methodologyVersion: '1.0.0',
+			misfiled: { problem: 'misfiled_print', objects: ['prints/et/history.json'] },
+		});
+		// A malformed correction under the v1 root for an ET date: /incidents still lists.
+		await store.write(`prints/${E}/r2.json`, garbage, 'application/json', { kind: 'if-absent' });
+		expect(await correctionsView(store)).toEqual([]);
+		expect(await misfiledPrints(store, E)).toMatchObject({
+			objects: expect.arrayContaining([`prints/${E}/r2.json`]),
 		});
 	});
 

@@ -20,6 +20,7 @@ import {
 } from '@/lib/index/indicative';
 import { sha256Hex } from '@/lib/index/json';
 import {
+	activeReleases,
 	admits,
 	isUnder,
 	methodologyOf,
@@ -521,7 +522,8 @@ function printKeyProblem(key: string, print: DailyPrint): string | null {
 /**
  * All revisions of a day's print, oldest first, read from the print root of the release that owns
  * the day. Empty when the day has not settled or no release owns it. An object at one of these
- * keys that is not that revision of that day under that release is corruption, and throws.
+ * keys that fails `printKeyProblem` (another day's or release's print) is not a revision: the
+ * list ends before it, and `misfiledPrints` reports it.
  */
 export async function readPrints(store: ObjectStore, date: string): Promise<DailyPrint[]> {
 	const release = settlementReleaseOrNull(date);
@@ -530,12 +532,7 @@ export async function readPrints(store: ObjectStore, date: string): Promise<Dail
 	for (let revision = 1; ; revision += 1) {
 		const key = keys.print(printRoot(release), date, revision);
 		const print = await readJson(store, printSchema, key);
-		if (print === null) return prints;
-		const problem =
-			print.date === date && print.revision === revision
-				? printKeyProblem(key, print)
-				: `${key} holds revision ${print.revision} of ${print.date}`;
-		if (problem !== null) throw new Error(problem);
+		if (print === null || printKeyProblem(key, print) !== null) return prints;
 		prints.push(print);
 	}
 }
@@ -557,8 +554,12 @@ export async function misfiledPrints(
 	const found = await Promise.all(
 		PRINT_ROOTS.map(async (root) => {
 			const listed = await store.list(`${root}${date}/`);
-			const history = await readJson(store, historyIndexSchema, keys.history(root));
-			const historyEntry = root !== canonical && history?.days.some((day) => day.date === date);
+			// Another root's history is a diagnostic read: unreadable, it is reported, never fatal.
+			const historyObject = root === canonical ? null : await store.read(keys.history(root));
+			const history = historyObject === null ? null : tryDecode(historyIndexSchema, historyObject);
+			const historyEntry =
+				historyObject !== null &&
+				(history === null || history.days.some((day) => day.date === date));
 			const prints =
 				root !== canonical
 					? listed
@@ -579,7 +580,7 @@ function tryDecodePrint(object: StoredObject | null): DailyPrint | null {
 	return object === null ? null : tryDecode(printSchema, object);
 }
 
-const PRINT_KEY = /^prints\/(?:[a-z]+\/)?\d{4}-\d{2}-\d{2}\/r(\d+)\.json$/;
+const PRINT_KEY = /^(prints\/(?:[a-z]+\/)?)(\d{4}-\d{2}-\d{2})\/r(\d+)\.json$/;
 
 /**
  * Every stored correction print (revision 2 or later), found by listing the print keys. It does
@@ -587,9 +588,12 @@ const PRINT_KEY = /^prints\/(?:[a-z]+\/)?\d{4}-\d{2}-\d{2}\/r(\d+)\.json$/;
  * print that passes `printKeyProblem` is listed: a misfiled one is never shown.
  */
 export async function readCorrectionPrints(store: ObjectStore): Promise<DailyPrint[]> {
-	const listed = (await store.list('prints/')).filter(
-		(key) => Number(PRINT_KEY.exec(key)?.[1]) > 1,
-	);
+	// Only keys under the root that owns their date are decoded: an object under another root is
+	// a misfiled write, so even a malformed one can never break the listing.
+	const listed = (await store.list('prints/')).filter((key) => {
+		const [, root, date, revision] = PRINT_KEY.exec(key) ?? [];
+		return date !== undefined && Number(revision) > 1 && root === canonicalRoot(date);
+	});
 	const prints = await readInBatches(listed, async (key) => {
 		const print = await readJson(store, printSchema, key);
 		if (print === null) throw new Error(`${key} is listed but could not be read`);
@@ -644,10 +648,23 @@ export async function settleDay(store: ObjectStore, date: DayLabel): Promise<Set
 				return { status: 'already_settled', print: winner };
 			}
 		}
+		// The key is held by an object that is not this day's print: report it, never overwrite it.
+		const misfiled = await misfiledPrints(store, date);
+		if (misfiled !== null) throw new SettlementBlocked(date, misfiled);
 		throw new Error(`print ${date} r1 exists but could not be read`);
 	}
 	await updateHistory(store, print);
 	return { status: 'settled', print };
+}
+
+/** A day whose revision-1 key is held by an object that is not its print, so it cannot settle. */
+export class SettlementBlocked extends Error {
+	constructor(
+		readonly date: string,
+		readonly misfiled: MisfiledPrints,
+	) {
+		super(`${date} cannot settle: its print key is held by ${misfiled.objects.join(', ')}`);
+	}
 }
 
 /** What the operator states when issuing a correction (scripts/correct.ts). */
@@ -723,8 +740,10 @@ const EMPTY_HISTORY: HistoryIndex = { schema: 'adi.history/1', days: [] };
  * deployment wrote under the wrong root is never served, even before the next settle repairs it.
  */
 export async function readHistory(store: ObjectStore): Promise<HistoryIndex> {
+	// Only a root that owns some day is read: another root's history is never a canonical read.
+	const roots = [...new Set(activeReleases().map(printRoot))];
 	const histories = await Promise.all(
-		PRINT_ROOTS.map(async (root) => {
+		roots.map(async (root) => {
 			const history = await readJson(store, historyIndexSchema, keys.history(root));
 			return (history?.days ?? []).filter((day) => canonicalRoot(day.date) === root);
 		}),

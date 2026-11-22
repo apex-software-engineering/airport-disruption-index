@@ -1,4 +1,9 @@
-import { freezeIndicativeDay, misfiledPrints, settleDay } from '@/server/archive';
+import {
+	freezeIndicativeDay,
+	misfiledPrints,
+	settleDay,
+	SettlementBlocked,
+} from '@/server/archive';
 import { CACHE, cronAuthorized, json, problem } from '@/server/http';
 import { storeFromEnv, type ObjectStore } from '@/server/storage';
 import { dayWindow, settlesAt } from '@/lib/index/calendar';
@@ -29,7 +34,15 @@ export async function GET(request: Request) {
 	const cutoff = settlesAt(dayWindow(release, date));
 	if (now < cutoff) return problem(409, `${date} settles at ${cutoff.toISOString()}`);
 	const store = storeFromEnv();
-	const { status, print } = await settleDay(store, date);
+	const outcome = await settleDay(store, date).catch((error: unknown) => {
+		if (error instanceof SettlementBlocked) return error;
+		throw error;
+	});
+	// Its print key is held by an object that is not its print: reported, never overwritten.
+	if (outcome instanceof SettlementBlocked) {
+		return json({ status: 'blocked', date, misfiled: outcome.misfiled }, CACHE.none, 409);
+	}
+	const { status, print } = outcome;
 	// A print another release's deployment left under this date: never served, reported here.
 	const misfiled = await misfiledPrints(store, date);
 	const indicative = [];
