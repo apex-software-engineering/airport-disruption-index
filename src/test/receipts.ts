@@ -1,10 +1,9 @@
 import { CURRENT_ADAPTER } from '@/lib/index/adapters';
-import { methodologyFor } from '@/lib/index/methodology';
 import { buildReceipt, type FetchOutcome } from '@/lib/index/round';
 import type { RoundReceipt } from '@/lib/index/schemas';
-import { utcDateOf } from '@/lib/index/time';
+import { collectingRelease } from '@/lib/index/calendar';
 
-/** A receipt as the collector builds it: today's methodology and the current adapter. */
+/** A receipt as the collector builds it: the release in effect then and the current adapter. */
 export function collectedReceipt(input: {
 	fetchedAt: Date;
 	sourceUrl: string;
@@ -12,7 +11,7 @@ export function collectedReceipt(input: {
 }): RoundReceipt {
 	return buildReceipt({
 		...input,
-		methodology: methodologyFor(utcDateOf(input.fetchedAt)),
+		methodology: collectingRelease(input.fetchedAt),
 		adapterVersion: CURRENT_ADAPTER.version,
 	});
 }

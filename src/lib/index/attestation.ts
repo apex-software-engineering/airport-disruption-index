@@ -6,9 +6,10 @@
 import type { OtsProof } from '@/lib/ots';
 
 import { sha256Hex } from './json';
+import { methodologyOf } from './methodology';
 import { printHashMatches } from './print';
 import type { Attestation, DailyPrint } from './schemas';
-import { addDays, dayStartMs } from './time';
+import { dayWindow } from './calendar';
 
 export const ATTESTATION_SCHEMA = 'adi.attestation/1' as const;
 
@@ -67,18 +68,28 @@ export function attestationProblems(attestation: Attestation, print: DailyPrint)
 /** A correction's attestation must be stamped within this many hours of its issue time. */
 export const CORRECTION_STAMP_HOURS = 48;
 
+/** Revision 1's attestation must be stamped within this many hours of its day's end. */
+const R1_STAMP_HOURS = 24;
+
 /**
- * The time by which a print's attestation must be timestamped. Revision 1 of day D: D+2 00:00Z.
- * A correction: CORRECTION_STAMP_HOURS after its `correction.issuedAt`, which every correction
- * records. The calendars keep the first commitment, so a rewritten attestation needs a new, later
- * timestamp, and the cutoff exposes it.
+ * The time by which a print's attestation must be timestamped. Revision 1 of day D: 24 hours after
+ * D ends (v1: D+2 00:00Z). A correction: CORRECTION_STAMP_HOURS after its `correction.issuedAt`,
+ * which every correction records. The calendars keep the first commitment, so a rewritten
+ * attestation needs a new, later timestamp, and the cutoff exposes it.
  */
 export function publicationCutoff(
-	print: Pick<DailyPrint, 'date' | 'revision' | 'correction'>,
+	print: Pick<
+		DailyPrint,
+		'date' | 'revision' | 'correction' | 'methodologyVersion' | 'parameterHash'
+	>,
 ): Date {
 	if (print.correction === null) {
 		if (print.revision !== 1) throw new Error(`revision ${print.revision} has no correction`);
-		return new Date(dayStartMs(addDays(print.date, 2)));
+		// The day ends where the release the print records says it does.
+		const release = methodologyOf(print.methodologyVersion, print.parameterHash);
+		if (release === null) throw new Error(`${print.date} records an unknown methodology`);
+		const dayEnd = dayWindow(release, print.date).end.getTime();
+		return new Date(dayEnd + R1_STAMP_HOURS * 3_600_000);
 	}
 	return new Date(Date.parse(print.correction.issuedAt) + CORRECTION_STAMP_HOURS * 3_600_000);
 }

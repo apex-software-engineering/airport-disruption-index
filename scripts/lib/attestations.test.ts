@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { settlementDay } from '@/lib/index/calendar';
 
 import { buildAttestation, serializeAttestation } from '@/lib/index/attestation';
 import { CURRENT_ADAPTER } from '@/lib/index/adapters';
@@ -28,8 +29,8 @@ const receipt = collectedReceipt({
 	sourceUrl: CURRENT_ADAPTER.url,
 	outcome: { kind: 'response', httpStatus: 200, body: feedFixture('synthetic-gs-gdp.xml') },
 });
-const r1 = buildPrint('2026-11-17', [summarizeReceipt(receipt)], { revision: 1 });
-const r2 = buildPrint('2026-11-17', [], {
+const r1 = buildPrint(settlementDay('2026-11-17'), [summarizeReceipt(receipt)], { revision: 1 });
+const r2 = buildPrint(settlementDay('2026-11-17'), [], {
 	revision: 2,
 	correction: {
 		supersedesPrintHash: r1.printHash,

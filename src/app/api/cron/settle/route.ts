@@ -1,8 +1,9 @@
 import { settleDay } from '@/server/archive';
 import { CACHE, cronAuthorized, json, problem } from '@/server/http';
 import { storeFromEnv } from '@/server/storage';
-import { methodologyInEffect } from '@/lib/index/methodology';
-import { addDays, parseUtcDate, settlementCutoff, utcDateOf } from '@/lib/index/time';
+import { dayWindow, settlesAt } from '@/lib/index/calendar';
+import { settlementReleaseOrNull } from '@/lib/index/methodology';
+import { addDays, parseUtcDate, utcDateOf } from '@/lib/index/time';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -17,9 +18,15 @@ export async function GET(request: Request) {
 	const now = new Date();
 	const date = new URL(request.url).searchParams.get('date') ?? addDays(utcDateOf(now), -1);
 	if (parseUtcDate(date) === null) return problem(400, `invalid date ${date}`);
-	if (methodologyInEffect(date) === null)
+	const release = settlementReleaseOrNull(date);
+	if (release === null)
 		return problem(400, `no methodology is in effect on ${date}, so it has nothing to settle`);
-	const cutoff = settlementCutoff(date);
+	if (release.parameters.day !== 'utc')
+		return problem(
+			409,
+			`${date} is an ${release.parameters.day.timeZone} day; settling those days is not available yet`,
+		);
+	const cutoff = settlesAt(dayWindow(release, date));
 	if (now < cutoff) return problem(409, `${date} settles at ${cutoff.toISOString()}`);
 	const { status, print } = await settleDay(storeFromEnv(), date);
 	return json(

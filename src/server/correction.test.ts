@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { settlementDay } from '@/lib/index/calendar';
 
 import { reproduce } from '@/lib/reproduce';
 import type { DailyPrint } from '@/lib/index/schemas';
@@ -243,7 +244,10 @@ describe('correctionsView', () => {
 
 	it('lists a correction whose history update was lost', async () => {
 		const original = await settled();
-		const r2 = buildPrint(DAY, [], { revision: 2, correction: correctionOf(original.printHash) });
+		const r2 = buildPrint(settlementDay(DAY), [], {
+			revision: 2,
+			correction: correctionOf(original.printHash),
+		});
 		await store.write(
 			`prints/${DAY}/r2.json`,
 			new TextEncoder().encode(JSON.stringify(r2)),

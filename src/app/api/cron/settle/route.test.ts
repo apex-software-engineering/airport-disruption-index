@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { collectedReceipt } from '@/test/receipts';
-import { publicationDeadline, settlementCutoff } from '@/lib/index/time';
+import { publishBy, settlementDay, settlesAt } from '@/lib/index/calendar';
 import { readPrints, recordRound } from '@/server/archive';
 import { FileStore } from '@/server/storage';
 
@@ -69,8 +69,8 @@ describe('settle schedule', () => {
 
 	it('runs at the cutoff and retries at least twice, each run ending before the deadline', () => {
 		const dayEnd = Date.parse(`${DAY}T00:00:00Z`) + 86_400_000;
-		const cutoffMinute = (settlementCutoff(DAY).getTime() - dayEnd) / 60_000;
-		const deadlineMinute = (publicationDeadline(DAY).getTime() - dayEnd) / 60_000;
+		const cutoffMinute = (settlesAt(settlementDay(DAY).window).getTime() - dayEnd) / 60_000;
+		const deadlineMinute = (publishBy(settlementDay(DAY).window).getTime() - dayEnd) / 60_000;
 		expect(settleRuns).toContain(cutoffMinute);
 		expect(settleRuns.length).toBeGreaterThanOrEqual(3);
 		for (const minute of settleRuns) {

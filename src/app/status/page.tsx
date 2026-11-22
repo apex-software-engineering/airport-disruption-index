@@ -4,7 +4,7 @@ import { describeCoverage } from '@/components/coverage';
 import { formatInteger, formatPercent } from '@/components/format';
 import {
 	hasValidRound,
-	type Current,
+	type Provisional,
 	readLastReceipt,
 	readSiteData,
 	RECENT_PRINT_DAYS,
@@ -20,6 +20,7 @@ import {
 	StatusLabel,
 	UtcDay,
 } from '@/components/ui';
+import { TransitionNotice } from '@/components/transition';
 import type { RoundReceipt } from '@/lib/index/schemas';
 import { roundUrl } from '@/server/views';
 
@@ -31,7 +32,6 @@ export default async function StatusPage() {
 	const now = new Date();
 	const { current, recent } = await readSiteData(now);
 	const receipt = await readLastReceipt(current);
-	const coverage = describeCoverage(current.coverage);
 	const lastPrint = recent[0];
 
 	return (
@@ -47,62 +47,21 @@ export default async function StatusPage() {
 
 			<Section title='Last round'>
 				{receipt === null ? (
-					<Notice>No round has been recorded for {current.date} (UTC) yet.</Notice>
+					<Notice>
+						{current.status === 'provisional'
+							? `No round has been recorded for ${current.date} (UTC) yet.`
+							: `No round has been recorded since ${current.previousDay.date} ended.`}
+					</Notice>
 				) : (
 					<LastRound receipt={receipt} />
 				)}
 			</Section>
 
-			<Section title={<UtcDay date={current.date}>Today, {current.date} (UTC)</UtcDay>}>
-				{current.foreignMethodologies.length > 0 && (
-					<Notice>
-						Some of today&apos;s rounds were collected under another methodology (
-						{current.foreignMethodologies
-							.map((m) => `${formatInteger(m.rounds)} under v${m.methodologyVersion}`)
-							.join(', ')}
-						). They are not counted, and the day will print suspended.
-					</Notice>
-				)}
-				<Facts
-					rows={[
-						{
-							term: 'Status',
-							detail: <StatusLabel tone='neutral'>{current.status}</StatusLabel>,
-						},
-						{ term: 'Settles at', detail: <Instant at={current.settlesAt} /> },
-						{ term: 'Print due by', detail: <Instant at={current.publishBy} /> },
-						{
-							term: 'Unrecognized lists',
-							detail:
-								current.unrecognizedLists.length === 0 ? (
-									'none seen today'
-								) : (
-									<UnrecognizedLists lists={current.unrecognizedLists} />
-								),
-						},
-						{
-							term: 'Coverage',
-							detail: `${coverage.percent} of the day (${coverage.observed})`,
-						},
-						{ term: 'Slots', detail: coverage.slots },
-						{ term: 'Ended', detail: coverage.ended },
-						{
-							term: 'Running value',
-							detail: hasValidRound(current)
-								? `ADI ${formatInteger(current.value)}, ADI-GS ${formatInteger(current.groundStopValue)} airport-minutes`
-								: 'none yet (no valid round today)',
-						},
-						{
-							term: 'Methodology',
-							detail: (
-								<>
-									v{current.methodologyVersion}, parameter hash <Mono>{current.parameterHash}</Mono>
-								</>
-							),
-						},
-					]}
-				/>
-			</Section>
+			{current.status === 'transition' ? (
+				<TransitionNotice current={current} />
+			) : (
+				<Today current={current} />
+			)}
 
 			<Section title='Last settlement print'>
 				{lastPrint === undefined ? (
@@ -138,8 +97,64 @@ export default async function StatusPage() {
 	);
 }
 
+function Today({ current }: { current: Provisional }) {
+	const coverage = describeCoverage(current.coverage);
+	return (
+		<Section title={<UtcDay date={current.date}>Today, {current.date} (UTC)</UtcDay>}>
+			{current.foreignMethodologies.length > 0 && (
+				<Notice>
+					Some of today&apos;s rounds were collected under another methodology (
+					{current.foreignMethodologies
+						.map((m) => `${formatInteger(m.rounds)} under v${m.methodologyVersion}`)
+						.join(', ')}
+					). They are not counted, and the day will print suspended.
+				</Notice>
+			)}
+			<Facts
+				rows={[
+					{
+						term: 'Status',
+						detail: <StatusLabel tone='neutral'>{current.status}</StatusLabel>,
+					},
+					{ term: 'Settles at', detail: <Instant at={current.settlesAt} /> },
+					{ term: 'Print due by', detail: <Instant at={current.publishBy} /> },
+					{
+						term: 'Unrecognized lists',
+						detail:
+							current.unrecognizedLists.length === 0 ? (
+								'none seen today'
+							) : (
+								<UnrecognizedLists lists={current.unrecognizedLists} />
+							),
+					},
+					{
+						term: 'Coverage',
+						detail: `${coverage.percent} of the day (${coverage.observed})`,
+					},
+					{ term: 'Slots', detail: coverage.slots },
+					{ term: 'Ended', detail: coverage.ended },
+					{
+						term: 'Running value',
+						detail: hasValidRound(current)
+							? `ADI ${formatInteger(current.value)}, ADI-GS ${formatInteger(current.groundStopValue)} airport-minutes`
+							: 'none yet (no valid round today)',
+					},
+					{
+						term: 'Methodology',
+						detail: (
+							<>
+								v{current.methodologyVersion}, parameter hash <Mono>{current.parameterHash}</Mono>
+							</>
+						),
+					},
+				]}
+			/>
+		</Section>
+	);
+}
+
 /** Feed lists v1 does not know: never counted, flagged so a reshaped feed is seen at once. */
-function UnrecognizedLists({ lists }: { lists: Current['unrecognizedLists'] }) {
+function UnrecognizedLists({ lists }: { lists: Provisional['unrecognizedLists'] }) {
 	return (
 		<>
 			<StatusLabel tone='warn'>flagged</StatusLabel> not counted by v1:{' '}

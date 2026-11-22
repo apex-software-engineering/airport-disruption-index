@@ -1,15 +1,14 @@
 import { CURRENT_ADAPTER } from '@/lib/index/adapters';
-import { methodologyFor } from '@/lib/index/methodology';
-import { utcDateOf } from '@/lib/index/time';
+import { collectingRelease } from '@/lib/index/calendar';
 import { CACHE, DEPLOYED_COMMIT, json } from '@/server/http';
 
 /**
- * The methodology in effect today, and separately the source adapter collecting now. An adapter
+ * The methodology in effect now, and separately the source adapter collecting now. An adapter
  * fix can change the address fetched without a methodology release, so `parameters.source` is
  * the source as of the release; each receipt records the address it fetched.
  */
 export function GET() {
-	const { parameters, parameterHash } = methodologyFor(utcDateOf(new Date()));
+	const { parameters, parameterHash } = collectingRelease(new Date());
 	return json(
 		{
 			version: parameters.version,

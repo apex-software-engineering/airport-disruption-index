@@ -11,6 +11,8 @@ import { currentView, historyView } from '@/server/views';
 export const RECENT_PRINT_DAYS = 14;
 
 export type Current = Awaited<ReturnType<typeof currentView>>;
+export type Provisional = Extract<Current, { status: 'provisional' }>;
+export type Transition = Extract<Current, { status: 'transition' }>;
 export type History = Awaited<ReturnType<typeof historyView>>;
 export type HistoryDay = History['days'][number];
 
@@ -40,7 +42,7 @@ export async function readLastReceipt(current: Current): Promise<RoundReceipt | 
 }
 
 /** A running value means something only once the day has at least one valid round. */
-export function hasValidRound(current: Current): boolean {
+export function hasValidRound(current: Provisional): boolean {
 	return current.coverage.validRounds > 0;
 }
 

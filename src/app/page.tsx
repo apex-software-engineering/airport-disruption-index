@@ -1,6 +1,7 @@
 import Link from 'next/link';
 
 import { describeCoverage } from '@/components/coverage';
+import { dayName } from '@/components/day-name';
 import { formatInteger, formatPercent } from '@/components/format';
 import { HourlyChart } from '@/components/hourly-chart';
 import {
@@ -8,9 +9,10 @@ import {
 	readSiteData,
 	RECENT_PRINT_DAYS,
 	SETTLED_TONE,
-	type Current,
 	type HistoryDay,
+	type Provisional,
 } from '@/components/index-data';
+import { TransitionNotice } from '@/components/transition';
 import {
 	Figure,
 	Instant,
@@ -21,23 +23,28 @@ import {
 	Table,
 	UtcDay,
 } from '@/components/ui';
-import { methodologyFor, type MethodologyParameters } from '@/lib/index/methodology';
+import { collectingRelease } from '@/lib/index/calendar';
+import type { MethodologyParameters } from '@/lib/index/methodology';
 import { site } from '@/lib/site';
 
 export const dynamic = 'force-dynamic';
 
 export default async function HomePage() {
 	const { current, recent } = await readSiteData(new Date());
-	// Today's methodology; the date comes from the same read as the running value.
-	const parameters = methodologyFor(current.date).parameters;
+	// The methodology in effect at the same instant as the running value.
+	const parameters = collectingRelease(new Date(current.asOf)).parameters;
 	return (
 		<>
 			<PageTitle
 				title={site.name}
-				lede={`Airport-minutes under FAA ground stops and ground delay programs across ${parameters.panel.length} US hub airports, per UTC day. Methodology v${parameters.version}.`}
+				lede={`Airport-minutes under FAA ground stops and ground delay programs across ${parameters.panel.length} US hub airports, per ${dayName(parameters)}. Methodology v${parameters.version}.`}
 			/>
-			<Today current={current} />
-			{hasValidRound(current) ? (
+			{current.status === 'transition' ? (
+				<TransitionNotice current={current} />
+			) : (
+				<Today current={current} />
+			)}
+			{current.status === 'provisional' && hasValidRound(current) ? (
 				<>
 					<Section title='Hourly series'>
 						<HourlyChart hourly={current.hourly} />
@@ -64,7 +71,7 @@ export default async function HomePage() {
 	);
 }
 
-function Today({ current }: { current: Current }) {
+function Today({ current }: { current: Provisional }) {
 	const { lastRound } = current;
 	const coverage = describeCoverage(current.coverage);
 	return (
@@ -122,8 +129,8 @@ function RecentPrints({
 			{days.length === 0 ? (
 				<Notice>
 					No day has settled in the last {RECENT_PRINT_DAYS} days. A day&apos;s print is published{' '}
-					{parameters.settlement.cutoffMinutesAfterDayEnd} minutes after the UTC day ends, and the
-					index is live-only from its first production round.
+					{parameters.settlement.cutoffMinutesAfterDayEnd} minutes after the {dayName(parameters)}{' '}
+					ends, and the index is live-only from its first production round.
 				</Notice>
 			) : (
 				<Table

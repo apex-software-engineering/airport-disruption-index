@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { settlementDay } from './calendar';
 
 import { readOtsProof } from '@/lib/ots';
 import { feedFixture, otsFixture } from '@/test/fixtures';
@@ -12,10 +13,11 @@ import {
 	roundsDigest,
 	serializeAttestation,
 } from './attestation';
-import { sha256Hex } from './json';
+import { hashJson, sha256Hex } from './json';
 import { CURRENT_ADAPTER } from './adapters';
-import { methodologyFor } from './methodology';
+import { settlementReleaseFor } from './methodology';
 import { buildPrint } from './print';
+import { METHODOLOGY_V1 } from './releases';
 import { summarizeReceipt } from './round';
 import { collectedReceipt } from '@/test/receipts';
 import { attestationSchema } from './schemas';
@@ -28,7 +30,9 @@ const receipts = ['2026-11-17T20:45:02.123Z', '2026-11-17T20:50:01.500Z'].map((a
 		outcome: { kind: 'response', httpStatus: 200, body: raw },
 	}),
 );
-const print = buildPrint('2026-11-17', receipts.map(summarizeReceipt), { revision: 1 });
+const print = buildPrint(settlementDay('2026-11-17'), receipts.map(summarizeReceipt), {
+	revision: 1,
+});
 const commit = 'a'.repeat(40);
 
 describe('roundsDigest', () => {
@@ -47,8 +51,8 @@ describe('buildAttestation', () => {
 			revision: 1,
 			printHash: print.printHash,
 			roundsDigest: roundsDigest(print),
-			parameterHash: methodologyFor('2026-11-17').parameterHash,
-			methodologyVersion: methodologyFor('2026-11-17').parameters.version,
+			parameterHash: settlementReleaseFor('2026-11-17').parameterHash,
+			methodologyVersion: settlementReleaseFor('2026-11-17').parameters.version,
 			deployedCommit: commit,
 		});
 	});
@@ -70,9 +74,11 @@ describe('attestationProblems', () => {
 	});
 
 	it('flags a print rebuilt with different rounds, even with a valid hash', () => {
-		const rewritten = buildPrint('2026-11-17', receipts.slice(0, 1).map(summarizeReceipt), {
-			revision: 1,
-		});
+		const rewritten = buildPrint(
+			settlementDay('2026-11-17'),
+			receipts.slice(0, 1).map(summarizeReceipt),
+			{ revision: 1 },
+		);
 		expect(attestationProblems(attestation, rewritten)).toEqual([
 			expect.stringMatching(/^printHash: print has /),
 			expect.stringMatching(/^roundsDigest: print has /),
@@ -122,9 +128,11 @@ describe('pinProblems', () => {
 	});
 
 	it('rejects a served revision that conflicts with its pin', () => {
-		const other = buildPrint('2026-11-17', receipts.slice(0, 1).map(summarizeReceipt), {
-			revision: 1,
-		});
+		const other = buildPrint(
+			settlementDay('2026-11-17'),
+			receipts.slice(0, 1).map(summarizeReceipt),
+			{ revision: 1 },
+		);
 		expect(pinProblems([pin], [other])).toEqual([
 			expect.stringMatching(/^r1: printHash: print has /),
 			expect.stringMatching(/^r1: roundsDigest: print has /),
@@ -132,18 +140,29 @@ describe('pinProblems', () => {
 	});
 });
 
+/** A revision 1 recording v1, for the cutoff rules alone. */
+const r1Of = (date: string) => ({
+	date,
+	revision: 1,
+	correction: null,
+	methodologyVersion: METHODOLOGY_V1.version,
+	parameterHash: hashJson(METHODOLOGY_V1),
+});
+
 describe('publicationCutoff', () => {
-	it('is the start of D+2 in UTC for revision 1', () => {
-		expect(publicationCutoff({ date: '2026-11-20', revision: 1, correction: null })).toEqual(
-			new Date('2026-11-22T00:00:00.000Z'),
-		);
-		expect(publicationCutoff({ date: '2026-12-31', revision: 1, correction: null })).toEqual(
-			new Date('2027-01-02T00:00:00.000Z'),
-		);
+	it('is the start of D+2 in UTC for a v1 revision 1', () => {
+		expect(publicationCutoff(r1Of('2026-11-20'))).toEqual(new Date('2026-11-22T00:00:00.000Z'));
+		expect(publicationCutoff(r1Of('2026-12-31'))).toEqual(new Date('2027-01-02T00:00:00.000Z'));
+	});
+
+	it('refuses a print recording a methodology this code does not know', () => {
+		expect(() =>
+			publicationCutoff({ ...r1Of('2026-11-20'), parameterHash: 'f'.repeat(64) }),
+		).toThrow(/unknown methodology/);
 	});
 
 	it('is 48 hours after correction.issuedAt for a correction', () => {
-		const correction = buildPrint('2026-11-17', [], {
+		const correction = buildPrint(settlementDay('2026-11-17'), [], {
 			revision: 2,
 			correction: {
 				supersedesPrintHash: print.printHash,
@@ -164,7 +183,7 @@ describe('checkTimestamp', () => {
 		merkleRoot: '8a1b66ecb7cbd07d8139a7e7d7f2c41aab1f5009b8364aaf61d03ad245e47e00',
 		time: new Date('2015-05-28T15:41:18Z'),
 	};
-	const cutoff = (date: string) => publicationCutoff({ date, revision: 1, correction: null });
+	const cutoff = (date: string) => publicationCutoff(r1Of(date));
 	const explorer = async (height: number) => {
 		if (height !== 358391) throw new Error(`unexpected block ${height}`);
 		return block358391;

@@ -5,8 +5,9 @@
  */
 import type { z } from 'zod';
 
+import { partitionsOf, settlementDay, type DayWindow } from '@/lib/index/calendar';
 import { sha256Hex } from '@/lib/index/json';
-import { isUnder, methodologyFor, SLOT_MINUTES } from '@/lib/index/methodology';
+import { isUnder, SLOT_MINUTES } from '@/lib/index/methodology';
 import { buildPrint, finalizePrint, historyEntryOf, printBody } from '@/lib/index/print';
 import { receiptHashMatches, summarizeReceipt } from '@/lib/index/round';
 import {
@@ -21,6 +22,7 @@ import {
 	type RoundSummary,
 } from '@/lib/index/schemas';
 import {
+	dayStartMs,
 	parseRoundId,
 	roundIdFor,
 	slotStartMs,
@@ -44,10 +46,30 @@ const keys = {
 	history: () => 'prints/history.json',
 };
 
+/** The UTC storage partition a round lives in. */
 function dateOf(id: RoundId): UtcDate {
 	const parsed = parseRoundId(id);
 	if (parsed === null) throw new Error(`invalid round id ${id}`);
-	return parsed.date;
+	return parsed.partition;
+}
+
+/**
+ * The one storage partition holding every slot of a settlement day. Settlement here reads, and
+ * re-indexes, a single partition, which is exactly a v1 UTC day. A day in a zoned release spans
+ * two partitions and is refused until settlement reads windows across partitions.
+ */
+function partitionOfDay(window: DayWindow): UtcDate {
+	const partitions = partitionsOf(window);
+	const [partition] = partitions;
+	if (
+		partitions.length !== 1 ||
+		partition === undefined ||
+		dayStartMs(partition) !== window.start.getTime()
+	)
+		throw new Error(
+			`${window.date} spans storage partitions ${partitions.join(', ')}; only a UTC day can be settled here`,
+		);
+	return partition;
 }
 
 function encode(value: unknown): Uint8Array {
@@ -369,14 +391,17 @@ export type SettleOutcome = { status: 'settled' | 'already_settled'; print: Dail
  * index at the day's latest revision.
  */
 export async function settleDay(store: ObjectStore, date: UtcDate): Promise<SettleOutcome> {
+	// Resolved first, so a day this build cannot settle never reaches the history index either.
+	const day = settlementDay(date);
+	const partition = partitionOfDay(day.window);
 	const settled = (await readPrints(store, date)).at(-1);
 	if (settled !== undefined) {
 		await updateHistory(store, settled);
 		return { status: 'already_settled', print: settled };
 	}
-	const receipts = await readDayReceipts(store, date);
-	await syncDayIndex(store, date, { kind: 'settle', receipts });
-	const print = buildPrint(date, receipts.map(summarizeReceipt), { revision: 1 });
+	const receipts = await readDayReceipts(store, partition);
+	await syncDayIndex(store, partition, { kind: 'settle', receipts });
+	const print = buildPrint(day, receipts.map(summarizeReceipt), { revision: 1 });
 	const written = await store.write(keys.print(date, 1), encode(print), JSON_TYPE, {
 		kind: 'if-absent',
 	});
@@ -430,15 +455,17 @@ export async function correctDay(
 				: `${request.supersedesPrintHash} is r${superseded.revision}, but the latest revision of ${date} is r${latest.revision} (${latest.printHash})`,
 		);
 	}
-	if (!isUnder(methodologyFor(date), latest)) {
+	const day = settlementDay(date);
+	if (!isUnder(day.release, latest)) {
 		throw new Error(
 			`r${latest.revision} records methodology ${latest.methodologyVersion} (${latest.parameterHash}), not the one in effect on ${date}; a correction never changes a day's methodology`,
 		);
 	}
-	const receipts = await readDayReceipts(store, date);
-	await syncDayIndex(store, date, { kind: 'settle', receipts });
+	const partition = partitionOfDay(day.window);
+	const receipts = await readDayReceipts(store, partition);
+	await syncDayIndex(store, partition, { kind: 'settle', receipts });
 	const revision = latest.revision + 1;
-	const body = printBody(date, receipts.map(summarizeReceipt));
+	const body = printBody(day, receipts.map(summarizeReceipt));
 	// Finalizing checks issuedAt against the window, so the clock is read after aggregation,
 	// immediately before the conditional write.
 	const print = finalizePrint(body, {

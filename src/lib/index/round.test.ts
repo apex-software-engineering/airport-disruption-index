@@ -4,7 +4,7 @@ import { CURRENT_ADAPTER } from '@/lib/index/adapters';
 import { collectedReceipt } from '@/test/receipts';
 import { feedFixture } from '@/test/fixtures';
 
-import { methodologyFor } from './methodology';
+import { settlementReleaseFor } from './methodology';
 import { METHODOLOGY_V1 } from './releases';
 import {
 	buildReceipt,
@@ -33,7 +33,7 @@ function unrecordedAdapterReceipt(fetchedAt: Date, outcome: FetchOutcome) {
 		fetchedAt,
 		sourceUrl: SOURCE,
 		outcome,
-		methodology: methodologyFor('2026-11-17'),
+		methodology: settlementReleaseFor('2026-11-17'),
 		adapterVersion: undefined,
 	});
 }
@@ -134,7 +134,7 @@ describe('buildReceipt', () => {
 			fetchedAt: new Date(receipt.fetchedAt),
 			sourceUrl: receipt.sourceUrl,
 			outcome: outcomeFromReceipt(receipt, feedFixture('synthetic-gs-gdp.xml')),
-			methodology: methodologyFor('2026-11-17'),
+			methodology: settlementReleaseFor('2026-11-17'),
 			adapterVersion: receipt.adapterVersion,
 		});
 		expect(rebuilt).toEqual(receipt);

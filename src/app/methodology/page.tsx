@@ -1,10 +1,11 @@
 import type { Metadata } from 'next';
 
+import { dayName } from '@/components/day-name';
 import { DocBody } from '@/components/doc-body';
 import { Facts, Mono, Section, Table } from '@/components/ui';
 import { CURRENT_ADAPTER } from '@/lib/index/adapters';
-import { methodologyFor } from '@/lib/index/methodology';
-import { utcDateOf } from '@/lib/index/time';
+import { collectingRelease } from '@/lib/index/calendar';
+import type { MethodologyParameters } from '@/lib/index/methodology';
 
 export const metadata: Metadata = { title: 'Methodology' };
 
@@ -13,7 +14,7 @@ export const revalidate = 3600;
 
 /** The prose is docs/methodology.md; the parameters block is the versioned module itself. */
 export default function MethodologyPage() {
-	const { parameters, parameterHash } = methodologyFor(utcDateOf(new Date()));
+	const { parameters, parameterHash } = collectingRelease(new Date());
 	const { carry, coverage, settlement } = parameters;
 	return (
 		<>
@@ -43,7 +44,7 @@ export default function MethodologyPage() {
 						},
 						{
 							term: 'Day',
-							detail: `UTC, ${parameters.slotsPerDay} slots of ${parameters.slotMinutes} minutes`,
+							detail: describeDay(parameters),
 						},
 						{
 							term: 'Airport-minutes per active slot',
@@ -65,7 +66,7 @@ export default function MethodologyPage() {
 						},
 						{
 							term: 'Settlement cutoff',
-							detail: `${settlement.cutoffMinutesAfterDayEnd} minutes after the UTC day ends`,
+							detail: `${settlement.cutoffMinutesAfterDayEnd} minutes after the ${dayName(parameters)} ends`,
 						},
 						{ term: 'Revisions', detail: settlement.revisions },
 					]}
@@ -80,4 +81,11 @@ export default function MethodologyPage() {
 			</Section>
 		</>
 	);
+}
+
+function describeDay(parameters: MethodologyParameters): string {
+	const slots = `slots of ${parameters.slotMinutes} minutes`;
+	return parameters.day === 'utc'
+		? `UTC, ${parameters.slotsPerDay} ${slots}`
+		: `${parameters.day.timeZone} civil day, 288 ${slots} (276 or 300 on a DST change)`;
 }

@@ -3,6 +3,7 @@
  * problems found; an empty list is a match. Nothing here throws on bad data: a receipt or print
  * that cannot even be rebuilt is a problem to report, not a crash.
  */
+import { settlementDay } from './calendar';
 import { canonicalJson, sha256Hex, type Json } from './json';
 import { buildPrint, printHashMatches, type PrintRevision } from './print';
 import {
@@ -62,7 +63,7 @@ export function verifyPrint(print: DailyPrint, receipts: readonly RoundReceipt[]
 	return [
 		...problems,
 		...compareRebuilt(print, () =>
-			buildPrint(print.date, receipts.map(summarizeReceipt), revision),
+			buildPrint(settlementDay(print.date), receipts.map(summarizeReceipt), revision),
 		),
 	];
 }

@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { settlementDay } from './calendar';
 
 import { CURRENT_ADAPTER } from '@/lib/index/adapters';
 import { collectedReceipt } from '@/test/receipts';
 import { feedFixture } from '@/test/fixtures';
 
-import { methodologyFor } from './methodology';
+import { settlementReleaseFor } from './methodology';
 import { buildPrint } from './print';
 import { buildReceipt, summarizeReceipt } from './round';
 import { dayResponseProblems, verifyPrint, verifyRound } from './verify';
@@ -26,7 +27,7 @@ describe('verifyRound across feed adapters', () => {
 			fetchedAt: new Date('2026-11-17T20:45:02.123Z'),
 			sourceUrl: CURRENT_ADAPTER.url,
 			outcome: { kind: 'response', httpStatus: 200, body: renamed },
-			methodology: methodologyFor('2026-11-17'),
+			methodology: settlementReleaseFor('2026-11-17'),
 			adapterVersion,
 		});
 
@@ -83,7 +84,9 @@ describe('verifyRound', () => {
 });
 
 describe('verifyPrint', () => {
-	const print = buildPrint('2026-11-17', [summarizeReceipt(receipt)], { revision: 1 });
+	const print = buildPrint(settlementDay('2026-11-17'), [summarizeReceipt(receipt)], {
+		revision: 1,
+	});
 
 	it('matches a print rebuilt from its receipts', () => {
 		expect(verifyPrint(print, [receipt])).toEqual([]);
@@ -101,8 +104,10 @@ describe('verifyPrint', () => {
 });
 
 describe('dayResponseProblems', () => {
-	const first = buildPrint('2026-11-17', [summarizeReceipt(receipt)], { revision: 1 });
-	const second = buildPrint('2026-11-17', [], {
+	const first = buildPrint(settlementDay('2026-11-17'), [summarizeReceipt(receipt)], {
+		revision: 1,
+	});
+	const second = buildPrint(settlementDay('2026-11-17'), [], {
 		revision: 2,
 		correction: {
 			supersedesPrintHash: first.printHash,
@@ -123,7 +128,7 @@ describe('dayResponseProblems', () => {
 	});
 
 	it('rejects conflicting duplicate revisions', () => {
-		const conflicting = buildPrint('2026-11-17', [], { revision: 1 });
+		const conflicting = buildPrint(settlementDay('2026-11-17'), [], { revision: 1 });
 		expect(dayResponseProblems('2026-11-17', conflicting, [first, conflicting])).toEqual([
 			'revisions[1] is revision 1, expected 2',
 		]);

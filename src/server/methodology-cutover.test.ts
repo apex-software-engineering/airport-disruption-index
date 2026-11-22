@@ -8,9 +8,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { settlementDay } from '@/lib/index/calendar';
 
 import { CURRENT_ADAPTER } from '@/lib/index/adapters';
-import { methodologyFor } from '@/lib/index/methodology';
+import { settlementReleaseFor } from '@/lib/index/methodology';
 import { buildPrint } from '@/lib/index/print';
 import { buildReceipt, type FetchOutcome } from '@/lib/index/round';
 import { METHODOLOGY_V1 } from '@/lib/index/releases';
@@ -30,7 +31,16 @@ vi.mock('@/lib/index/releases', async (importOriginal) => {
 		version: '2.0.0',
 		panel: [...actual.METHODOLOGY_V1.panel.filter((code) => code !== 'DTW'), 'SAN'],
 	};
-	return { ...actual, RELEASES: [...actual.RELEASES, actual.release(v2, '2026-11-18')] };
+	// A cutover between two UTC-day releases, activated: v1 ends the day before v2 starts.
+	return {
+		...actual,
+		RELEASES: [
+			actual.release(actual.METHODOLOGY_V1, '2026-11-17', { effectiveUntil: '2026-11-17' }),
+			actual.release(v2, '2026-11-18', {
+				announcedAt: '2026-10-01T00:00:00.000Z',
+			}),
+		],
+	};
 });
 
 const V1_DAY = '2026-11-17';
@@ -73,12 +83,16 @@ function collectAt(at: string) {
 
 describe('a release that takes effect at a UTC day boundary', () => {
 	it('computes each side of the cutover under its own methodology and panel', () => {
-		const before = buildPrint(V1_DAY, validRange(0, 288, [{ airport: 'DTW', gs: true }], V1_DAY), {
-			revision: 1,
-		});
-		const after = buildPrint(V2_DAY, validRange(0, 288, [{ airport: 'SAN', gs: true }], V2_DAY), {
-			revision: 1,
-		});
+		const before = buildPrint(
+			settlementDay(V1_DAY),
+			validRange(0, 288, [{ airport: 'DTW', gs: true }], V1_DAY),
+			{ revision: 1 },
+		);
+		const after = buildPrint(
+			settlementDay(V2_DAY),
+			validRange(0, 288, [{ airport: 'SAN', gs: true }], V2_DAY),
+			{ revision: 1 },
+		);
 		expect(before).toMatchObject({
 			methodologyVersion: '1.0.0',
 			result: { status: 'final', value: 1440 },
@@ -92,8 +106,8 @@ describe('a release that takes effect at a UTC day boundary', () => {
 		expect(panelOf(before)).toEqual([...METHODOLOGY_V1.panel]);
 		expect(panelOf(after)).toContain('SAN');
 		expect(panelOf(after)).not.toContain('DTW');
-		expect(before.parameterHash).toBe(methodologyFor(V1_DAY).parameterHash);
-		expect(after.parameterHash).toBe(methodologyFor(V2_DAY).parameterHash);
+		expect(before.parameterHash).toBe(settlementReleaseFor(V1_DAY).parameterHash);
+		expect(after.parameterHash).toBe(settlementReleaseFor(V2_DAY).parameterHash);
 		expect(after.parameterHash).not.toBe(before.parameterHash);
 	});
 
@@ -107,7 +121,7 @@ describe('a release that takes effect at a UTC day boundary', () => {
 		expect(after?.observation).toMatchObject({ status: 'valid' });
 		for (const date of [V1_DAY, V2_DAY]) {
 			const { print } = await settleDay(store, date);
-			expect(print.methodologyVersion).toBe(methodologyFor(date).parameters.version);
+			expect(print.methodologyVersion).toBe(settlementReleaseFor(date).parameters.version);
 			expect(print.result).toEqual({
 				status: 'suspended',
 				reason: 'coverage 1/288 valid rounds is below 80%',
@@ -126,7 +140,7 @@ describe('a day with rounds from two panel versions', () => {
 			fetchedAt: late,
 			sourceUrl: CURRENT_ADAPTER.url,
 			outcome,
-			methodology: methodologyFor(V1_DAY),
+			methodology: settlementReleaseFor(V1_DAY),
 			adapterVersion: CURRENT_ADAPTER.version,
 		});
 		await recordRound(store, stale, outcome.body, new Date(late.getTime() + 1000));
