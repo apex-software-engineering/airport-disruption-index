@@ -4,9 +4,11 @@ import { describe, expect, it } from 'vitest';
 
 const eslint = new ESLint();
 
+const GUARDS = new Set(['no-restricted-imports', 'no-restricted-syntax']);
+
 async function restrictedImports(filePath: string, source: string): Promise<number> {
 	const [result] = await eslint.lintText(source, { filePath });
-	return (result?.messages ?? []).filter((m) => m.ruleId === 'no-restricted-imports').length;
+	return (result?.messages ?? []).filter((m) => m.ruleId !== null && GUARDS.has(m.ruleId)).length;
 }
 
 describe('day.ts and print.ts take their release as an argument', () => {
@@ -18,6 +20,13 @@ describe('day.ts and print.ts take their release as an argument', () => {
 				"import { settlementReleaseFor } from './methodology';",
 				"import { RELEASES } from './releases';",
 				"import { dayAt } from '@/lib/index/calendar';",
+				"import { collectingRelease } from '../index/calendar';",
+				// Namespace and re-export forms reach every export, so they are refused too.
+				"import * as calendar from './calendar';",
+				"import * as methodology from '@/lib/index/methodology';",
+				"export * from './calendar';",
+				"export { settlementDay } from './calendar';",
+				"const calendar = await import('./calendar');",
 			];
 			for (const line of lookups) {
 				expect(await restrictedImports(filePath, `${line}\nexport const used = 1;\n`), line).toBe(

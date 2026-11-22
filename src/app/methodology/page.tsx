@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 
+import { dayName } from '@/components/day-name';
 import { DocBody } from '@/components/doc-body';
 import { Facts, Mono, Section, Table } from '@/components/ui';
 import { CURRENT_ADAPTER } from '@/lib/index/adapters';
@@ -65,7 +66,7 @@ export default function MethodologyPage() {
 						},
 						{
 							term: 'Settlement cutoff',
-							detail: `${settlement.cutoffMinutesAfterDayEnd} minutes after the UTC day ends`,
+							detail: `${settlement.cutoffMinutesAfterDayEnd} minutes after the ${dayName(parameters)} ends`,
 						},
 						{ term: 'Revisions', detail: settlement.revisions },
 					]}
