@@ -1,4 +1,7 @@
-/** Display formatting for the public pages. Every time shown on the site is UTC. */
+/**
+ * Display formatting for the public pages. Every time is shown in UTC, the canonical value; the
+ * viewer's local time is added beside it in the browser, from `formatLocal`/`formatLocalRange`.
+ */
 
 const INTEGER = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 const PERCENT = new Intl.NumberFormat('en-US', {
@@ -15,16 +18,40 @@ export function formatPercent(percent: number): string {
 	return `${PERCENT.format(percent)}%`;
 }
 
-/** `2026-11-19T14:05:31.000Z` → `2026-11-19 14:05:31 UTC`. */
-export function formatUtc(iso: string): string {
+function instant(iso: string): Date {
 	const date = new Date(iso);
 	if (Number.isNaN(date.getTime())) throw new Error(`not an instant: ${iso}`);
-	return `${date.toISOString().slice(0, 19).replace('T', ' ')} UTC`;
+	return date;
+}
+
+/** `2026-11-19T14:05:31.000Z` → `2026-11-19 14:05:31 UTC`. */
+export function formatUtc(iso: string): string {
+	return `${instant(iso).toISOString().slice(0, 19).replace('T', ' ')} UTC`;
 }
 
 /** `2026-11-19T14:00:00.000Z` → `14:00`. */
 export function formatUtcHour(iso: string): string {
-	const date = new Date(iso);
-	if (Number.isNaN(date.getTime())) throw new Error(`not an instant: ${iso}`);
-	return date.toISOString().slice(11, 16);
+	return instant(iso).toISOString().slice(11, 16);
+}
+
+/** Always with the date, since the local day often differs from the UTC day. */
+function localFormat(timeZone: string): Intl.DateTimeFormat {
+	return new Intl.DateTimeFormat('en-US', {
+		timeZone,
+		month: 'short',
+		day: 'numeric',
+		hour: 'numeric',
+		minute: '2-digit',
+		timeZoneName: 'short',
+	});
+}
+
+/** `2026-11-22T00:30:00Z` in America/New_York → `Nov 21, 7:30 PM EST`. */
+export function formatLocal(iso: string, timeZone: string): string {
+	return localFormat(timeZone).format(instant(iso));
+}
+
+/** Each end carries its own zone abbreviation, so a range across a DST change reads right. */
+export function formatLocalRange(startIso: string, endIso: string, timeZone: string): string {
+	return localFormat(timeZone).formatRange(instant(startIso), instant(endIso));
 }

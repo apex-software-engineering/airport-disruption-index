@@ -148,3 +148,20 @@ for (const { path: route, texts } of LEGAL_STATEMENTS) {
 		);
 	});
 }
+
+test.describe('local time', () => {
+	test.use({ timezoneId: 'America/New_York' });
+
+	test('/status shows the local time beside a UTC time', async ({ page }) => {
+		await page.goto('/status');
+		const asOf = page.locator('header').filter({ has: page.getByRole('heading', { level: 1 }) });
+		await expect(asOf).toContainText(/As of \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC/);
+		// Filled in after hydration, in the viewer's zone, e.g. "(Nov 21, 7:30 PM EST)".
+		await expect(asOf.locator('[data-local-time]')).toHaveText(
+			/^\s*\([A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}\s[AP]M E[SD]T\)$/,
+		);
+		await expect(page.locator('footer')).toContainText(
+			'Times are UTC; your local time is shown in parentheses.',
+		);
+	});
+});

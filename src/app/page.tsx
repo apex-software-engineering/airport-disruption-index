@@ -1,7 +1,7 @@
 import Link from 'next/link';
 
 import { describeCoverage } from '@/components/coverage';
-import { formatInteger, formatPercent, formatUtc } from '@/components/format';
+import { formatInteger, formatPercent } from '@/components/format';
 import { HourlyChart } from '@/components/hourly-chart';
 import {
 	hasValidRound,
@@ -11,7 +11,16 @@ import {
 	type Current,
 	type HistoryDay,
 } from '@/components/index-data';
-import { Figure, Notice, PageTitle, Section, StatusLabel, Table } from '@/components/ui';
+import {
+	Figure,
+	Instant,
+	Notice,
+	PageTitle,
+	Section,
+	StatusLabel,
+	Table,
+	UtcDay,
+} from '@/components/ui';
 import { methodologyFor, type MethodologyParameters } from '@/lib/index/methodology';
 import { site } from '@/lib/site';
 
@@ -59,7 +68,12 @@ function Today({ current }: { current: Current }) {
 	const { lastRound } = current;
 	const coverage = describeCoverage(current.coverage);
 	return (
-		<Section title={`Today, ${current.date} (UTC)`}>
+		<Section
+			title={
+				<>
+					Today, <UtcDay date={current.date} />
+				</>
+			}>
 			{hasValidRound(current) ? (
 				<div className='grid gap-6 sm:grid-cols-3'>
 					<Figure
@@ -86,13 +100,13 @@ function Today({ current }: { current: Current }) {
 			)}
 			<p className='text-ink-muted mt-6 text-sm'>
 				<StatusLabel tone='neutral'>Provisional.</StatusLabel> The running value can still change
-				until the day settles at {formatUtc(current.settlesAt)}.{' '}
+				until the day settles at <Instant at={current.settlesAt} />.{' '}
 				{lastRound === null ? (
 					'No round has been recorded today.'
 				) : (
 					<>
 						Last round <a href={lastRound.url}>{lastRound.roundId}</a>, fetched{' '}
-						{formatUtc(lastRound.fetchedAt)}, {lastRound.status}.
+						<Instant at={lastRound.fetchedAt} />, {lastRound.status}.
 					</>
 				)}{' '}
 				<Link href='/status'>Status</Link>

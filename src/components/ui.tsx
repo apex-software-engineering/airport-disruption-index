@@ -1,6 +1,11 @@
 /** Small presentational pieces shared by the public pages. */
 import type { ReactNode } from 'react';
 
+import { addDays, dayStartMs, type UtcDate } from '@/lib/index/time';
+
+import { formatUtc } from './format';
+import { LocalTime } from './local-time';
+
 export function PageTitle({ title, lede }: { title: string; lede?: ReactNode }) {
 	return (
 		<header className='mb-8'>
@@ -16,7 +21,7 @@ export function Section({
 	children,
 }: {
 	id?: string;
-	title: string;
+	title: ReactNode;
 	children: ReactNode;
 }) {
 	return (
@@ -49,6 +54,28 @@ export function Facts({ rows }: { rows: readonly { term: string; detail: ReactNo
 				</div>
 			))}
 		</dl>
+	);
+}
+
+/** A UTC instant, the canonical value, with the viewer's local time beside it. */
+export function Instant({ at }: { at: string }) {
+	return (
+		<>
+			<time dateTime={at}>{formatUtc(at)}</time>
+			<LocalTime at={at} />
+		</>
+	);
+}
+
+/** A UTC calendar day, with the stretch of the viewer's local time it covers. */
+export function UtcDay({ date }: { date: UtcDate }) {
+	const start = new Date(dayStartMs(date)).toISOString();
+	const end = new Date(dayStartMs(addDays(date, 1))).toISOString();
+	return (
+		<>
+			<time dateTime={date}>{date} UTC</time>
+			<LocalTime at={start} until={end} />
+		</>
 	);
 }
 

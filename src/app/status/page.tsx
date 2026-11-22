@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 
 import { describeCoverage } from '@/components/coverage';
-import { formatInteger, formatPercent, formatUtc } from '@/components/format';
+import { formatInteger, formatPercent } from '@/components/format';
 import {
 	hasValidRound,
 	type Current,
@@ -10,7 +10,16 @@ import {
 	RECENT_PRINT_DAYS,
 	SETTLED_TONE,
 } from '@/components/index-data';
-import { Facts, Mono, Notice, PageTitle, Section, StatusLabel } from '@/components/ui';
+import {
+	Facts,
+	Instant,
+	Mono,
+	Notice,
+	PageTitle,
+	Section,
+	StatusLabel,
+	UtcDay,
+} from '@/components/ui';
 import type { RoundReceipt } from '@/lib/index/schemas';
 import { roundUrl } from '@/server/views';
 
@@ -27,7 +36,14 @@ export default async function StatusPage() {
 
 	return (
 		<>
-			<PageTitle title='Status' lede={`As of ${formatUtc(current.asOf)}.`} />
+			<PageTitle
+				title='Status'
+				lede={
+					<>
+						As of <Instant at={current.asOf} />.
+					</>
+				}
+			/>
 
 			<Section title='Last round'>
 				{receipt === null ? (
@@ -37,7 +53,12 @@ export default async function StatusPage() {
 				)}
 			</Section>
 
-			<Section title={`Today, ${current.date} (UTC)`}>
+			<Section
+				title={
+					<>
+						Today, <UtcDay date={current.date} />
+					</>
+				}>
 				{current.foreignMethodologies.length > 0 && (
 					<Notice>
 						Some of today&apos;s rounds were collected under another methodology (
@@ -54,7 +75,8 @@ export default async function StatusPage() {
 							detail: (
 								<>
 									<StatusLabel tone='neutral'>{current.status}</StatusLabel>, settles at{' '}
-									{formatUtc(current.settlesAt)}, print due by {formatUtc(current.publishBy)}
+									<Instant at={current.settlesAt} />, print due by{' '}
+									<Instant at={current.publishBy} />
 								</>
 							),
 						},
@@ -151,7 +173,7 @@ function LastRound({ receipt }: { receipt: RoundReceipt }) {
 		<Facts
 			rows={[
 				{ term: 'Round id', detail: <Mono>{receipt.roundId}</Mono> },
-				{ term: 'Fetched', detail: formatUtc(receipt.fetchedAt) },
+				{ term: 'Fetched', detail: <Instant at={receipt.fetchedAt} /> },
 				{
 					term: 'Validity',
 					detail:

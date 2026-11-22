@@ -7,6 +7,7 @@
 import type { HourBucket } from '@/lib/index/schemas';
 
 import { formatInteger, formatUtcHour } from './format';
+import { LocalTime, LocalTimeText } from './local-time';
 import { Table } from './ui';
 
 const WIDTH = 720;
@@ -64,15 +65,23 @@ function segmentPath(x: number, y: number, width: number, height: number, rounde
 	].join(' ');
 }
 
-function tooltip(bar: Bar): string {
+/** A native tooltip: the hour in UTC with the viewer's local time, then its numbers. */
+function Tooltip({ bar }: { bar: Bar }) {
 	const { hour } = bar;
-	if (bar.upcoming) return `${bar.label} UTC: not yet ended`;
-	return [
-		`${bar.label} UTC`,
-		`ADI ${formatInteger(hour.airportMinutes)} airport-minutes`,
-		`ADI-GS ${formatInteger(hour.groundStopMinutes)}`,
-		`slots: ${hour.observed} observed, ${hour.carried} carried, ${hour.missing} missing, ${hour.pending} pending`,
-	].join('\n');
+	const lines = bar.upcoming
+		? ['not yet ended']
+		: [
+				`ADI ${formatInteger(hour.airportMinutes)} airport-minutes`,
+				`ADI-GS ${formatInteger(hour.groundStopMinutes)}`,
+				`slots: ${hour.observed} observed, ${hour.carried} carried, ${hour.missing} missing, ${hour.pending} pending`,
+			];
+	return (
+		<title>
+			{`${bar.label} UTC `}
+			<LocalTimeText at={hour.hourStart} />
+			{`\n${lines.join('\n')}`}
+		</title>
+	);
 }
 
 export function HourlyChart({ hourly }: { hourly: readonly HourBucket[] }) {
@@ -130,7 +139,7 @@ export function HourlyChart({ hourly }: { hourly: readonly HourBucket[] }) {
 					const totalTop = yOf(total);
 					return (
 						<g key={bar.hour.hourStart}>
-							<title>{tooltip(bar)}</title>
+							<Tooltip bar={bar} />
 							<rect
 								x={x}
 								y={PLOT.top}
@@ -173,7 +182,10 @@ export function HourlyChart({ hourly }: { hourly: readonly HourBucket[] }) {
 						caption='Airport-minutes and slot coverage per UTC hour'
 						head={['Hour (UTC)', 'ADI', 'ADI-GS', 'Observed', 'Carried', 'Missing', 'Pending']}
 						rows={bars.map((bar) => [
-							bar.label,
+							<>
+								{bar.label}
+								<LocalTime at={bar.hour.hourStart} />
+							</>,
 							formatInteger(bar.hour.airportMinutes),
 							formatInteger(bar.hour.groundStopMinutes),
 							bar.hour.observed,

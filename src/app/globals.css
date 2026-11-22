@@ -1,5 +1,8 @@
 @import 'tailwindcss';
 
+/* With scripting off, what only the browser can render (the viewer's local time) is left out. */
+@custom-variant noscript (@media (scripting: none));
+
 /*
  * Design tokens. Neutral ink on a near-white page, one accent for links, and the two chart
  * series from the validated reference palette (slot 1 blue, slot 2 orange). Dark mode uses the
