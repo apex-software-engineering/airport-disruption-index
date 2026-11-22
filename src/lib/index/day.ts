@@ -5,8 +5,9 @@
  */
 import { elapsedSlots, slotIndexIn, slotStartIn, type SettlementDay } from './calendar';
 import {
-	isUnder,
+	admits,
 	SLOT_MINUTES,
+	type Identity,
 	type Methodology,
 	type MethodologyParameters,
 	type Program,
@@ -43,6 +44,8 @@ export type DayAggregate = {
 	date: string;
 	/** The methodology the day is computed under. */
 	methodology: Methodology;
+	/** The identities whose rounds count; any other round is foreign. */
+	admitted: readonly Identity[];
 	slots: SlotState[];
 	value: number;
 	groundStopValue: number;
@@ -56,17 +59,20 @@ export type DayAggregate = {
 const SLOTS_PER_HOUR = 60 / SLOT_MINUTES;
 
 /**
- * Aggregates `rounds` for `day` as of `asOf`, under the day's release. Slots that have not ended
- * by `asOf` and have no valid round are `pending`; pass the end of the day (or later) to settle.
+ * Aggregates `rounds` for `day` as of `asOf`, under the day's release, counting only rounds that
+ * record one of the `admitted` identities: the day's own for a settlement day (strict, settlement
+ * rule 4), the indicative admission policy's for an indicative one. Slots that have not ended by
+ * `asOf` and have no valid round are `pending`; pass the end of the day (or later) to settle.
  */
 export function aggregateDay(
 	day: SettlementDay,
 	rounds: readonly RoundSummary[],
 	asOf: Date,
+	admitted: readonly Identity[],
 ): DayAggregate {
 	const { release: methodology, window } = day;
 	const parameters = methodology.parameters;
-	const { chosen, foreignMethodologies } = roundsBySlot(day, rounds);
+	const { chosen, foreignMethodologies } = roundsBySlot(window, rounds, admitted);
 	const slots = runLadder(chosen, elapsedSlots(window, asOf), parameters.carry.maxCarriedSlots);
 	const airports = parameters.panel.map((airport) => ({
 		airport,
@@ -107,6 +113,7 @@ export function aggregateDay(
 	return {
 		date: window.date,
 		methodology,
+		admitted,
 		slots,
 		value: total('airportMinutes'),
 		groundStopValue: total('groundStopMinutes'),
@@ -125,8 +132,9 @@ export function aggregateDay(
  * received, and it is tallied so the day can say why it does not settle.
  */
 function roundsBySlot(
-	{ release: methodology, window }: SettlementDay,
+	window: SettlementDay['window'],
 	rounds: readonly RoundSummary[],
+	admitted: readonly Identity[],
 ): { chosen: (RoundSummary | null)[]; foreignMethodologies: ForeignMethodology[] } {
 	const chosen: (RoundSummary | null)[] = Array.from({ length: window.slots }, () => null);
 	const filled = new Set<number>();
@@ -137,7 +145,7 @@ function roundsBySlot(
 		if (slot === null) throw new Error(`round ${round.roundId} is not on ${window.date}`);
 		if (filled.has(slot)) throw new Error(`two rounds for slot ${round.roundId}`);
 		filled.add(slot);
-		if (isUnder(methodology, round)) {
+		if (admits(admitted, round)) {
 			chosen[slot] = round;
 			continue;
 		}

@@ -3,10 +3,11 @@
  * per request so they are as fresh as the 5-minute collector; nothing here computes index values.
  */
 import type { RoundReceipt, SettledStatus } from '@/lib/index/schemas';
+import { FIRST_INDICATIVE_DAY } from '@/lib/index/indicative';
 import { addDays, utcDateOf } from '@/lib/index/time';
 import { readReceipt } from '@/server/archive';
 import { storeFromEnv } from '@/server/storage';
-import { currentView, historyView } from '@/server/views';
+import { currentView, historyView, indicativeHistoryView } from '@/server/views';
 
 export const RECENT_PRINT_DAYS = 14;
 
@@ -15,21 +16,39 @@ export type Provisional = Extract<Current, { status: 'provisional' }>;
 export type Transition = Extract<Current, { status: 'transition' }>;
 export type History = Awaited<ReturnType<typeof historyView>>;
 export type HistoryDay = History['days'][number];
+export type IndicativeHistory = Awaited<ReturnType<typeof indicativeHistoryView>>;
+export type IndicativeDay = IndicativeHistory['days'][number];
 
 /**
- * Today's running value, the history view of the last `RECENT_PRINT_DAYS` settled days, and the
- * same days newest first.
+ * Today's running value, the history view of the last `RECENT_PRINT_DAYS` settled days, the
+ * same days newest first, and the frozen indicative ET days over the same span, newest first.
  */
-export async function readSiteData(
-	now: Date,
-): Promise<{ current: Current; history: History; recent: HistoryDay[] }> {
+export async function readSiteData(now: Date): Promise<{
+	current: Current;
+	history: History;
+	recent: HistoryDay[];
+	indicative: IndicativeHistory;
+	recentIndicative: IndicativeDay[];
+}> {
 	const store = storeFromEnv();
 	const today = utcDateOf(now);
-	const [current, history] = await Promise.all([
+	const from = addDays(today, -RECENT_PRINT_DAYS);
+	const [current, history, indicative] = await Promise.all([
 		currentView(store, now),
-		historyView(store, addDays(today, -RECENT_PRINT_DAYS), addDays(today, -1)),
+		historyView(store, from, addDays(today, -1)),
+		indicativeHistoryView(
+			store,
+			from > FIRST_INDICATIVE_DAY ? from : FIRST_INDICATIVE_DAY,
+			addDays(today, -1),
+		),
 	]);
-	return { current, history, recent: [...history.days].reverse() };
+	return {
+		current,
+		history,
+		recent: [...history.days].reverse(),
+		indicative,
+		recentIndicative: [...indicative.days].reverse(),
+	};
 }
 
 /** The receipt behind `current.lastRound`, or null when no round has been recorded today. */

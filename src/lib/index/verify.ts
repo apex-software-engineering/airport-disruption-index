@@ -3,9 +3,11 @@
  * problems found; an empty list is a match. Nothing here throws on bad data: a receipt or print
  * that cannot even be rebuilt is a problem to report, not a crash.
  */
-import { settlementDay } from './calendar';
+import { dayWindow, settlementDay } from './calendar';
+import { indicativeAdmissionFor, indicativeReleaseFor } from './indicative';
 import { canonicalJson, sha256Hex, type Json } from './json';
-import { buildPrint, printHashMatches, type PrintRevision } from './print';
+import { methodologyOf } from './methodology';
+import { buildIndicativePrint, buildPrint, printHashMatches, type PrintRevision } from './print';
 import {
 	buildReceipt,
 	outcomeFromReceipt,
@@ -13,7 +15,7 @@ import {
 	recordedMethodology,
 	summarizeReceipt,
 } from './round';
-import type { DailyPrint, RoundReceipt } from './schemas';
+import type { DailyPrint, IndicativePrint, RoundReceipt } from './schemas';
 
 /** Rebuilds a receipt from its archived body and compares every field. */
 export function verifyRound(receipt: RoundReceipt, raw: Uint8Array | null): string[] {
@@ -43,6 +45,56 @@ export function verifyRound(receipt: RoundReceipt, raw: Uint8Array | null): stri
 
 /** Rebuilds a print from the receipts it lists and compares every field. */
 export function verifyPrint(print: DailyPrint, receipts: readonly RoundReceipt[]): string[] {
+	const problems = listedReceiptProblems(print, receipts);
+	const revision: PrintRevision =
+		print.correction === null
+			? { revision: 1 }
+			: { revision: print.revision, correction: print.correction };
+	return [
+		...problems,
+		...compareRebuilt(print, () =>
+			buildPrint(settlementDay(print.date), receipts.map(summarizeReceipt), revision),
+		),
+	];
+}
+
+/**
+ * Rebuilds an indicative print from the receipts it lists, under the release `indicativeReleaseFor`
+ * gives its date (never the one in effect), and compares every field.
+ */
+export function verifyIndicativePrint(
+	print: IndicativePrint,
+	receipts: readonly RoundReceipt[],
+): string[] {
+	const problems = listedReceiptProblems(print, receipts);
+	const recorded = methodologyOf(print.methodologyVersion, print.parameterHash);
+	const release = indicativeReleaseFor(print.date, { includeWithdrawn: true });
+	if (recorded === null || recorded !== release) {
+		return [
+			...problems,
+			`records ${print.methodologyVersion}, but ${print.date}'s indicative release is ${release?.parameters.version ?? 'none'}`,
+		];
+	}
+	const admission = indicativeAdmissionFor(release);
+	if (admission === null)
+		return [...problems, `${release.parameters.version} has no indicative series`];
+	return [
+		...problems,
+		...compareRebuilt(print, () =>
+			buildIndicativePrint(
+				{ release, window: dayWindow(release, print.date) },
+				receipts.map(summarizeReceipt),
+				admission,
+			),
+		),
+	];
+}
+
+/** The print's own hash, and the receipts it lists against those supplied, by id and hash. */
+function listedReceiptProblems(
+	print: DailyPrint | IndicativePrint,
+	receipts: readonly RoundReceipt[],
+): string[] {
 	const problems: string[] = [];
 	if (!printHashMatches(print)) problems.push('printHash does not match the print contents');
 	const listed = new Map(print.rounds.map((r) => [r.roundId, r.receiptHash]));
@@ -56,16 +108,7 @@ export function verifyPrint(print: DailyPrint, receipts: readonly RoundReceipt[]
 	if (receipts.length !== print.rounds.length) {
 		problems.push(`print lists ${print.rounds.length} rounds, ${receipts.length} supplied`);
 	}
-	const revision: PrintRevision =
-		print.correction === null
-			? { revision: 1 }
-			: { revision: print.revision, correction: print.correction };
-	return [
-		...problems,
-		...compareRebuilt(print, () =>
-			buildPrint(settlementDay(print.date), receipts.map(summarizeReceipt), revision),
-		),
-	];
+	return problems;
 }
 
 /**

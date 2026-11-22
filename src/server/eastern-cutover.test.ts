@@ -15,10 +15,9 @@ import { settlementReleaseFor } from '@/lib/index/methodology';
 import { buildPrint } from '@/lib/index/print';
 import { RELEASES } from '@/lib/index/releases';
 import { addDays } from '@/lib/index/time';
-import { feedFixtureText } from '@/test/fixtures';
+import { collectAt as collectStoreRound } from '@/test/collect';
 
 import { correctDay, readHistory, settleDay } from './archive';
-import { collectRound } from './collector';
 import { FileStore } from './storage';
 import { currentView, dayView } from './views';
 
@@ -59,25 +58,8 @@ function v1Release() {
 	return v1;
 }
 
-/** Collects one all-clear round fetched at `at`, as the deployed collector would. */
-function collectAt(at: string) {
-	const fetchedAt = new Date(at);
-	const stamp = new Date(fetchedAt.getTime() - 60_000)
-		.toUTCString()
-		.replace(/^(\w{3}), (\d{2}) (\w{3}) (\d{4}) (\S+) GMT$/, '$1 $3 $2 $5 $4 GMT');
-	const xml = feedFixtureText('synthetic-gs-gdp.xml').replace(
-		'Tue Nov 17 20:43:54 2026 GMT',
-		stamp,
-	);
-	return collectRound(
-		store,
-		async () => ({
-			fetchedAt,
-			outcome: { kind: 'response', httpStatus: 200, body: new TextEncoder().encode(xml) },
-		}),
-		() => new Date(fetchedAt.getTime() + 1000),
-	);
-}
+/** Collects one round fetched at `at` into this test's store. */
+const collectAt = (at: string) => collectStoreRound(store, at);
 
 describe('settlement labels across the cutover', () => {
 	it('gives every label up to E−1 to v1 and every label from E to v2, on every settlement path', () => {

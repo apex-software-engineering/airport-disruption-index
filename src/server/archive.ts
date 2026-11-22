@@ -5,19 +5,38 @@
  */
 import type { z } from 'zod';
 
-import { partitionsOf, settlementDay, type DayWindow } from '@/lib/index/calendar';
+import {
+	dayWindow,
+	partitionsOf,
+	settlementDay,
+	slotIndexIn,
+	type DayWindow,
+} from '@/lib/index/calendar';
+import {
+	indicativeAdmissionFor,
+	indicativeFreezesAt,
+	indicativeReleaseFor,
+} from '@/lib/index/indicative';
 import { sha256Hex } from '@/lib/index/json';
 import { isUnder, SLOT_MINUTES } from '@/lib/index/methodology';
-import { buildPrint, finalizePrint, historyEntryOf, printBody } from '@/lib/index/print';
+import {
+	buildIndicativePrint,
+	buildPrint,
+	finalizePrint,
+	historyEntryOf,
+	printBody,
+} from '@/lib/index/print';
 import { receiptHashMatches, summarizeReceipt } from '@/lib/index/round';
 import {
 	dayIndexSchema,
 	historyIndexSchema,
+	indicativePrintSchema,
 	printSchema,
 	receiptSchema,
 	type DailyPrint,
 	type DayIndex,
 	type HistoryIndex,
+	type IndicativePrint,
 	type RoundReceipt,
 	type RoundSummary,
 } from '@/lib/index/schemas';
@@ -44,6 +63,9 @@ const keys = {
 	dayIndex: (date: UtcDate) => `days/${date}.json`,
 	print: (date: UtcDate, revision: number) => `prints/${date}/r${revision}.json`,
 	history: () => 'prints/history.json',
+	/** Frozen, never revised: one object per indicative day, under the release it is computed in. */
+	indicative: (version: string, date: string) => `indicative/${version}/${date}.json`,
+	indicativeRoot: () => 'indicative/',
 };
 
 /** The UTC storage partition a round lives in. */
@@ -354,6 +376,32 @@ export async function readDayReceipts(store: ObjectStore, date: UtcDate): Promis
 	return readReceipts(store, date, await listReceiptIds(store, date), 'throw');
 }
 
+/**
+ * Every stored receipt whose slot is in `window`, across the window's UTC partitions, each
+ * verified against its own hash. Ids are filtered to the window before anything is read, so a
+ * receipt outside the window is never read and can never stop a run.
+ */
+export async function readWindowReceipts(
+	store: ObjectStore,
+	window: DayWindow,
+): Promise<RoundReceipt[]> {
+	const inWindow = (id: RoundId) => {
+		const parsed = parseRoundId(id);
+		return parsed !== null && slotIndexIn(window, parsed.slotStart) !== null;
+	};
+	const partitions = await Promise.all(
+		partitionsOf(window).map(async (partition) =>
+			readReceipts(
+				store,
+				partition,
+				(await listReceiptIds(store, partition)).filter(inWindow),
+				'throw',
+			),
+		),
+	);
+	return partitions.flat();
+}
+
 /** All revisions of a day's print, oldest first. Empty when the day has not settled. */
 export async function readPrints(store: ObjectStore, date: UtcDate): Promise<DailyPrint[]> {
 	const prints: DailyPrint[] = [];
@@ -504,4 +552,76 @@ async function updateHistory(store: ObjectStore, print: DailyPrint): Promise<voi
 			),
 		};
 	});
+}
+
+export type FreezeOutcome = { status: 'frozen' | 'already_frozen'; print: IndicativePrint };
+
+/**
+ * Builds and stores the indicative print of ET day `label` (design §4), once its admission has
+ * closed and admitted writes have drained: at or after the day's end plus the settlement cutoff.
+ * Written once and never revised; a second run returns the stored print.
+ */
+export async function freezeIndicativeDay(
+	store: ObjectStore,
+	label: string,
+	now: Date,
+): Promise<FreezeOutcome> {
+	const release = indicativeReleaseFor(label);
+	const admission = release === null ? null : indicativeAdmissionFor(release);
+	if (release === null || admission === null) throw new Error(`${label} has no indicative day`);
+	const window = dayWindow(release, label);
+	const freezesAt = indicativeFreezesAt(release, label);
+	if (now < freezesAt) {
+		throw new Error(`${label} (ET, indicative) freezes at ${freezesAt.toISOString()}`);
+	}
+	const key = keys.indicative(release.parameters.version, label);
+	const stored = await readJson(store, indicativePrintSchema, key);
+	if (stored !== null) return { status: 'already_frozen', print: stored };
+	const receipts = await readWindowReceipts(store, window);
+	const print = buildIndicativePrint(
+		{ release, window },
+		receipts.map(summarizeReceipt),
+		admission,
+	);
+	if ((await store.write(key, encode(print), JSON_TYPE, { kind: 'if-absent' })) === 'written') {
+		return { status: 'frozen', print };
+	}
+	// Another run froze it first. Its print may not be readable yet; give it a few reads.
+	for (let attempt = 0; attempt < MAX_CONDITIONAL_ATTEMPTS; attempt += 1) {
+		const winner = await readJson(store, indicativePrintSchema, key);
+		if (winner !== null) return { status: 'already_frozen', print: winner };
+	}
+	throw new Error(`indicative print ${label} exists but could not be read`);
+}
+
+/** The indicative print of ET day `label`, or null when it has none or it is not frozen yet. */
+export async function readIndicativePrint(
+	store: ObjectStore,
+	label: string,
+): Promise<IndicativePrint | null> {
+	const release = indicativeReleaseFor(label, { includeWithdrawn: true });
+	if (release === null) return null;
+	return readJson(store, indicativePrintSchema, keys.indicative(release.parameters.version, label));
+}
+
+const INDICATIVE_KEY = /^indicative\/([^/]+)\/(\d{4}-\d{2}-\d{2})\.json$/;
+
+/** Every frozen indicative print with a date in [from, to], oldest first. */
+export async function readIndicativePrints(
+	store: ObjectStore,
+	from: string,
+	to: string,
+): Promise<IndicativePrint[]> {
+	const listed = (await store.list(keys.indicativeRoot())).filter((key) => {
+		const date = INDICATIVE_KEY.exec(key)?.[2];
+		return date !== undefined && date >= from && date <= to;
+	});
+	const prints = await readInBatches(listed, async (key) => {
+		const print = await readJson(store, indicativePrintSchema, key);
+		if (print === null) throw new Error(`${key} is listed but could not be read`);
+		if (key !== keys.indicative(print.methodologyVersion, print.date))
+			throw new Error(`${key} holds the indicative print for ${print.date}`);
+		return print;
+	});
+	return prints.sort((x, y) => x.date.localeCompare(y.date));
 }

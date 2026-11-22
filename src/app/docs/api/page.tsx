@@ -40,7 +40,7 @@ async function requestOrigin(): Promise<string> {
 
 export default async function ApiDocsPage() {
 	const origin = await requestOrigin();
-	const { current, history, recent } = await readSiteData(new Date());
+	const { current, history, recent, indicative, recentIndicative } = await readSiteData(new Date());
 	const sampleDate = recent[0]?.date ?? history.to;
 	const [day, receipt] = await Promise.all([
 		dayView(storeFromEnv(), sampleDate),
@@ -114,6 +114,28 @@ export default async function ApiDocsPage() {
 				revision in <Mono>revisions</Mono>. Before the cutoff the response is 404 with{' '}
 				<Mono>status: &quot;unsettled&quot;</Mono>, <Mono>settlesAt</Mono> and{' '}
 				<Mono>publishBy</Mono>.
+			</Endpoint>
+
+			<Endpoint
+				path={`${API_BASE}/indicative/history?from=YYYY-MM-DD&to=YYYY-MM-DD`}
+				cache={CACHE.live}
+				curl={`curl -s '${origin}${API_BASE}/indicative/history?from=${indicative.from}&to=${indicative.to}'`}
+				sample={indicative}>
+				The indicative ET series, <Mono>{indicative.series.headline}</Mono>: methodology
+				v2.0.0&apos;s America/New_York day, computed from the same archived receipts. It is{' '}
+				<strong>never a settlement value</strong>; every entry carries{' '}
+				<Mono>standing: &quot;indicative&quot;</Mono> and its <Mono>day</Mono> zone and window.
+				Defaults to the 30 days ending yesterday; at most 366 days.
+			</Endpoint>
+
+			<Endpoint
+				path={`${API_BASE}/indicative/days/{date}`}
+				cache={`${CACHE.immutable} once frozen; HTTP 404 with status: "pending" and freezesAt until then`}
+				curl={`curl -s ${origin}${API_BASE}/indicative/days/${recentIndicative[0]?.date ?? '{date}'}`}
+				sample={null}
+				sampleNote='The frozen print of an ET day, in the adi.daily-print/2 schema: its window, freeze time and admission policy are hashed with it. A date from v2’s first day on returns 404 with see: the settlement print.'>
+				One indicative ET day. Reproduce it with{' '}
+				<Mono>npm run reproduce -- --indicative {'{date}'}</Mono>.
 			</Endpoint>
 
 			<Endpoint

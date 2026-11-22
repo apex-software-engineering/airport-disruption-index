@@ -3,20 +3,25 @@
  *
  *   npm run reproduce -- <roundId>      e.g. 2026-11-17T20:45Z
  *   npm run reproduce -- <YYYY-MM-DD>   a settled day: every round, then the print
+ *   npm run reproduce -- --indicative <YYYY-MM-DD>   an indicative ET day (never a settlement value)
  *   options: --base-url https://airports.apexsofteng.com
  *
  * Prints MATCH or MISMATCH. Exit codes: 0 match, 1 mismatch, 2 could not verify (unreachable,
  * not found, or published under a methodology or feed adapter this checkout does not include).
  */
-import { reproduce } from '@/lib/reproduce';
+import { reproduce, reproduceIndicative } from '@/lib/reproduce';
 
 import { getApi } from './lib/public-api';
 
 const DEFAULT_BASE_URL = 'https://airports.apexsofteng.com';
-const USAGE = 'usage: npm run reproduce -- <roundId|YYYY-MM-DD> [--base-url URL]';
+const USAGE = 'usage: npm run reproduce -- [--indicative] <roundId|YYYY-MM-DD> [--base-url URL]';
 
-function parseArgs(argv: string[]): { target: string; baseUrl: string } | null {
+function parseArgs(
+	argv: string[],
+): { target: string; baseUrl: string; indicative: boolean } | null {
 	const args = [...argv];
+	const indicative = args.includes('--indicative');
+	if (indicative) args.splice(args.indexOf('--indicative'), 1);
 	let baseUrl = DEFAULT_BASE_URL;
 	const flag = args.indexOf('--base-url');
 	if (flag >= 0) {
@@ -26,7 +31,7 @@ function parseArgs(argv: string[]): { target: string; baseUrl: string } | null {
 		args.splice(flag, 2);
 	}
 	const [target, ...rest] = args;
-	return target === undefined || rest.length > 0 ? null : { target, baseUrl };
+	return target === undefined || rest.length > 0 ? null : { target, baseUrl, indicative };
 }
 
 async function main(): Promise<number> {
@@ -36,7 +41,9 @@ async function main(): Promise<number> {
 		return 2;
 	}
 	try {
-		const outcome = await reproduce(args.target, args.baseUrl, getApi);
+		const outcome = args.indicative
+			? await reproduceIndicative(args.target, args.baseUrl, getApi)
+			: await reproduce(args.target, args.baseUrl, getApi);
 		for (const line of outcome.log) console.log(line);
 		switch (outcome.kind) {
 			case 'match':

@@ -1,15 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { settlementDay } from './calendar';
 
 import { DAY, invalidRound, validRange, validRound } from '@/test/rounds';
 
+import { settlementDay } from './calendar';
 import { aggregateDay, settledStatus } from './day';
+import { identityOf } from './methodology';
 import { METHODOLOGY_V1 } from './releases';
 import { dayStartMs } from './time';
 
 const END = new Date(dayStartMs(DAY) + 86_400_000);
+/** A settlement day admits exactly its own release. */
+const ADMITTED = [identityOf(settlementDay(DAY).release)];
 const settle = (rounds: Parameters<typeof aggregateDay>[1]) =>
-	aggregateDay(settlementDay(DAY), rounds, END);
+	aggregateDay(settlementDay(DAY), rounds, END, ADMITTED);
 
 describe('airport-minutes', () => {
 	it('counts 5 minutes per active panel airport per slot, capped at 1440 per airport', () => {
@@ -38,7 +41,7 @@ describe('airport-minutes', () => {
 	});
 
 	it('reaches the 28,800 maximum with all 20 airports active all day', () => {
-		const all = aggregateDay(settlementDay(DAY), [], END).airports.map((a) => ({
+		const all = aggregateDay(settlementDay(DAY), [], END, ADMITTED).airports.map((a) => ({
 			airport: a.airport,
 			gs: true,
 		}));
@@ -117,7 +120,7 @@ describe('carry/suspend ladder', () => {
 
 	it('leaves slots that have not ended as pending, not missing', () => {
 		const asOf = new Date(dayStartMs(DAY) + 20 * 300_000 + 30_000); // 30 s into slot 20
-		const day = aggregateDay(settlementDay(DAY), [validRound(17, atl)], asOf);
+		const day = aggregateDay(settlementDay(DAY), [validRound(17, atl)], asOf, ADMITTED);
 		expect(day.slots.slice(17, 22).map((s) => s.status)).toEqual([
 			'observed',
 			'carried',
@@ -130,6 +133,7 @@ describe('carry/suspend ladder', () => {
 			settlementDay(DAY),
 			[validRound(17, atl), validRound(20, atl, 10)],
 			asOf,
+			ADMITTED,
 		);
 		expect(observedNow.slots[20]).toMatchObject({ status: 'observed' });
 		expect(observedNow.value).toBe(20);

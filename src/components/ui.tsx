@@ -86,6 +86,29 @@ export function UtcDay({ date, children = date }: { date: UtcDate; children?: Re
 	);
 }
 
+/**
+ * A day in a zoned release, labelled with its zone ("2026-11-20 (ET)" by default), with the
+ * stretch of the viewer's local time its window covers on the line below.
+ */
+export function ZonedDay({
+	date,
+	window,
+	zone,
+	children = `${date} (${zone})`,
+}: {
+	date: string;
+	window: { start: string; end: string };
+	zone: string;
+	children?: ReactNode;
+}) {
+	return (
+		<>
+			<time dateTime={date}>{children}</time>
+			<LocalTime at={window.start} until={window.end} />
+		</>
+	);
+}
+
 export function Mono({ children }: { children: ReactNode }) {
 	return <code className='font-mono text-[0.85em] break-words'>{children}</code>;
 }

@@ -14,13 +14,19 @@ import { DEPLOYED_COMMIT_HEADER, parseDeployedCommit } from '@/lib/deployment';
 import { adapterOf } from '@/lib/index/adapters';
 import { methodologyOf } from '@/lib/index/methodology';
 import {
+	indicativePrintSchema,
 	printSchema,
 	receiptSchema,
 	type DailyPrint,
 	type RoundReceipt,
 } from '@/lib/index/schemas';
 import { parseRoundId, parseUtcDate, type UtcDate } from '@/lib/index/time';
-import { dayResponseProblems, verifyPrint, verifyRound } from '@/lib/index/verify';
+import {
+	dayResponseProblems,
+	verifyIndicativePrint,
+	verifyPrint,
+	verifyRound,
+} from '@/lib/index/verify';
 
 const CONCURRENCY = 8;
 
@@ -62,6 +68,46 @@ export async function reproduce(
 		throw new CannotVerify(
 			`${target} is neither a round id (2026-11-17T20:45Z) nor a date (2026-11-17)`,
 		);
+	});
+}
+
+/**
+ * Reproduces the indicative ET print of `date` (design §4) from the public API: every round it
+ * lists, then the print, rebuilt under the release its date gives the indicative series.
+ */
+export async function reproduceIndicative(
+	date: UtcDate,
+	baseUrl: string,
+	get: Get,
+): Promise<ReproduceOutcome> {
+	const log: string[] = [];
+	const api = new PublicApi(baseUrl, get);
+	return outcomeOf(log, async () => {
+		if (parseUtcDate(date) === null) throw new CannotVerify(`${date} is not a date (2026-11-20)`);
+		const { print } = await api.getRecorded(
+			`/api/v1/indicative/days/${date}`,
+			z.object({
+				standing: z.literal('indicative'),
+				date: z.literal(date),
+				print: indicativePrintSchema,
+			}),
+			`indicative day ${date}`,
+			(body) => z.object({ print: recordedSchema }).safeParse(body).data?.print,
+		);
+		const results = await fetchRounds(
+			api,
+			print.rounds.map((r) => r.roundId),
+		);
+		log.push(
+			`indicative ${print.date} (ET): ${print.result.status}, ${print.rounds.length} rounds, printHash ${print.printHash}`,
+		);
+		return [
+			...results.flatMap((r) => r.problems),
+			...verifyIndicativePrint(
+				print,
+				results.map((r) => r.receipt),
+			),
+		];
 	});
 }
 
@@ -151,10 +197,18 @@ class PublicApi {
 		return response;
 	}
 
-	/** A published object, after checking this checkout knows the versions it records. */
-	async getRecorded<T>(path: string, schema: z.ZodType<T>, what: string): Promise<T> {
+	/**
+	 * A published object, after checking this checkout knows the versions it records. `recordOf`
+	 * finds them in the body when they are not at its top level.
+	 */
+	async getRecorded<T>(
+		path: string,
+		schema: z.ZodType<T>,
+		what: string,
+		recordOf: (body: unknown) => unknown = (body) => body,
+	): Promise<T> {
 		const body: unknown = await (await this.fetch(path)).json();
-		const recorded = recordedSchema.safeParse(body);
+		const recorded = recordedSchema.safeParse(recordOf(body));
 		if (recorded.success) requireKnown(recorded.data, what);
 		const parsed = schema.safeParse(body);
 		if (!parsed.success)
@@ -198,15 +252,24 @@ async function reproduceRound(api: PublicApi, id: string, log: string[]): Promis
 	return problems;
 }
 
-async function reproduceDay(api: PublicApi, day: SettledDay, log: string[]): Promise<string[]> {
-	const { print } = day;
-	const ids = print.rounds.map((r) => r.roundId);
+/** Every round in `ids`, fetched and verified CONCURRENCY at a time, in order. */
+async function fetchRounds(
+	api: PublicApi,
+	ids: readonly string[],
+): Promise<{ receipt: RoundReceipt; problems: string[] }[]> {
 	const results: { receipt: RoundReceipt; problems: string[] }[] = [];
 	for (let i = 0; i < ids.length; i += CONCURRENCY) {
 		results.push(
 			...(await Promise.all(ids.slice(i, i + CONCURRENCY).map((id) => fetchRound(api, id)))),
 		);
 	}
+	return results;
+}
+
+async function reproduceDay(api: PublicApi, day: SettledDay, log: string[]): Promise<string[]> {
+	const { print } = day;
+	const ids = print.rounds.map((r) => r.roundId);
+	const results = await fetchRounds(api, ids);
 	log.push(
 		`print ${print.date} r${print.revision}: ${print.result.status}, ${ids.length} rounds, printHash ${print.printHash}`,
 	);

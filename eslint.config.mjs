@@ -25,6 +25,16 @@ const LOOKUPS = [
 		importNames: ['collectingRelease', 'dayAt', 'settlementDay'],
 		message: INJECTED,
 	},
+	{
+		group: ['**/indicative'],
+		importNames: [
+			'dueIndicativeDays',
+			'indicativeAdmissionFor',
+			'indicativeReleaseFor',
+			'indicativeReleaseIn',
+		],
+		message: INJECTED,
+	},
 ];
 
 export default defineConfig([

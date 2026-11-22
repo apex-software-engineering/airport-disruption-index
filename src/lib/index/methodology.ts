@@ -135,13 +135,26 @@ export function methodologyOf(version: string, parameterHash: string): Methodolo
 	);
 }
 
-/** Whether an object recording `recorded` was produced under `methodology`. */
-export function isUnder(
-	methodology: Methodology,
-	recorded: { methodologyVersion: string; parameterHash: string },
-): boolean {
-	return (
-		recorded.methodologyVersion === methodology.parameters.version &&
-		recorded.parameterHash === methodology.parameterHash
+/** The version and parameter hash a receipt or print records. */
+export type Identity = { readonly methodologyVersion: string; readonly parameterHash: string };
+
+export function identityOf(methodology: Methodology): Identity {
+	return {
+		methodologyVersion: methodology.parameters.version,
+		parameterHash: methodology.parameterHash,
+	};
+}
+
+/** Whether `recorded` is exactly one of the `admitted` identities. */
+export function admits(admitted: readonly Identity[], recorded: Identity): boolean {
+	return admitted.some(
+		(identity) =>
+			identity.methodologyVersion === recorded.methodologyVersion &&
+			identity.parameterHash === recorded.parameterHash,
 	);
+}
+
+/** Whether an object recording `recorded` was produced under `methodology`. */
+export function isUnder(methodology: Methodology, recorded: Identity): boolean {
+	return admits([identityOf(methodology)], recorded);
 }

@@ -1,7 +1,7 @@
 import Link from 'next/link';
 
 import { describeCoverage } from '@/components/coverage';
-import { dayName } from '@/components/day-name';
+import { dayName, ZONE_LABEL } from '@/components/day-name';
 import { formatInteger, formatPercent } from '@/components/format';
 import { HourlyChart } from '@/components/hourly-chart';
 import {
@@ -10,6 +10,7 @@ import {
 	RECENT_PRINT_DAYS,
 	SETTLED_TONE,
 	type HistoryDay,
+	type IndicativeDay,
 	type Provisional,
 } from '@/components/index-data';
 import { TransitionNotice } from '@/components/transition';
@@ -22,15 +23,17 @@ import {
 	StatusLabel,
 	Table,
 	UtcDay,
+	ZonedDay,
 } from '@/components/ui';
 import { collectingRelease } from '@/lib/index/calendar';
+import { INDICATIVE_SERIES } from '@/lib/index/indicative';
 import type { MethodologyParameters } from '@/lib/index/methodology';
 import { site } from '@/lib/site';
 
 export const dynamic = 'force-dynamic';
 
 export default async function HomePage() {
-	const { current, recent } = await readSiteData(new Date());
+	const { current, recent, recentIndicative } = await readSiteData(new Date());
 	// The methodology in effect at the same instant as the running value.
 	const parameters = collectingRelease(new Date(current.asOf)).parameters;
 	return (
@@ -66,6 +69,7 @@ export default async function HomePage() {
 				</>
 			) : null}
 			<RecentPrints days={recent} parameters={parameters} />
+			<IndicativePrints days={recentIndicative} />
 			<WhatItMeasures parameters={parameters} />
 		</>
 	);
@@ -150,6 +154,57 @@ function RecentPrints({
 						day.groundStopValue === null ? '—' : formatInteger(day.groundStopValue),
 						formatPercent(day.coveragePercent),
 						day.revision,
+					])}
+				/>
+			)}
+		</Section>
+	);
+}
+
+/**
+ * The indicative ET series (design §4): labelled with its zone and its standing on every row and
+ * heading, so no value here can be read as a settlement value.
+ */
+function IndicativePrints({ days }: { days: readonly IndicativeDay[] }) {
+	return (
+		<Section
+			title={
+				<>
+					{INDICATIVE_SERIES.headline} <StatusLabel tone='neutral'>Indicative</StatusLabel>
+				</>
+			}>
+			<p className='text-ink-muted mb-4 max-w-2xl text-sm'>
+				Methodology v2.0.0&apos;s America/New_York day, computed from the same archived receipts.{' '}
+				<strong className='text-ink'>Indicative: never a settlement value.</strong> Each day is
+				frozen once, 30 minutes after it ends, and never revised.{' '}
+				<a href='/api/v1/indicative/history'>/api/v1/indicative/history</a>
+			</p>
+			{days.length === 0 ? (
+				<Notice>No indicative day has been frozen in the last {RECENT_PRINT_DAYS} days.</Notice>
+			) : (
+				<Table
+					caption={`${INDICATIVE_SERIES.headline}, newest first`}
+					head={[
+						'Date (ET)',
+						'Status',
+						INDICATIVE_SERIES.headline,
+						INDICATIVE_SERIES.groundStopOnly,
+						'Coverage',
+					]}
+					rows={days.map((day) => [
+						<div key='date' className='w-80'>
+							<ZonedDay date={day.date} window={day.window} zone={ZONE_LABEL[day.day]}>
+								<a href={day.url}>
+									{day.date} ({ZONE_LABEL[day.day]})
+								</a>
+							</ZonedDay>
+						</div>,
+						<StatusLabel key='status' tone={SETTLED_TONE[day.status]}>
+							{day.status}, indicative
+						</StatusLabel>,
+						day.value === null ? '—' : formatInteger(day.value),
+						day.groundStopValue === null ? '—' : formatInteger(day.groundStopValue),
+						formatPercent(day.coveragePercent),
 					])}
 				/>
 			)}
