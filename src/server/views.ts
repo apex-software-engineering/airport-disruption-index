@@ -27,6 +27,7 @@ import {
 import type {
 	Correction,
 	DailyPrint,
+	HistoryIndex,
 	IndicativePrint,
 	RoundReceipt,
 	RoundSummary,
@@ -193,7 +194,11 @@ export async function dayView(store: ObjectStore, date: UtcDate): Promise<DayVie
 }
 
 export async function historyView(store: ObjectStore, from: UtcDate, to: UtcDate) {
-	const { days } = await readHistory(store);
+	return historyWindow(await readHistory(store), from, to);
+}
+
+/** The history view of [from, to] from an index already read, so one read serves every window. */
+export function historyWindow({ days }: HistoryIndex, from: UtcDate, to: UtcDate) {
 	return {
 		from,
 		to,

@@ -8,7 +8,6 @@ import { IndexChart } from '@/components/index-chart';
 import {
 	CHART_ENDPOINTS,
 	hasValidRound,
-	readChartHistory,
 	readSiteData,
 	RECENT_PRINT_DAYS,
 	SETTLED_TONE,
@@ -36,11 +35,7 @@ import { site } from '@/lib/site';
 export const dynamic = 'force-dynamic';
 
 export default async function HomePage() {
-	const now = new Date();
-	const [{ current, recent, recentIndicative }, chartHistory] = await Promise.all([
-		readSiteData(now),
-		readChartHistory(now),
-	]);
+	const { current, recent, chartHistory, recentIndicative } = await readSiteData(new Date());
 	// The methodology in effect at the same instant as the running value.
 	const parameters = collectingRelease(new Date(current.asOf)).parameters;
 	return (
