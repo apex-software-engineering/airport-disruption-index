@@ -1,6 +1,6 @@
-import { methodologyFor } from '@/lib/index/methodology';
+import { settlementDay, slotStartIn } from '@/lib/index/calendar';
 import type { Correction, RoundSummary } from '@/lib/index/schemas';
-import { slotStartOf, type UtcDate } from '@/lib/index/time';
+import type { UtcDate } from '@/lib/index/time';
 
 export const DAY = '2026-11-17';
 
@@ -18,7 +18,7 @@ export function validRound(
 ): RoundSummary {
 	return summary(day, slot, delaySeconds, {
 		status: 'valid',
-		feedUpdateTime: slotStartOf(day, slot).toISOString(),
+		feedUpdateTime: slotStartIn(settlementDay(day).window, slot).toISOString(),
 		active: active.map((a) => ({
 			airport: a.airport,
 			groundStop: a.gs ?? false,
@@ -38,8 +38,9 @@ function summary(
 	delaySeconds: number,
 	observation: RoundSummary['observation'],
 ): RoundSummary {
-	const start = slotStartOf(day, slot);
-	const { parameters, parameterHash } = methodologyFor(day);
+	const { release, window } = settlementDay(day);
+	const start = slotStartIn(window, slot);
+	const { parameters, parameterHash } = release;
 	return {
 		roundId: `${start.toISOString().slice(0, 16)}Z`,
 		fetchedAt: new Date(start.getTime() + delaySeconds * 1000).toISOString(),

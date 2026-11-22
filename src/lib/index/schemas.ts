@@ -6,7 +6,8 @@ import { z } from 'zod';
 
 import { adapterOf } from './adapters';
 import { methodologyOf } from './methodology';
-import { correctionDeadline, parseRoundId, parseUtcDate } from './time';
+import { correctionDeadline } from './calendar';
+import { parseRoundId, parseUtcDate } from './time';
 
 const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
 const instant = z.iso.datetime();
@@ -239,7 +240,7 @@ export type Correction = z.infer<typeof correctionSchema>;
 
 /** A correction is issued after its day settles, and after the window only with a justification. */
 function checkCorrectionTiming(
-	print: { date: string; settlesAt: string; correction: Correction | null },
+	print: { settlesAt: string; correction: Correction | null },
 	ctx: z.RefinementCtx,
 ): void {
 	const { correction } = print;
@@ -252,7 +253,7 @@ function checkCorrectionTiming(
 			path: ['correction', 'issuedAt'],
 		});
 	}
-	const deadline = correctionDeadline(print.date);
+	const deadline = correctionDeadline(new Date(print.settlesAt));
 	if (issuedAt >= deadline !== (correction.windowOverride !== null)) {
 		ctx.addIssue({
 			code: 'custom',

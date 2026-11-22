@@ -1,12 +1,12 @@
 /**
- * The index math for one UTC day: pick one round per slot, run the carry/suspend ladder, and
- * count airport-minutes. Pure; the same function serves the running value and the settlement.
+ * The index math for one settlement day: pick one round per slot, run the carry/suspend ladder,
+ * and count airport-minutes. Pure; the same function serves the running value and the settlement.
+ * The day and its release are resolved by the caller and passed in; nothing here looks them up.
  */
+import { elapsedSlots, slotIndexIn, slotStartIn, type SettlementDay } from './calendar';
 import {
 	isUnder,
-	methodologyFor,
 	SLOT_MINUTES,
-	SLOTS_PER_DAY,
 	type Methodology,
 	type MethodologyParameters,
 	type Program,
@@ -19,7 +19,7 @@ import type {
 	RoundSummary,
 	SettledStatus,
 } from './schemas';
-import { elapsedSlots, parseRoundId, slotStartOf, type RoundId, type UtcDate } from './time';
+import { parseRoundId, type RoundId } from './time';
 
 export type SlotState =
 	| { status: 'observed'; roundId: RoundId; active: readonly AirportState[] }
@@ -40,8 +40,8 @@ export type ForeignMethodology = {
 };
 
 export type DayAggregate = {
-	date: UtcDate;
-	/** The methodology in effect on `date`, which every number here is computed under. */
+	date: string;
+	/** The methodology the day is computed under. */
 	methodology: Methodology;
 	slots: SlotState[];
 	value: number;
@@ -56,26 +56,25 @@ export type DayAggregate = {
 const SLOTS_PER_HOUR = 60 / SLOT_MINUTES;
 
 /**
- * Aggregates `rounds` for `date` as of `asOf`, under the methodology in effect on `date`. Slots
- * that have not ended by `asOf` and have no valid round are `pending`; pass the end of the day
- * (or later) to settle.
+ * Aggregates `rounds` for `day` as of `asOf`, under the day's release. Slots that have not ended
+ * by `asOf` and have no valid round are `pending`; pass the end of the day (or later) to settle.
  */
 export function aggregateDay(
-	date: UtcDate,
+	day: SettlementDay,
 	rounds: readonly RoundSummary[],
 	asOf: Date,
 ): DayAggregate {
-	const methodology = methodologyFor(date);
+	const { release: methodology, window } = day;
 	const parameters = methodology.parameters;
-	const { chosen, foreignMethodologies } = roundsBySlot(date, rounds, methodology);
-	const slots = runLadder(chosen, elapsedSlots(date, asOf), parameters.carry.maxCarriedSlots);
+	const { chosen, foreignMethodologies } = roundsBySlot(day, rounds);
+	const slots = runLadder(chosen, elapsedSlots(window, asOf), parameters.carry.maxCarriedSlots);
 	const airports = parameters.panel.map((airport) => ({
 		airport,
 		airportMinutes: 0,
 		groundStopMinutes: 0,
 	}));
-	const hourly: HourBucket[] = Array.from({ length: 24 }, (_, hour) => ({
-		hourStart: slotStartOf(date, hour * SLOTS_PER_HOUR).toISOString(),
+	const hourly: HourBucket[] = Array.from({ length: window.slots / SLOTS_PER_HOUR }, (_, hour) => ({
+		hourStart: slotStartIn(window, hour * SLOTS_PER_HOUR).toISOString(),
 		airportMinutes: 0,
 		groundStopMinutes: 0,
 		observed: 0,
@@ -106,7 +105,7 @@ export function aggregateDay(
 	const total = (key: 'airportMinutes' | 'groundStopMinutes') =>
 		airports.reduce((sum, row) => sum + row[key], 0);
 	return {
-		date,
+		date: window.date,
 		methodology,
 		slots,
 		value: total('airportMinutes'),
@@ -126,21 +125,20 @@ export function aggregateDay(
  * received, and it is tallied so the day can say why it does not settle.
  */
 function roundsBySlot(
-	date: UtcDate,
+	{ release: methodology, window }: SettlementDay,
 	rounds: readonly RoundSummary[],
-	methodology: Methodology,
 ): { chosen: (RoundSummary | null)[]; foreignMethodologies: ForeignMethodology[] } {
-	const chosen: (RoundSummary | null)[] = Array.from({ length: SLOTS_PER_DAY }, () => null);
+	const chosen: (RoundSummary | null)[] = Array.from({ length: window.slots }, () => null);
 	const filled = new Set<number>();
 	const foreign = new Map<string, ForeignMethodology>();
 	for (const round of rounds) {
 		const id = parseRoundId(round.roundId);
-		if (id === null || id.date !== date)
-			throw new Error(`round ${round.roundId} is not on ${date}`);
-		if (filled.has(id.slotIndex)) throw new Error(`two rounds for slot ${round.roundId}`);
-		filled.add(id.slotIndex);
+		const slot = id === null ? null : slotIndexIn(window, id.slotStart);
+		if (slot === null) throw new Error(`round ${round.roundId} is not on ${window.date}`);
+		if (filled.has(slot)) throw new Error(`two rounds for slot ${round.roundId}`);
+		filled.add(slot);
 		if (isUnder(methodology, round)) {
-			chosen[id.slotIndex] = round;
+			chosen[slot] = round;
 			continue;
 		}
 		const { methodologyVersion, parameterHash } = round;
@@ -159,7 +157,7 @@ function roundsBySlot(
 /**
  * The carry/suspend ladder. A slot with a valid round is `observed`. A slot without one that
  * has ended carries the last observed state for at most `maxCarriedSlots` slots, then is
- * `missing` and contributes nothing. The ladder restarts every UTC day.
+ * `missing` and contributes nothing. The ladder restarts every settlement day.
  */
 function runLadder(
 	chosen: readonly (RoundSummary | null)[],
@@ -196,23 +194,26 @@ function coverageOf(slots: readonly SlotState[]): Coverage {
 	const countOf = (status: SlotState['status']) => slots.filter((s) => s.status === status).length;
 	const validRounds = countOf('observed');
 	return {
-		slotsPerDay: SLOTS_PER_DAY,
+		slotsPerDay: slots.length,
 		validRounds,
 		carriedSlots: countOf('carried'),
 		missingSlots: countOf('missing'),
 		pendingSlots: countOf('pending'),
-		percent: Math.round((validRounds / SLOTS_PER_DAY) * 10_000) / 100,
+		percent: Math.round((validRounds / slots.length) * 10_000) / 100,
 	};
 }
 
-/** Day status from coverage, compared in integers so no float rounding can move a boundary. */
+/**
+ * Day status from coverage, a percentage of the day's own slots. Compared in integers
+ * (`valid × 100 ≥ percent × slots`), so no float rounding can move a boundary.
+ */
 export function settledStatus(
-	validRounds: number,
+	{ validRounds, slotsPerDay }: Pick<Coverage, 'validRounds' | 'slotsPerDay'>,
 	coverage: MethodologyParameters['coverage'],
 ): SettledStatus {
 	const { finalMinPercent, degradedMinPercent } = coverage;
 	const scaled = validRounds * 100;
-	if (scaled >= finalMinPercent * SLOTS_PER_DAY) return 'final';
-	if (scaled >= degradedMinPercent * SLOTS_PER_DAY) return 'degraded';
+	if (scaled >= finalMinPercent * slotsPerDay) return 'final';
+	if (scaled >= degradedMinPercent * slotsPerDay) return 'degraded';
 	return 'suspended';
 }

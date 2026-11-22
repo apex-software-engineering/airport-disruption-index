@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import { canonicalJson, hashJson, sha256Hex } from './json';
-import { methodologyFor, methodologyOf, SLOT_MINUTES, SLOTS_PER_DAY } from './methodology';
-import { METHODOLOGY_V1, RELEASES } from './releases';
+import {
+	activeReleases,
+	isActive,
+	methodologyOf,
+	settlementReleaseFor,
+	SLOT_MINUTES,
+} from './methodology';
+import { METHODOLOGY_V1, METHODOLOGY_V2, release, RELEASES } from './releases';
+import { addDays } from './time';
 
 /**
  * Released parameter hashes. A change to any methodology parameter changes the hash and fails
@@ -10,6 +17,7 @@ import { METHODOLOGY_V1, RELEASES } from './releases';
  */
 const RELEASED_PARAMETER_HASHES: Record<string, string> = {
 	'1.0.0': 'e9ef6e94b84699bffefa850b78138355bb427563f6ae42a28567e0ec4303c363',
+	'2.0.0': 'a9fa10889b35417090d909d4f60d9cb9b429a9703d1b626c1c0a95182b7a76e6',
 };
 
 describe('methodology registry', () => {
@@ -32,11 +40,38 @@ describe('methodology registry', () => {
 
 	it('selects the release in effect on a day, and only a known release by version and hash', () => {
 		const [v1] = RELEASES;
-		expect(methodologyFor('2026-11-20')).toBe(v1);
-		expect(() => methodologyFor('2026-11-16')).toThrow(/no methodology/);
+		expect(settlementReleaseFor('2026-11-20')).toBe(v1);
+		expect(() => settlementReleaseFor('2026-11-16')).toThrow(/no methodology/);
 		expect(methodologyOf('1.0.0', RELEASED_PARAMETER_HASHES['1.0.0'] ?? '')).toBe(v1);
 		expect(methodologyOf('1.0.0', 'a'.repeat(64))).toBeNull();
 		expect(methodologyOf('9.9.9', RELEASED_PARAMETER_HASHES['1.0.0'] ?? '')).toBeNull();
+	});
+
+	it('tiles the days of the active releases: each ends the day before the next starts', () => {
+		const active = activeReleases();
+		active.forEach((current, index) => {
+			const next = active[index + 1];
+			if (next === undefined) expect(current.effectiveUntil).toBeNull();
+			else expect(current.effectiveUntil).toBe(addDays(next.effectiveFrom, -1));
+		});
+	});
+
+	it('activates a later release only once announced, and never once withdrawn', () => {
+		const announced = { announcedAt: '2026-11-25T15:00:00.000Z' };
+		expect(isActive(release(METHODOLOGY_V2, '2027-01-01'))).toBe(false);
+		expect(isActive(release(METHODOLOGY_V2, '2027-01-01', announced))).toBe(true);
+		expect(isActive(release(METHODOLOGY_V2, '2027-01-01', { ...announced, withdrawn: true }))).toBe(
+			false,
+		);
+		expect(RELEASES.map(isActive)).toEqual([true, false]);
+	});
+
+	it('gives v2 exactly v1’s parameters but the version and the America/New_York day', () => {
+		const { day: v1Day, slotsPerDay, version: v1Version, ...v1Rest } = METHODOLOGY_V1;
+		const { day, version, ...v2Rest } = METHODOLOGY_V2;
+		expect([v1Day, slotsPerDay, v1Version]).toEqual(['utc', 288, '1.0.0']);
+		expect([day, version]).toEqual([{ timeZone: 'America/New_York' }, '2.0.0']);
+		expect(v2Rest).toEqual(v1Rest);
 	});
 
 	it('gives v1 a panel of 20 distinct 3-letter codes', () => {
@@ -46,7 +81,7 @@ describe('methodology registry', () => {
 	});
 
 	it('has internally consistent slot parameters', () => {
-		expect(SLOTS_PER_DAY * SLOT_MINUTES).toBe(1440);
+		expect(1440 % SLOT_MINUTES).toBe(0);
 		for (const { parameters } of RELEASES) {
 			expect(parameters.minutesPerActiveSlot).toBe(SLOT_MINUTES);
 		}

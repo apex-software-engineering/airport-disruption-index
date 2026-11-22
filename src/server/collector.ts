@@ -1,8 +1,7 @@
 /** One collection round: poll the feed once, build the receipt, archive it. */
 import { CURRENT_ADAPTER } from '@/lib/index/adapters';
-import { methodologyFor } from '@/lib/index/methodology';
 import { buildReceipt, type FetchOutcome } from '@/lib/index/round';
-import { utcDateOf } from '@/lib/index/time';
+import { collectingRelease } from '@/lib/index/calendar';
 
 import { recordRound, type RecordResult } from './archive';
 import type { ObjectStore } from './storage';
@@ -40,12 +39,12 @@ export async function collectRound(
 	clock: () => Date = () => new Date(),
 ): Promise<RecordResult> {
 	const { fetchedAt, outcome } = await fetchFeed();
-	// A round is collected under the methodology in effect on its own UTC day.
+	// A round is collected under the release in effect when it was fetched.
 	const receipt = buildReceipt({
 		fetchedAt,
 		sourceUrl: CURRENT_ADAPTER.url,
 		outcome,
-		methodology: methodologyFor(utcDateOf(fetchedAt)),
+		methodology: collectingRelease(fetchedAt),
 		adapterVersion: CURRENT_ADAPTER.version,
 	});
 	const body = outcome.kind === 'response' ? outcome.body : null;

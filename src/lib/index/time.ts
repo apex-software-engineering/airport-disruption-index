@@ -1,9 +1,9 @@
-import { SETTLEMENT_CUTOFF_MINUTES, SLOT_MINUTES, SLOTS_PER_DAY } from './methodology';
+import { SLOT_MINUTES } from './methodology';
 
 const SLOT_MS = SLOT_MINUTES * 60_000;
 const DAY_MS = 86_400_000;
 
-/** `YYYY-MM-DD`, a UTC calendar day. */
+/** `YYYY-MM-DD`, a UTC calendar day: a storage partition, or a v1 day label. */
 export type UtcDate = string;
 /** Slot start at minute precision, e.g. `2026-11-17T20:45Z`. */
 export type RoundId = string;
@@ -41,60 +41,20 @@ export function addDays(date: UtcDate, days: number): UtcDate {
 	return utcDateOf(new Date(dayStartMs(date) + days * DAY_MS));
 }
 
-/** Parsed round id, or null when the string is not a slot-aligned round id. */
-export function parseRoundId(
-	id: string,
-): { date: UtcDate; slotIndex: number; slotStart: Date } | null {
+/**
+ * Parsed round id, or null when the string is not a slot-aligned round id. `partition` is the UTC
+ * date the round is stored under; which settlement day the slot belongs to depends on the release.
+ */
+export function parseRoundId(id: string): { partition: UtcDate; slotStart: Date } | null {
 	const match = ROUND_ID_PATTERN.exec(id);
 	if (!match || match[1] === undefined || parseUtcDate(match[1]) === null) return null;
 	const hour = Number(match[2]);
 	const minute = Number(match[3]);
 	if (hour > 23 || minute > 59 || minute % SLOT_MINUTES !== 0) return null;
-	const slotIndex = (hour * 60 + minute) / SLOT_MINUTES;
 	return {
-		date: match[1],
-		slotIndex,
-		slotStart: new Date(dayStartMs(match[1]) + slotIndex * SLOT_MS),
+		partition: match[1],
+		slotStart: new Date(dayStartMs(match[1]) + (hour * 60 + minute) * 60_000),
 	};
-}
-
-export function slotStartOf(date: UtcDate, slotIndex: number): Date {
-	return new Date(dayStartMs(date) + slotIndex * SLOT_MS);
-}
-
-/** Number of slots of `date` that have fully ended at `asOf` (0..slotsPerDay). */
-export function elapsedSlots(date: UtcDate, asOf: Date): number {
-	const elapsed = Math.floor((asOf.getTime() - dayStartMs(date)) / SLOT_MS);
-	return Math.min(SLOTS_PER_DAY, Math.max(0, elapsed));
-}
-
-/** When the print for `date` may be built: day end plus the settlement cutoff. */
-export function settlementCutoff(date: UtcDate): Date {
-	return new Date(dayStartMs(date) + DAY_MS + SETTLEMENT_CUTOFF_MINUTES * 60_000);
-}
-
-/**
- * The print for a day is published by this long after the day ends. A publication commitment,
- * not a methodology parameter: it decides when a print appears, never what it says, so it is
- * kept out of the parameter hash.
- */
-const PUBLICATION_DEADLINE_MINUTES_AFTER_DAY_END = 90;
-
-/** When the print for `date` is due: D+1 01:30Z. A print published later is still the print. */
-export function publicationDeadline(date: UtcDate): Date {
-	return new Date(dayStartMs(date) + DAY_MS + PUBLICATION_DEADLINE_MINUTES_AFTER_DAY_END * 60_000);
-}
-
-/** How long after the settlement cutoff a correction may be issued without an override. */
-const CORRECTION_WINDOW_MS = 24 * 3_600_000;
-
-/**
- * Corrections to day D are issued by D+2 00:30Z: 24 hours after the settlement cutoff, which is
- * the earliest the original print can have been published, so the window never runs longer than
- * 24 hours after it. Computed from the day alone, so anyone can check a correction against it.
- */
-export function correctionDeadline(date: UtcDate): Date {
-	return new Date(settlementCutoff(date).getTime() + CORRECTION_WINDOW_MS);
 }
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];

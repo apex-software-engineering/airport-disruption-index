@@ -1,6 +1,17 @@
 /** Read models for the public API, shaped for direct rendering. */
+import {
+	dayAt,
+	elapsedSlots,
+	partitionsOf,
+	publishBy,
+	settlementDay,
+	settlesAt,
+	slotIndexIn,
+	type DayWindow,
+	type SettlementDay,
+} from '@/lib/index/calendar';
 import { aggregateDay, type SlotState } from '@/lib/index/day';
-import { methodologyInEffect } from '@/lib/index/methodology';
+import { settlementReleaseOrNull } from '@/lib/index/methodology';
 import type {
 	Correction,
 	DailyPrint,
@@ -8,14 +19,7 @@ import type {
 	RoundSummary,
 	UnrecognizedList,
 } from '@/lib/index/schemas';
-import {
-	elapsedSlots,
-	publicationDeadline,
-	settlementCutoff,
-	utcDateOf,
-	type RoundId,
-	type UtcDate,
-} from '@/lib/index/time';
+import { parseRoundId, utcDateOf, type RoundId, type UtcDate } from '@/lib/index/time';
 
 import { readCorrectionPrints, readDayIndex, readHistory, readPrints } from './archive';
 import { CACHE } from './http';
@@ -24,48 +28,91 @@ import type { ObjectStore } from './storage';
 export const API_BASE = '/api/v1';
 export const roundUrl = (id: string) => `${API_BASE}/rounds/${id}`;
 
-/** Today's running (provisional) value as of `now`. */
+/**
+ * Today's running (provisional) value as of `now`, or, between the last day of one release and
+ * the first day of the next, the transition with no value. The collection heartbeat (`asOf`,
+ * `lastRound`) is in both shapes.
+ */
 export async function currentView(store: ObjectStore, now: Date) {
-	const date = utcDateOf(now);
-	const index = await readDayIndex(store, date);
-	const day = aggregateDay(date, index.rounds, now);
-	const elapsed = elapsedSlots(date, now);
-	const lastRound = index.rounds.reduce<(typeof index.rounds)[number] | null>(
-		(latest, round) => (latest === null || round.fetchedAt > latest.fetchedAt ? round : latest),
-		null,
-	);
+	const at = dayAt(now);
+	if (at.kind === 'transition') {
+		const rounds = (await readDayIndex(store, utcDateOf(now))).rounds;
+		return {
+			status: 'transition' as const,
+			asOf: now.toISOString(),
+			previousDay: deadlinesOf(at.previous),
+			nextDay: { date: at.next.date, startsAt: at.next.start.toISOString() },
+			lastRound: lastRoundOf(rounds),
+		};
+	}
+	return provisionalView(store, at, now);
+}
+
+async function provisionalView(store: ObjectStore, today: SettlementDay, now: Date) {
+	const { window } = today;
+	const rounds = await readWindowRounds(store, window);
+	const day = aggregateDay(today, rounds, now);
+	const elapsed = elapsedSlots(window, now);
 	// The slot open now: `pending` until its round arrives, then `observed`.
 	const latestSlot: SlotState | undefined = day.slots[elapsed];
-	if (latestSlot === undefined) throw new Error(`no open slot ${elapsed} on ${date}`);
+	if (latestSlot === undefined) throw new Error(`no open slot ${elapsed} on ${window.date}`);
+	const deadlines = deadlinesOf(window);
 	return {
-		date,
+		date: deadlines.date,
 		asOf: now.toISOString(),
 		status: 'provisional' as const,
-		settlesAt: settlementCutoff(date).toISOString(),
-		publishBy: publicationDeadline(date).toISOString(),
+		settlesAt: deadlines.settlesAt,
+		publishBy: deadlines.publishBy,
 		methodologyVersion: day.methodology.parameters.version,
 		parameterHash: day.methodology.parameterHash,
 		/** Rounds today under another methodology. Non-empty means today will print suspended. */
 		foreignMethodologies: day.foreignMethodologies,
 		/** Delay_type lists v1 does not know, seen in today's valid rounds. They never count. */
-		unrecognizedLists: unrecognizedListsOf(index.rounds),
+		unrecognizedLists: unrecognizedListsOf(rounds),
 		value: day.value,
 		groundStopValue: day.groundStopValue,
 		airports: day.airports,
 		hourly: day.hourly,
 		coverage: { ...day.coverage, elapsedSlots: elapsed },
 		latestSlot,
-		lastRound:
-			lastRound === null
-				? null
-				: {
-						roundId: lastRound.roundId,
-						fetchedAt: lastRound.fetchedAt,
-						status: lastRound.observation.status,
-						receiptHash: lastRound.receiptHash,
-						url: roundUrl(lastRound.roundId),
-					},
+		lastRound: lastRoundOf(rounds),
 	};
+}
+
+function deadlinesOf(window: DayWindow) {
+	return {
+		date: window.date,
+		settlesAt: settlesAt(window).toISOString(),
+		publishBy: publishBy(window).toISOString(),
+	};
+}
+
+/** The summaries of every stored round whose slot is in `window`, across its partitions. */
+async function readWindowRounds(store: ObjectStore, window: DayWindow): Promise<RoundSummary[]> {
+	const indexes = await Promise.all(partitionsOf(window).map((date) => readDayIndex(store, date)));
+	return indexes
+		.flatMap((index) => index.rounds)
+		.filter((round) => {
+			const id = parseRoundId(round.roundId);
+			return id !== null && slotIndexIn(window, id.slotStart) !== null;
+		});
+}
+
+/** The most recently fetched of `rounds`, as the heartbeat reports it. */
+function lastRoundOf(rounds: readonly RoundSummary[]) {
+	const last = rounds.reduce<RoundSummary | null>(
+		(latest, round) => (latest === null || round.fetchedAt > latest.fetchedAt ? round : latest),
+		null,
+	);
+	return last === null
+		? null
+		: {
+				roundId: last.roundId,
+				fetchedAt: last.fetchedAt,
+				status: last.observation.status,
+				receiptHash: last.receiptHash,
+				url: roundUrl(last.roundId),
+			};
 }
 
 type UnrecognizedSighting = UnrecognizedList & { rounds: number; lastRoundId: RoundId };
@@ -98,13 +145,15 @@ export type DayView =
 export async function dayView(store: ObjectStore, date: UtcDate): Promise<DayView> {
 	const revisions = await readPrints(store, date);
 	const print = revisions.at(-1);
-	if (print === undefined)
+	if (print === undefined) {
+		const deadlines = deadlinesOf(settlementDay(date).window);
 		return {
 			date,
 			status: 'unsettled',
-			settlesAt: settlementCutoff(date).toISOString(),
-			publishBy: publicationDeadline(date).toISOString(),
+			settlesAt: deadlines.settlesAt,
+			publishBy: deadlines.publishBy,
 		};
+	}
 	return { date, status: 'settled', print, revisions };
 }
 
@@ -114,7 +163,7 @@ export async function historyView(store: ObjectStore, from: UtcDate, to: UtcDate
 		from,
 		to,
 		/** In effect on `to` (null before the first release); each print records its own. */
-		methodologyVersion: methodologyInEffect(to)?.parameters.version ?? null,
+		methodologyVersion: settlementReleaseOrNull(to)?.parameters.version ?? null,
 		days: days
 			.filter((day) => day.date >= from && day.date <= to)
 			.map((day) => ({ ...day, url: `${API_BASE}/days/${day.date}` })),

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { settlementDay } from '@/lib/index/calendar';
 
 import { collectedReceipt } from '@/test/receipts';
 import { feedFixture } from '@/test/fixtures';
@@ -51,6 +52,14 @@ function collect(fetchedAt: string, fixture?: string, httpStatus?: number) {
 		fixtureAt(fetchedAt, fixture, httpStatus),
 		() => new Date(Date.parse(fetchedAt) + 1000),
 	);
+}
+
+/** Today's running value, which every test here reads on an ordinary v1 day. */
+async function provisional(store: Parameters<typeof currentView>[0], now: Date) {
+	const current = await currentView(store, now);
+	if (current.status !== 'provisional')
+		throw new Error(`expected a provisional day, got ${current.status}`);
+	return current;
 }
 
 describe('collectRound', () => {
@@ -102,7 +111,7 @@ describe('views and settlement', () => {
 	it('serves the running value and settles a day once', async () => {
 		await collect('2026-11-17T20:45:03Z');
 		await collect('2026-11-17T20:50:03Z');
-		const current = await currentView(store, new Date('2026-11-17T20:56:00Z'));
+		const current = await provisional(store, new Date('2026-11-17T20:56:00Z'));
 		// LGA (GS+GDP) and SFO (GDP) in the 20:45 and 20:50 slots; 20:55 has not ended, so it is pending.
 		expect(current).toMatchObject({
 			date: '2026-11-17',
@@ -117,7 +126,7 @@ describe('views and settlement', () => {
 		// The open slot is 20:55: no round yet, so pending.
 		expect(current.latestSlot).toEqual({ status: 'pending' });
 		await collect('2026-11-17T20:55:03Z');
-		expect((await currentView(store, new Date('2026-11-17T20:56:00Z'))).latestSlot).toMatchObject({
+		expect((await provisional(store, new Date('2026-11-17T20:56:00Z'))).latestSlot).toMatchObject({
 			status: 'observed',
 			roundId: '2026-11-17T20:55Z',
 		});
@@ -475,7 +484,7 @@ describe('unrecognized lists', () => {
 		await collect('2026-11-17T20:45:03Z', 'synthetic-edge-cases.xml');
 		await collect('2026-11-17T20:50:03Z', 'synthetic-edge-cases.xml');
 		await collect('2026-11-17T20:55:03Z');
-		const current = await currentView(store, new Date('2026-11-17T20:56:00Z'));
+		const current = await provisional(store, new Date('2026-11-17T20:56:00Z'));
 		expect(current.unrecognizedLists).toEqual([
 			{ element: 'Deicing_List', name: 'Deicing', rounds: 2, lastRoundId: '2026-11-17T20:50Z' },
 			{ element: null, name: 'Empty block', rounds: 2, lastRoundId: '2026-11-17T20:50Z' },
@@ -499,7 +508,7 @@ describe('unrecognized lists', () => {
 				kind: 'if-absent',
 			},
 		);
-		const current = await currentView(store, new Date(`${DAY}T00:05:30Z`));
+		const current = await provisional(store, new Date(`${DAY}T00:05:30Z`));
 		expect(current.unrecognizedLists).toEqual([
 			{ ...deicing, rounds: 1, lastRoundId: round.roundId },
 		]);
@@ -522,7 +531,7 @@ describe('unrecognized lists', () => {
 				version: object.version,
 			},
 		);
-		const current = await currentView(store, new Date('2026-11-17T20:50:30Z'));
+		const current = await provisional(store, new Date('2026-11-17T20:50:30Z'));
 		expect(current.unrecognizedLists).toEqual([]);
 		expect(current.coverage.validRounds).toBe(1);
 	});
@@ -533,7 +542,7 @@ describe('settlement history', () => {
 		await collect('2026-11-17T20:45:03Z');
 		const first = await settleDay(store, '2026-11-17');
 		// A later correction print, written outside settleDay.
-		const corrected = buildPrint('2026-11-17', [], {
+		const corrected = buildPrint(settlementDay('2026-11-17'), [], {
 			revision: 2,
 			correction: correctionOf(first.print.printHash),
 		});

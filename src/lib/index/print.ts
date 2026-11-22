@@ -1,7 +1,9 @@
 /**
  * The daily settlement print: an immutable, hashed statement of day D's value, built only from
- * day D's round receipts after the settlement cutoff.
+ * day D's round receipts after the settlement cutoff. The day and its release are resolved by the
+ * entry point (settle, correct, reproduce) and passed in; nothing here looks them up.
  */
+import { settlesAt, type SettlementDay } from './calendar';
 import { aggregateDay, settledStatus, type DayAggregate } from './day';
 import { hashJson } from './json';
 import {
@@ -11,7 +13,6 @@ import {
 	type HistoryEntry,
 	type RoundSummary,
 } from './schemas';
-import { dayStartMs, settlementCutoff, type UtcDate } from './time';
 
 export const PRINT_SCHEMA = 'adi.daily-print/1' as const;
 
@@ -22,29 +23,32 @@ export type PrintRevision = { revision: 1 } | { revision: number; correction: Co
 export type PrintBody = Omit<DailyPrint, 'revision' | 'correction' | 'printHash'>;
 
 export function buildPrint(
-	date: UtcDate,
+	settlementDay: SettlementDay,
 	rounds: readonly RoundSummary[],
 	revision: PrintRevision,
 ): DailyPrint {
-	return finalizePrint(printBody(date, rounds), revision);
+	return finalizePrint(printBody(settlementDay, rounds), revision);
 }
 
 /** The aggregation step of a print: everything but its revision, computed from the rounds. */
-export function printBody(date: UtcDate, rounds: readonly RoundSummary[]): PrintBody {
-	const dayEnd = new Date(dayStartMs(date) + 86_400_000);
-	const day = aggregateDay(date, rounds, dayEnd);
+export function printBody(
+	settlementDay: SettlementDay,
+	rounds: readonly RoundSummary[],
+): PrintBody {
+	const { window } = settlementDay;
+	const day = aggregateDay(settlementDay, rounds, window.end);
 	// A day settles under one methodology: any round under another suspends it, whatever the coverage.
 	const { parameters, parameterHash } = day.methodology;
 	const status =
 		day.foreignMethodologies.length > 0
 			? 'suspended'
-			: settledStatus(day.coverage.validRounds, parameters.coverage);
+			: settledStatus(day.coverage, parameters.coverage);
 	return {
 		schema: PRINT_SCHEMA,
-		date,
+		date: window.date,
 		methodologyVersion: parameters.version,
 		parameterHash,
-		settlesAt: settlementCutoff(date).toISOString(),
+		settlesAt: settlesAt(window).toISOString(),
 		coverage: day.coverage,
 		result:
 			status === 'suspended'

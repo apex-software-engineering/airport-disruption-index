@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { settlementDay } from './calendar';
 
 import { DAY, invalidRound, validRange, validRound } from '@/test/rounds';
 
@@ -7,7 +8,8 @@ import { METHODOLOGY_V1 } from './releases';
 import { dayStartMs } from './time';
 
 const END = new Date(dayStartMs(DAY) + 86_400_000);
-const settle = (rounds: Parameters<typeof aggregateDay>[1]) => aggregateDay(DAY, rounds, END);
+const settle = (rounds: Parameters<typeof aggregateDay>[1]) =>
+	aggregateDay(settlementDay(DAY), rounds, END);
 
 describe('airport-minutes', () => {
 	it('counts 5 minutes per active panel airport per slot, capped at 1440 per airport', () => {
@@ -36,7 +38,10 @@ describe('airport-minutes', () => {
 	});
 
 	it('reaches the 28,800 maximum with all 20 airports active all day', () => {
-		const all = aggregateDay(DAY, [], END).airports.map((a) => ({ airport: a.airport, gs: true }));
+		const all = aggregateDay(settlementDay(DAY), [], END).airports.map((a) => ({
+			airport: a.airport,
+			gs: true,
+		}));
 		expect(settle(validRange(0, 288, all)).value).toBe(28_800);
 	});
 
@@ -112,7 +117,7 @@ describe('carry/suspend ladder', () => {
 
 	it('leaves slots that have not ended as pending, not missing', () => {
 		const asOf = new Date(dayStartMs(DAY) + 20 * 300_000 + 30_000); // 30 s into slot 20
-		const day = aggregateDay(DAY, [validRound(17, atl)], asOf);
+		const day = aggregateDay(settlementDay(DAY), [validRound(17, atl)], asOf);
 		expect(day.slots.slice(17, 22).map((s) => s.status)).toEqual([
 			'observed',
 			'carried',
@@ -121,7 +126,11 @@ describe('carry/suspend ladder', () => {
 			'pending',
 		]);
 		expect(day.coverage.pendingSlots).toBe(268);
-		const observedNow = aggregateDay(DAY, [validRound(17, atl), validRound(20, atl, 10)], asOf);
+		const observedNow = aggregateDay(
+			settlementDay(DAY),
+			[validRound(17, atl), validRound(20, atl, 10)],
+			asOf,
+		);
 		expect(observedNow.slots[20]).toMatchObject({ status: 'observed' });
 		expect(observedNow.value).toBe(20);
 	});
@@ -195,7 +204,9 @@ describe('settled status thresholds', () => {
 		[230, 'suspended'], // 79.86%
 		[0, 'suspended'],
 	])('%i valid rounds -> %s', (valid, status) => {
-		expect(settledStatus(valid, METHODOLOGY_V1.coverage)).toBe(status);
+		expect(settledStatus({ validRounds: valid, slotsPerDay: 288 }, METHODOLOGY_V1.coverage)).toBe(
+			status,
+		);
 	});
 
 	it('reports coverage percent from valid rounds only', () => {

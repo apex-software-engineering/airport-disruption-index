@@ -1,11 +1,14 @@
 /**
- * Every released methodology, oldest first. A release is never edited once published: a change
- * is a new entry with a new version, a new parameter hash (pinned in methodology.test.ts) and an
- * `effectiveFrom` day at least one day after it ships. Older entries stay so that their days
- * keep settling, validating and reproducing under the parameters they were collected under.
+ * Every released methodology, oldest first. A release's parameters are never edited once
+ * published: a change is a new entry with a new version and a new parameter hash (pinned in
+ * methodology.test.ts). Older entries stay so that their days keep settling, validating and
+ * reproducing under the parameters they were collected under.
+ *
+ * The schedule fields (`effectiveUntil`, `announcedAt`, `announcedProofAt`, `withdrawn`) are not
+ * hashed. They change only through the published cutover steps in docs/design/v2-eastern-day.md.
  */
 import { hashJson } from './json';
-import type { Methodology, MethodologyParameters } from './methodology';
+import type { Methodology, MethodologyParameters, ZonedDayParameters } from './methodology';
 
 export const METHODOLOGY_V1 = {
 	version: '1.0.0',
@@ -68,9 +71,50 @@ export const METHODOLOGY_V1 = {
 	},
 } as const satisfies MethodologyParameters;
 
-export function release(parameters: MethodologyParameters, effectiveFrom: string): Methodology {
-	return { parameters, parameterHash: hashJson(parameters), effectiveFrom };
+/**
+ * v2: the civil day in America/New_York instead of the UTC day. Every other parameter is v1's.
+ * Not yet announced (`announcedAt: null`), so it governs no day and collects no round.
+ */
+export const METHODOLOGY_V2 = {
+	version: '2.0.0',
+	name: METHODOLOGY_V1.name,
+	unit: METHODOLOGY_V1.unit,
+	source: METHODOLOGY_V1.source,
+	panel: METHODOLOGY_V1.panel,
+	day: { timeZone: 'America/New_York' },
+	slotMinutes: METHODOLOGY_V1.slotMinutes,
+	roundAssignment: METHODOLOGY_V1.roundAssignment,
+	quorum: METHODOLOGY_V1.quorum,
+	observation: METHODOLOGY_V1.observation,
+	programs: METHODOLOGY_V1.programs,
+	minutesPerActiveSlot: METHODOLOGY_V1.minutesPerActiveSlot,
+	carry: METHODOLOGY_V1.carry,
+	coverage: METHODOLOGY_V1.coverage,
+	settlement: METHODOLOGY_V1.settlement,
+} as const satisfies ZonedDayParameters;
+
+type Schedule = Partial<
+	Pick<Methodology, 'effectiveUntil' | 'announcedAt' | 'announcedProofAt' | 'withdrawn'>
+>;
+
+export function release(
+	parameters: MethodologyParameters,
+	effectiveFrom: string,
+	schedule: Schedule = {},
+): Methodology {
+	return {
+		parameters,
+		parameterHash: hashJson(parameters),
+		effectiveFrom,
+		effectiveUntil: schedule.effectiveUntil ?? null,
+		announcedAt: schedule.announcedAt ?? null,
+		announcedProofAt: schedule.announcedProofAt ?? null,
+		withdrawn: schedule.withdrawn ?? false,
+	};
 }
 
-/** v1 covers every day from the first live capture of the feed. */
-export const RELEASES: readonly Methodology[] = [release(METHODOLOGY_V1, '2026-11-17')];
+/** v1 covers every day from the first live capture of the feed; v2 is registered, not announced. */
+export const RELEASES: readonly Methodology[] = [
+	release(METHODOLOGY_V1, '2026-11-17'),
+	release(METHODOLOGY_V2, '2027-01-01'),
+];
