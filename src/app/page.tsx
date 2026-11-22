@@ -6,7 +6,7 @@ import { formatInteger, formatPercent } from '@/components/format';
 import { HourlyChart } from '@/components/hourly-chart';
 import { IndexChart } from '@/components/index-chart';
 import {
-	CHART_ENDPOINTS,
+	CHART_API,
 	hasValidRound,
 	readSiteData,
 	RECENT_PRINT_DAYS,
@@ -44,7 +44,7 @@ export default async function HomePage() {
 				title={site.name}
 				lede={`Airport-minutes under FAA ground stops and ground delay programs across ${parameters.panel.length} US hub airports, per ${dayName(parameters)}. Methodology v${parameters.version}.`}
 			/>
-			<IndexChart history={chartHistory} current={current} endpoints={CHART_ENDPOINTS} />
+			<IndexChart history={chartHistory} current={current} api={CHART_API} />
 			{current.status === 'transition' ? (
 				<TransitionNotice current={current} />
 			) : (

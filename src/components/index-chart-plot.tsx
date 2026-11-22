@@ -3,7 +3,12 @@
  * The interactive half of the home chart: the range buttons, the line itself and its tooltip. The
  * server builds every range (`index-series.ts`) and renders every tooltip body, so this file only
  * draws and responds. The plot is drawn at its measured size, so text and marks stay at their
- * real pixel sizes on a phone; before it is measured it renders at a default size, scaled to fit.
+ * real pixel sizes on a phone. Until it is measured the plot keeps its space but stays hidden, so
+ * it never paints at a guessed size and then jumps; without scripting the guessed size shows.
+ *
+ * Hover and keyboard focus are tracked apart: the pointer leaving never drops the focus ring, and
+ * Escape hides only the tooltip. The focused point is described by the tooltip, so a screen
+ * reader hears the same local time a sighted reader sees.
  */
 import {
 	useEffect,
@@ -16,7 +21,7 @@ import {
 	type ReactNode,
 } from 'react';
 
-import { Mark, PROVISIONAL_DASH } from './chart-marks';
+import { Mark, PROVISIONAL_DASH, SuspendedHatch } from './chart-marks';
 import { niceCeiling, ticksTo } from './chart-scale';
 import { formatInteger, formatShortDate } from './format';
 import type { ChartPoint, RangeId, RangeView } from './index-series';
@@ -29,8 +34,12 @@ const PLOT = { left: 48, right: 16, top: 36, bottom: 28 } as const;
  */
 const END_LABEL_MIN_WIDTH = 480;
 const END_LABEL_ROOM = 72;
+/** About half an x-axis date label's width at 11px ("Nov 22"), to keep it inside the plot. */
+const TICK_HALF_WIDTH = 20;
 /** The least room an x-axis date label gets, so labels never collide. */
 const MIN_TICK_GAP = 72;
+/** A band at least this wide names itself; a narrower one leaves that to the legend. */
+const BAND_LABEL_MIN_WIDTH = 72;
 /** Half the width of each point's hit and focus target. */
 const HIT_RADIUS = 12;
 const TOOLTIP_WIDTH = 300;
@@ -59,7 +68,7 @@ function tickPoints(points: readonly ChartPoint[], plotWidth: number): ChartPoin
 
 function useMeasuredSize<T extends Element>() {
 	const ref = useRef<T>(null);
-	const [size, setSize] = useState(DEFAULT_SIZE);
+	const [size, setSize] = useState<{ width: number; height: number } | null>(null);
 	useEffect(() => {
 		const element = ref.current;
 		if (element === null) return;
@@ -90,17 +99,22 @@ export function IndexChartPlot({
 	tooltips: Readonly<Record<string, ReactNode>>;
 }) {
 	const [selected, setSelected] = useState(initial);
-	const [active, setActive] = useState<number | null>(null);
+	const [hovered, setHovered] = useState<number | null>(null);
+	const [focused, setFocused] = useState<number | null>(null);
+	/** Escape hides the focused point's tooltip until focus moves. */
+	const [dismissed, setDismissed] = useState(false);
 	const { ref, size } = useMeasuredSize<HTMLDivElement>();
 	const pointRefs = useRef<(SVGGElement | null)[]>([]);
 	const summaryId = useId();
 	const disabledId = useId();
+	const tooltipId = useId();
+	const hatchId = useId();
 
 	const range = ranges.find((candidate) => candidate.id === selected);
 	if (range === undefined) throw new Error(`no range ${selected}`);
-	const { points, lines } = range;
+	const { points, lines, bands } = range;
 
-	const { width, height } = size;
+	const { width, height } = size ?? DEFAULT_SIZE;
 	const newest = points.at(-1);
 	const endLabelled =
 		width >= END_LABEL_MIN_WIDTH && newest !== undefined && newest.status !== 'suspended'
@@ -119,7 +133,8 @@ export function IndexChartPlot({
 
 	const choose = (id: RangeId) => {
 		setSelected(id);
-		setActive(null);
+		setHovered(null);
+		setFocused(null);
 	};
 
 	const nearest = (event: PointerEvent<SVGRectElement>): number | null => {
@@ -141,7 +156,7 @@ export function IndexChartPlot({
 			End: points.length - 1,
 		}[event.key];
 		if (event.key === 'Escape') {
-			setActive(null);
+			setDismissed(true);
 			return;
 		}
 		if (next === undefined || next < 0 || next >= points.length) return;
@@ -151,11 +166,18 @@ export function IndexChartPlot({
 
 	const onBlur = (event: FocusEvent<SVGGElement>) => {
 		const to = event.relatedTarget;
-		if (!pointRefs.current.some((element) => element !== null && element === to)) setActive(null);
+		if (!pointRefs.current.some((element) => element !== null && element === to)) setFocused(null);
 	};
 
-	const focusIndex = active ?? points.length - 1;
-	const activePoint = active === null ? undefined : points[active];
+	const onFocus = (index: number) => {
+		setFocused(index);
+		setDismissed(false);
+	};
+
+	const shown = size === null ? null : (hovered ?? (dismissed ? null : focused));
+	const activePoint = shown === null ? undefined : points[shown];
+	const describesFocused = shown !== null && shown === focused;
+	const tabStop = focused ?? points.length - 1;
 	const disabled = ranges.filter((candidate) => candidate.disabledReason !== null);
 	const tooltipWidth = Math.min(TOOLTIP_WIDTH, width);
 
@@ -197,11 +219,15 @@ export function IndexChartPlot({
 			<div ref={ref} className='relative mt-6 h-64 sm:h-[22rem]'>
 				<svg
 					viewBox={`0 0 ${width} ${height}`}
-					className='block h-full w-full'
+					className={`block h-full w-full ${size === null ? 'noscript:visible invisible' : ''}`}
 					role='group'
 					aria-label={`Line chart of the daily ADI, range ${range.label}`}
 					aria-describedby={summaryId}>
-					{ticksTo(top).map((tick) => (
+					<defs>
+						<SuspendedHatch id={hatchId} />
+					</defs>
+					{/* With no value in range there is no scale to show: only the baseline. */}
+					{(values.length === 0 ? [0] : ticksTo(top)).map((tick) => (
 						<g key={tick} aria-hidden>
 							<line
 								x1={PLOT.left}
@@ -221,30 +247,48 @@ export function IndexChartPlot({
 							</text>
 						</g>
 					))}
-					{tickPoints(points, plotWidth).map((point) => (
-						<text
-							key={point.date}
-							aria-hidden
-							x={xOf(point.day)}
-							y={height - 8}
-							textAnchor='middle'
-							className='fill-ink-subtle text-[11px]'>
-							{formatShortDate(point.date)}
-						</text>
-					))}
-					{points.map((point, index) =>
-						point.status === 'suspended' ? (
-							<rect
+					{tickPoints(points, plotWidth).map((point) => {
+						// Centred under its point, unless that would run past the right edge.
+						const clamped = xOf(point.day) + TICK_HALF_WIDTH > width;
+						return (
+							<text
 								key={point.date}
 								aria-hidden
-								x={xOf(point.day) - Math.max(slot - 2, 4) / 2}
-								y={PLOT.top}
-								width={Math.max(slot - 2, 4)}
-								height={plotHeight}
-								className={active === index ? 'fill-line' : 'fill-panel'}
-							/>
-						) : null,
-					)}
+								x={clamped ? width - 1 : xOf(point.day)}
+								y={height - 8}
+								textAnchor={clamped ? 'end' : 'middle'}
+								className='fill-ink-subtle text-[11px]'>
+								{formatShortDate(point.date)}
+							</text>
+						);
+					})}
+					{bands.map((band) => {
+						// Exactly the band's days wide, so it never covers a neighbouring day with no print.
+						const days = band.lastDay - band.firstDay + 1;
+						const bandWidth = days * slot;
+						const inset = bandWidth > 4 ? 0.5 : 0;
+						const left = xOf(band.firstDay) - slot / 2;
+						return (
+							<g key={band.firstDay} aria-hidden data-suspended-band={days}>
+								<rect
+									x={left + inset}
+									y={PLOT.top}
+									width={bandWidth - 2 * inset}
+									height={plotHeight}
+									fill={`url(#${hatchId})`}
+								/>
+								{bandWidth >= BAND_LABEL_MIN_WIDTH ? (
+									<text
+										x={left + bandWidth / 2}
+										y={PLOT.top + 14}
+										textAnchor='middle'
+										className='fill-ink-muted text-[11px]'>
+										Suspended
+									</text>
+								) : null}
+							</g>
+						);
+					})}
 					{activePoint === undefined ? null : (
 						<line
 							aria-hidden
@@ -292,13 +336,15 @@ export function IndexChartPlot({
 								}}
 								role='img'
 								aria-label={pointLabel(point)}
-								tabIndex={index === focusIndex ? 0 : -1}
-								onFocus={() => setActive(index)}
+								aria-describedby={describesFocused && index === focused ? tooltipId : undefined}
+								data-chart-point={point.date}
+								tabIndex={index === tabStop ? 0 : -1}
+								onFocus={() => onFocus(index)}
 								onBlur={onBlur}
 								onKeyDown={(event) => onKeyDown(event, index)}
 								className='pointer-events-none outline-none'>
 								<circle cx={x} cy={y} r={HIT_RADIUS} className='fill-transparent' />
-								{active === index ? (
+								{index === shown || index === focused ? (
 									<circle cx={x} cy={y} r={9} className='stroke-ink fill-none' strokeWidth={1.5} />
 								) : null}
 								{point.status === 'suspended' ? null : <Mark status={point.status} x={x} y={y} />}
@@ -331,18 +377,19 @@ export function IndexChartPlot({
 						className='fill-transparent'
 						style={{ touchAction: 'pan-y' }}
 						onPointerMove={(event) => {
-							if (event.pointerType === 'mouse') setActive(nearest(event));
+							if (event.pointerType === 'mouse') setHovered(nearest(event));
 						}}
-						onPointerDown={(event) => setActive(nearest(event))}
+						onPointerDown={(event) => setHovered(nearest(event))}
 						onPointerLeave={(event) => {
-							if (event.pointerType === 'mouse') setActive(null);
+							if (event.pointerType === 'mouse') setHovered(null);
 						}}
 					/>
 				</svg>
 				{activePoint === undefined ? null : (
 					<div
+						id={tooltipId}
 						data-chart-tooltip
-						aria-hidden
+						aria-hidden={!describesFocused}
 						className='border-line bg-page pointer-events-none absolute z-10 rounded border px-3 py-2 text-sm shadow-sm'
 						style={{
 							width: tooltipWidth,
@@ -369,7 +416,7 @@ export function IndexChartPlot({
 					<p id={disabledId}>
 						{disabled.map((candidate) => candidate.label).join(' and ')}{' '}
 						{disabled.length === 1 ? 'is' : 'are'} off until more days settle: each would show the
-						same prints as the next range up.
+						same points as the next range up.
 					</p>
 				)}
 				<p>

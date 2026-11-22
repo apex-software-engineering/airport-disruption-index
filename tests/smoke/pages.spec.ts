@@ -98,7 +98,10 @@ async function homeChart(page: Page) {
 	const chart = page.getByRole('region', { name: 'Daily ADI chart' });
 	const empty = page.getByText('there is nothing to chart');
 	await expect(chart.or(empty)).toBeVisible();
-	return (await chart.isVisible()) ? chart : null;
+	if (!(await chart.isVisible())) return null;
+	// The plot stays hidden (so unfocusable) until it is measured after hydration.
+	await expect(chart.locator('svg[aria-describedby]')).toBeVisible();
+	return chart;
 }
 
 test('/ leads with the daily chart, its range buttons and its public API sources', async ({
@@ -109,11 +112,9 @@ test('/ leads with the daily chart, its range buttons and its public API sources
 	test.skip(chart === null, 'no day has a value yet');
 	if (chart === null) return;
 	await expect(chart.getByRole('group', { name: /^Line chart of the daily ADI/ })).toBeVisible();
-	await expect(
-		chart
-			.getByRole('group', { name: /^ADI, (running|latest print)$/ })
-			.getByText(/^\d{1,3}(,\d{3})*$/),
-	).toBeVisible();
+	// A whole number of airport-minutes, or, when no day has a value, a plain statement of that.
+	const hero = chart.getByRole('group', { name: /^ADI, (running|latest print|no value)$/ });
+	await expect(hero.getByText(/^(\d{1,3}(,\d{3})*|No value yet)$/)).toBeVisible();
 	const buttons = chart.getByRole('group', { name: 'Chart range' }).getByRole('button');
 	await expect(buttons).toHaveText(['1W', '1M', 'All']);
 	await expect(chart.locator('button[aria-pressed="true"]')).toHaveCount(1);

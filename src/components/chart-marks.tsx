@@ -27,3 +27,21 @@ export function Mark({ status, x, y }: { status: MarkStatus; x: number; y: numbe
 
 /** The dashed stroke that marks a value as provisional. */
 export const PROVISIONAL_DASH = '4 4';
+
+/**
+ * The fill of a suspended day: muted 45° hairlines over the panel colour, so a suspended day reads
+ * apart from a day with no print (left blank) without leaning on a faint tint.
+ */
+export function SuspendedHatch({ id }: { id: string }) {
+	return (
+		<pattern
+			id={id}
+			width={6}
+			height={6}
+			patternUnits='userSpaceOnUse'
+			patternTransform='rotate(45)'>
+			<rect width={6} height={6} className='fill-panel' />
+			<line x1={0} y1={0} x2={0} y2={6} className='stroke-ink-subtle' strokeWidth={1} />
+		</pattern>
+	);
+}

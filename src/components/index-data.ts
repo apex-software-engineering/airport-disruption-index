@@ -15,6 +15,8 @@ import {
 	indicativeHistoryView,
 } from '@/server/views';
 
+import type { ApiSource } from './index-series';
+
 export const RECENT_PRINT_DAYS = 14;
 
 export type Current = Awaited<ReturnType<typeof currentView>>;
@@ -29,9 +31,9 @@ export type IndicativeDay = IndicativeHistory['days'][number];
  * Today's running value, the history view of the last `RECENT_PRINT_DAYS` settled days, the
  * same days newest first, the home chart's history, and the frozen indicative ET days over the
  * recent span, newest first (null until the indicative series is published, so no page shows it
- * before its notice). The chart's history is the longest span one `/api/v1/history` request
- * returns, ending yesterday, so a single public request rebuilds the whole chart. Both history
- * views come from one read of the history index.
+ * before its notice). The chart's history is every print through yesterday; its source links
+ * chain `/api/v1/history` requests to cover it. Both history views come from one read of the
+ * history index.
  */
 export async function readSiteData(now: Date): Promise<{
 	current: Current;
@@ -61,17 +63,18 @@ export async function readSiteData(now: Date): Promise<{
 		current,
 		history,
 		recent: [...history.days].reverse(),
-		chartHistory: historyWindow(historyIndex, addDays(yesterday, 1 - HISTORY_MAX_DAYS), yesterday),
+		chartHistory: historyWindow(historyIndex, historyIndex.days[0]?.date ?? yesterday, yesterday),
 		indicative,
 		recentIndicative: indicative === null ? null : [...indicative.days].reverse(),
 	};
 }
 
 /** Where the home chart's data comes from, so its source links are the real requests. */
-export const CHART_ENDPOINTS = {
+export const CHART_API: ApiSource = {
 	history: `${API_BASE}/history`,
 	current: `${API_BASE}/current`,
-} as const;
+	maxHistoryDays: HISTORY_MAX_DAYS,
+};
 
 /** The receipt behind `current.lastRound`, or null when no round has been recorded today. */
 export async function readLastReceipt(current: Current): Promise<RoundReceipt | null> {

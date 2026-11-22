@@ -6,15 +6,15 @@
  */
 import type { ReactNode } from 'react';
 
-import { Mark, PROVISIONAL_DASH, type MarkStatus } from './chart-marks';
+import { Mark, PROVISIONAL_DASH, SuspendedHatch, type MarkStatus } from './chart-marks';
 import { formatInteger, formatPercent, formatSigned } from './format';
 import { IndexChartPlot } from './index-chart-plot';
 import { hasValidRound, SETTLED_TONE, type Current, type History } from './index-data';
 import {
 	chartModel,
 	chartPoints,
+	type ApiSource,
 	type ChartPoint,
-	type Endpoints,
 	type Headline,
 } from './index-series';
 import { Instant, Notice, StatusLabel, Table, UtcDay } from './ui';
@@ -28,19 +28,19 @@ function todayOf(current: Current) {
 export function IndexChart({
 	history,
 	current,
-	endpoints,
+	api,
 }: {
 	history: History;
 	current: Current;
-	endpoints: Endpoints;
+	api: ApiSource;
 }) {
 	const points = chartPoints(history.days, todayOf(current));
-	const model = chartModel(points, history.to, endpoints);
-	if (model === null || model.headline === null) {
+	const model = chartModel(points, history.to, api);
+	if (model === null) {
 		return (
 			<Notice>
-				No day has a value yet: no print with a value has settled and today has no running value, so
-				there is nothing to chart. Every print will appear here as it settles.
+				No day has settled and today has no running value, so there is nothing to chart yet. Every
+				print will appear here as it settles.
 			</Notice>
 		);
 	}
@@ -54,11 +54,17 @@ export function IndexChart({
 			<IndexChartPlot
 				ranges={model.ranges}
 				initial={model.initial}
-				hero={<Hero headline={model.headline} />}
+				hero={
+					model.headline === null ? (
+						<NoValueHero suspended={all.bands.length > 0} />
+					) : (
+						<Hero headline={model.headline} />
+					)
+				}
 				tooltips={tooltips}
 			/>
 			<Legend />
-			<FinalsNote headline={model.headline} />
+			<FinalsNote finalCount={model.finalCount} />
 			<div className='sr-only'>
 				<Table
 					caption='Every point in the chart, oldest first'
@@ -83,7 +89,10 @@ function Hero({ headline }: { headline: Headline }) {
 	return (
 		<div role='group' aria-label={label}>
 			<p className='text-ink-subtle text-xs tracking-wide uppercase'>
-				{running ? `ADI today so far, ${latest.date} (UTC)` : `ADI, ${latest.date} (UTC)`}
+				{running ? 'ADI today so far' : `ADI, ${latest.status} print`}
+			</p>
+			<p className='text-ink-muted mt-1 text-sm'>
+				<UtcDay date={latest.date}>{latest.date} (UTC)</UtcDay>
 			</p>
 			<p className='mt-1 text-6xl font-semibold tracking-tight [font-feature-settings:normal] sm:text-7xl'>
 				{formatInteger(latest.value)}
@@ -108,6 +117,21 @@ function Hero({ headline }: { headline: Headline }) {
 						{running ? ', a part day against a whole one' : ''}
 					</>
 				)}
+			</p>
+		</div>
+	);
+}
+
+/** No day in the chart has a value: said plainly, in the headline's place. */
+function NoValueHero({ suspended }: { suspended: boolean }) {
+	return (
+		<div role='group' aria-label='ADI, no value'>
+			<p className='text-ink-subtle text-xs tracking-wide uppercase'>ADI</p>
+			<p className='text-ink-muted mt-1 text-4xl font-semibold tracking-tight'>No value yet</p>
+			<p className='text-ink-muted mt-2 max-w-md text-sm'>
+				{suspended ? 'Every settled day so far is suspended, ' : 'No day has settled yet, '}
+				and today has no valid round, so there is no number to show. The chart below shows every
+				print that exists.
 			</p>
 		</div>
 	);
@@ -174,8 +198,27 @@ const LEGEND: readonly { key: ReactNode; label: string }[] = [
 	{ key: <LegendKey status='degraded' />, label: 'Degraded print (partial coverage)' },
 	{ key: <LegendKey status='provisional' />, label: 'Today so far, provisional' },
 	{
-		key: <span aria-hidden className='bg-panel border-line block h-3.5 w-3 shrink-0 border' />,
-		label: 'Suspended: no value, a gap in the line',
+		key: (
+			<svg aria-hidden viewBox='0 0 12 14' className='h-3.5 w-3 shrink-0'>
+				<defs>
+					<SuspendedHatch id='adi-legend-suspended' />
+				</defs>
+				<rect
+					x={0.5}
+					y={0.5}
+					width={11}
+					height={13}
+					fill='url(#adi-legend-suspended)'
+					className='stroke-ink-subtle'
+					strokeWidth={1}
+				/>
+			</svg>
+		),
+		label: 'Suspended: hatched, no value, a gap in the line',
+	},
+	{
+		key: <span aria-hidden className='border-line block h-3.5 w-3 shrink-0 border border-dashed' />,
+		label: 'No print: left blank',
 	},
 ];
 
@@ -193,11 +236,11 @@ function Legend() {
 }
 
 /** With fewer than two final prints there is no trend to read, and the chart says so. */
-function FinalsNote({ headline }: { headline: Headline }) {
-	if (headline.finalCount >= 2) return null;
+function FinalsNote({ finalCount }: { finalCount: number }) {
+	if (finalCount >= 2) return null;
 	return (
 		<p className='text-ink-muted mt-4 max-w-2xl text-sm'>
-			{headline.finalCount === 0
+			{finalCount === 0
 				? 'No day has settled final yet.'
 				: 'Only one day has settled final so far.'}{' '}
 			The chart shows every print that exists and nothing else: no padding, no interpolation. A

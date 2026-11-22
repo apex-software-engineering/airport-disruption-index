@@ -3,15 +3,17 @@ import { describe, expect, it } from 'vitest';
 import { addDays } from '@/lib/index/time';
 
 import {
+	bandsOf,
 	chartModel,
 	chartPoints,
 	headlineOf,
+	historyRequests,
 	linesOf,
 	type SeriesPrint,
 	type SeriesToday,
 } from './index-series';
 
-const ENDPOINTS = { history: '/api/v1/history', current: '/api/v1/current' };
+const API = { history: '/api/v1/history', current: '/api/v1/current', maxHistoryDays: 366 };
 
 function print(date: string, status: SeriesPrint['status'], value: number | null): SeriesPrint {
 	return {
@@ -117,7 +119,6 @@ describe('headlineOf', () => {
 		);
 		expect(headline?.latest.status).toBe('provisional');
 		expect(headline?.previousFinal).toEqual({ date: '2026-11-20', value: 900 });
-		expect(headline?.finalCount).toBe(1);
 	});
 
 	it('has no comparison when no final print precedes the latest value', () => {
@@ -137,7 +138,7 @@ describe('headlineOf', () => {
 
 describe('chartModel', () => {
 	it('is null with nothing to chart', () => {
-		expect(chartModel([], '2026-11-21', ENDPOINTS)).toBeNull();
+		expect(chartModel([], '2026-11-21', API)).toBeNull();
 	});
 
 	it('offers only All while every range would show the same prints', () => {
@@ -145,11 +146,11 @@ describe('chartModel', () => {
 			[print('2026-11-20', 'degraded', 135), print('2026-11-21', 'final', 1135)],
 			today('2026-11-22'),
 		);
-		const model = chartModel(points, '2026-11-21', ENDPOINTS);
+		const model = chartModel(points, '2026-11-21', API);
 		expect(model?.initial).toBe('all');
 		expect(model?.ranges.map((range) => [range.id, range.disabledReason])).toEqual([
-			['1W', '1W shows the same 3 prints as 1M'],
-			['1M', '1M shows the same 3 prints as All'],
+			['1W', '1W shows the same 3 points as 1M'],
+			['1M', '1M shows the same 3 points as All'],
 			['all', null],
 		]);
 		const all = model?.ranges.find((range) => range.id === 'all');
@@ -158,13 +159,13 @@ describe('chartModel', () => {
 			'/api/v1/current',
 		]);
 		expect(all?.summary).toBe(
-			'Daily ADI, 3 days from 2026-11-20 to 2026-11-22 (UTC): 1 final, 1 degraded, 0 suspended, and today so far (provisional). Latest: 740 airport-minutes on 2026-11-22, today so far, provisional.',
+			'Daily ADI, 3 points across the 3 days from 2026-11-20 to 2026-11-22 (UTC): 1 final, 1 degraded, 0 suspended, and today so far (provisional). Latest: 740 airport-minutes on 2026-11-22, today so far, provisional.',
 		);
 	});
 
 	it('cuts calendar ranges ending on the newest point, defaulting to 1M once it differs', () => {
 		const points = chartPoints(finals('2026-11-21', 45), null);
-		const model = chartModel(points, '2026-11-21', ENDPOINTS);
+		const model = chartModel(points, '2026-11-21', API);
 		expect(model?.initial).toBe('1M');
 		const byId = Object.fromEntries((model?.ranges ?? []).map((range) => [range.id, range]));
 		expect(byId['1W']?.points).toHaveLength(7);
@@ -177,9 +178,88 @@ describe('chartModel', () => {
 
 	it('spans calendar days, so a missing day stays a gap on the axis rather than being closed up', () => {
 		const prints = finals('2026-11-21', 20).filter((day) => day.date !== '2026-11-18');
-		const week = chartModel(chartPoints(prints, null), '2026-11-21', ENDPOINTS)?.ranges[0];
+		const week = chartModel(chartPoints(prints, null), '2026-11-21', API)?.ranges[0];
 		expect(week?.lastDay).toBe((week?.firstDay ?? 0) + 6);
 		expect(week?.points).toHaveLength(6);
 		expect(week?.lines.runs.map((run) => run.length)).toEqual([3, 3]);
+	});
+});
+
+const dayOf = (date: string) => Date.parse(`${date}T00:00:00Z`) / 86_400_000;
+
+describe('historyRequests', () => {
+	it('is one request while the range fits in one', () => {
+		expect(historyRequests(dayOf('2026-11-15'), '2026-11-21', API)).toEqual([
+			'/api/v1/history?from=2026-11-15&to=2026-11-21',
+		]);
+	});
+
+	it('chains requests of at most the API limit, oldest first, covering every day once', () => {
+		const requests = historyRequests(dayOf('2025-01-01'), '2026-11-21', API);
+		expect(requests).toEqual([
+			'/api/v1/history?from=2025-01-01&to=2026-01-01',
+			'/api/v1/history?from=2026-01-02&to=2026-11-21',
+		]);
+		expect(
+			historyRequests(dayOf('2026-01-01'), '2026-01-05', { ...API, maxHistoryDays: 2 }),
+		).toEqual([
+			'/api/v1/history?from=2026-01-01&to=2026-01-02',
+			'/api/v1/history?from=2026-01-03&to=2026-01-04',
+			'/api/v1/history?from=2026-01-05&to=2026-01-05',
+		]);
+	});
+});
+
+describe('bandsOf', () => {
+	it('merges consecutive suspended days and keeps a missing day out of any band', () => {
+		const points = chartPoints(
+			[
+				print('2026-11-01', 'suspended', null),
+				print('2026-11-02', 'suspended', null),
+				// 2026-11-03 has no print.
+				print('2026-11-04', 'suspended', null),
+				print('2026-11-05', 'final', 1),
+				print('2026-11-06', 'suspended', null),
+			],
+			null,
+		);
+		expect(
+			bandsOf(points).map((band) => [
+				band.firstDay - dayOf('2026-11-01'),
+				band.lastDay - dayOf('2026-11-01'),
+			]),
+		).toEqual([
+			[0, 1],
+			[3, 3],
+			[5, 5],
+		]);
+	});
+});
+
+describe('chartModel with no value anywhere', () => {
+	it('still charts suspended prints, with no headline and the sources to check them', () => {
+		const model = chartModel(
+			chartPoints(
+				[print('2026-11-19', 'suspended', null), print('2026-11-20', 'suspended', null)],
+				null,
+			),
+			'2026-11-21',
+			API,
+		);
+		expect(model?.headline).toBeNull();
+		expect(model?.finalCount).toBe(0);
+		const all = model?.ranges.find((range) => range.id === 'all');
+		expect(all?.points).toHaveLength(2);
+		expect(all?.bands).toHaveLength(1);
+		expect(all?.lines.runs).toEqual([]);
+		expect(all?.sources).toEqual(['/api/v1/history?from=2026-11-19&to=2026-11-21']);
+	});
+
+	it('chains the All sources over a history longer than one request', () => {
+		const model = chartModel(chartPoints(finals('2026-11-21', 400), null), '2026-11-21', API);
+		const all = model?.ranges.find((range) => range.id === 'all');
+		expect(all?.points).toHaveLength(400);
+		expect(all?.sources).toHaveLength(2);
+		expect(model?.finalCount).toBe(400);
 	});
 });

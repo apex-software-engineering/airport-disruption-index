@@ -5,9 +5,9 @@ export default defineConfig({
 	resolve: {
 		alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
 	},
-	// tests/smoke is the Playwright suite against a deployment, not unit tests.
+	// tests/smoke and tests/fixtures are Playwright suites (a deployment, fixture servers), not unit tests.
 	test: {
-		exclude: [...configDefaults.exclude, 'tests/smoke/**'],
+		exclude: [...configDefaults.exclude, 'tests/smoke/**', 'tests/fixtures/**'],
 		// next.config.ts inlines this at build time; tests run unbuilt.
 		env: { DEPLOYED_COMMIT: 'unknown' },
 	},

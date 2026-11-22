@@ -59,7 +59,8 @@ export type RangeView = {
 	lastDay: number;
 	points: ChartPoint[];
 	lines: Lines;
-	/** The public API requests that return every point in the range. */
+	bands: SuspendedBand[];
+	/** The public API requests that, together, return every point in the range. */
 	sources: string[];
 	/** The range in words, for screen readers. */
 	summary: string;
@@ -75,20 +76,25 @@ export type Lines = {
 	provisionalLink: [ValuedPoint, ValuedPoint] | null;
 };
 
+/** Consecutive suspended days, drawn as one band so it never spills over a neighbouring day. */
+export type SuspendedBand = { firstDay: number; lastDay: number };
+
 export type Headline = {
 	latest: ValuedPoint;
 	/** The last final print before `latest`, which the change is measured against. */
 	previousFinal: { date: UtcDate; value: number } | null;
-	finalCount: number;
 };
 
 export type ChartModel = {
 	ranges: RangeView[];
 	initial: RangeId;
+	/** Null when no day has a value: every print is suspended and today has no running value. */
 	headline: Headline | null;
+	finalCount: number;
 };
 
-export type Endpoints = { history: string; current: string };
+/** The public endpoints the chart reads, and the longest span one history request returns. */
+export type ApiSource = { history: string; current: string; maxHistoryDays: number };
 
 function pointOf(print: SeriesPrint): ChartPoint {
 	const common = {
@@ -166,15 +172,27 @@ export function linesOf(points: readonly ChartPoint[]): Lines {
 	return { runs, provisionalLink };
 }
 
+export function bandsOf(points: readonly ChartPoint[]): SuspendedBand[] {
+	const bands: SuspendedBand[] = [];
+	for (const point of points) {
+		if (point.status !== 'suspended') continue;
+		const last = bands.at(-1);
+		if (last !== undefined && last.lastDay === point.day - 1) last.lastDay = point.day;
+		else bands.push({ firstDay: point.day, lastDay: point.day });
+	}
+	return bands;
+}
+
 export function headlineOf(points: readonly ChartPoint[]): Headline | null {
 	const latest = points.findLast(isValued);
 	if (latest === undefined) return null;
-	const finals = points.filter((point): point is ValuedPoint => point.status === 'final');
-	const previous = finals.findLast((point) => point.day < latest.day);
+	const previous = points.findLast((point) => point.status === 'final' && point.day < latest.day);
 	return {
 		latest,
-		previousFinal: previous === undefined ? null : { date: previous.date, value: previous.value },
-		finalCount: finals.length,
+		previousFinal:
+			previous === undefined || previous.status !== 'final'
+				? null
+				: { date: previous.date, value: previous.value },
 	};
 }
 
@@ -186,8 +204,8 @@ function describeRange(points: readonly ChartPoint[]): string {
 		points.filter((point) => point.status === status).length;
 	const span =
 		first === last
-			? `1 day, ${first.date} (UTC)`
-			: `${points.length} days from ${first.date} to ${last.date} (UTC)`;
+			? `1 point, ${first.date} (UTC)`
+			: `${points.length} points across the ${last.day - first.day + 1} days from ${first.date} to ${last.date} (UTC)`;
 	const latest = points.findLast(isValued);
 	const latestText =
 		latest === undefined
@@ -200,29 +218,42 @@ function dateOfDay(day: number): UtcDate {
 	return new Date(day * DAY_MS).toISOString().slice(0, 10);
 }
 
+/**
+ * The history requests covering `firstDay`..`historyTo`, oldest first, each no longer than one
+ * request may span, so together they return every print in the range, however long.
+ */
+export function historyRequests(firstDay: number, historyTo: UtcDate, api: ApiSource): string[] {
+	const lastDay = dayStartMs(historyTo) / DAY_MS;
+	const requests: string[] = [];
+	for (let from = firstDay; from <= lastDay; from += api.maxHistoryDays) {
+		const to = Math.min(from + api.maxHistoryDays - 1, lastDay);
+		requests.push(`${api.history}?from=${dateOfDay(from)}&to=${dateOfDay(to)}`);
+	}
+	return requests;
+}
+
 function sourcesOf(
 	points: readonly ChartPoint[],
 	firstDay: number,
 	historyTo: UtcDate,
-	endpoints: Endpoints,
+	api: ApiSource,
 ): string[] {
-	const sources: string[] = [];
-	if (points.some((point) => point.status !== 'provisional')) {
-		sources.push(`${endpoints.history}?from=${dateOfDay(firstDay)}&to=${historyTo}`);
-	}
-	if (points.some((point) => point.status === 'provisional')) sources.push(endpoints.current);
-	return sources;
+	const prints = points.some((point) => point.status !== 'provisional');
+	return [
+		...(prints ? historyRequests(firstDay, historyTo, api) : []),
+		...(points.some((point) => point.status === 'provisional') ? [api.current] : []),
+	];
 }
 
 /**
  * The chart's ranges over `points`. Each ends on the newest point; All starts at the oldest.
- * `historyTo` is the last day the history request covers (yesterday), so each range's source
- * link returns exactly its prints.
+ * `historyTo` is the last day the history requests cover (yesterday), so each range's source
+ * links return exactly its prints.
  */
 export function chartModel(
 	points: readonly ChartPoint[],
 	historyTo: UtcDate,
-	endpoints: Endpoints,
+	api: ApiSource,
 ): ChartModel | null {
 	const first = points[0];
 	const last = points.at(-1);
@@ -239,10 +270,11 @@ export function chartModel(
 		return {
 			...view,
 			disabledReason: sameAsLonger
-				? `${view.label} shows the same ${view.points.length === 1 ? 'print' : `${view.points.length} prints`} as ${longer.label}`
+				? `${view.label} shows the same ${view.points.length === 1 ? 'point' : `${view.points.length} points`} as ${longer.label}`
 				: null,
 			lines: linesOf(view.points),
-			sources: sourcesOf(view.points, view.firstDay, historyTo, endpoints),
+			bands: bandsOf(view.points),
+			sources: sourcesOf(view.points, view.firstDay, historyTo, api),
 			summary: describeRange(view.points),
 		};
 	});
@@ -251,5 +283,6 @@ export function chartModel(
 		ranges,
 		initial: month !== undefined && month.disabledReason === null ? '1M' : 'all',
 		headline: headlineOf(points),
+		finalCount: points.filter((point) => point.status === 'final').length,
 	};
 }
