@@ -228,8 +228,11 @@ export type IndicativeDayView =
 				freezesAt: string;
 			};
 	  }
-	/** No indicative day: before the series starts, or after it ends (then see the settlement print). */
-	| { status: 'none'; date: string; settlement: string | null };
+	/**
+	 * No indicative day: before the series starts, after it ends (then see the settlement print),
+	 * or never frozen before its release was withdrawn.
+	 */
+	| { status: 'none'; date: string; reason: 'before_series' | 'series_ended' | 'withdrawn' };
 
 /** An indicative ET day: its frozen print, when it will freeze, or why it has none. */
 export async function indicativeDayView(
@@ -238,12 +241,17 @@ export async function indicativeDayView(
 ): Promise<IndicativeDayView> {
 	const release = indicativeReleaseFor(date, { includeWithdrawn: true });
 	if (release === null) {
-		const ended = date >= FIRST_INDICATIVE_DAY;
-		return { status: 'none', date, settlement: ended ? `${API_BASE}/days/${date}` : null };
+		return {
+			status: 'none',
+			date,
+			reason: date >= FIRST_INDICATIVE_DAY ? 'series_ended' : 'before_series',
+		};
 	}
 	const envelope = indicativeEnvelope(release);
 	const print = await readIndicativePrint(store, date);
 	if (print !== null) return { status: 'frozen', body: { ...envelope, date, print } };
+	// A withdrawn release freezes nothing more: only its published prints stay.
+	if (release.withdrawn) return { status: 'none', date, reason: 'withdrawn' };
 	const window = dayWindow(release, date);
 	return {
 		status: 'pending',

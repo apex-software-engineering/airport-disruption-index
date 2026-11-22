@@ -13,12 +13,13 @@ import {
 	type DayWindow,
 } from '@/lib/index/calendar';
 import {
+	type IndicativeAdmission,
 	indicativeAdmissionFor,
 	indicativeFreezesAt,
 	indicativeReleaseFor,
 } from '@/lib/index/indicative';
 import { sha256Hex } from '@/lib/index/json';
-import { isUnder, SLOT_MINUTES } from '@/lib/index/methodology';
+import { admits, isUnder, SLOT_MINUTES, type Methodology } from '@/lib/index/methodology';
 import {
 	buildIndicativePrint,
 	buildPrint,
@@ -33,6 +34,7 @@ import {
 	indicativePrintSchema,
 	printSchema,
 	receiptSchema,
+	receiptShapeSchema,
 	type DailyPrint,
 	type DayIndex,
 	type HistoryIndex,
@@ -48,6 +50,7 @@ import {
 	type RoundId,
 	type UtcDate,
 } from '@/lib/index/time';
+import { verifyRound } from '@/lib/index/verify';
 
 import type { ObjectStore, StoredObject, WriteCondition } from './storage';
 
@@ -376,32 +379,6 @@ export async function readDayReceipts(store: ObjectStore, date: UtcDate): Promis
 	return readReceipts(store, date, await listReceiptIds(store, date), 'throw');
 }
 
-/**
- * Every stored receipt whose slot is in `window`, across the window's UTC partitions, each
- * verified against its own hash. Ids are filtered to the window before anything is read, so a
- * receipt outside the window is never read and can never stop a run.
- */
-export async function readWindowReceipts(
-	store: ObjectStore,
-	window: DayWindow,
-): Promise<RoundReceipt[]> {
-	const inWindow = (id: RoundId) => {
-		const parsed = parseRoundId(id);
-		return parsed !== null && slotIndexIn(window, parsed.slotStart) !== null;
-	};
-	const partitions = await Promise.all(
-		partitionsOf(window).map(async (partition) =>
-			readReceipts(
-				store,
-				partition,
-				(await listReceiptIds(store, partition)).filter(inWindow),
-				'throw',
-			),
-		),
-	);
-	return partitions.flat();
-}
-
 /** All revisions of a day's print, oldest first. Empty when the day has not settled. */
 export async function readPrints(store: ObjectStore, date: UtcDate): Promise<DailyPrint[]> {
 	const prints: DailyPrint[] = [];
@@ -575,20 +552,16 @@ export async function freezeIndicativeDay(
 		throw new Error(`${label} (ET, indicative) freezes at ${freezesAt.toISOString()}`);
 	}
 	const key = keys.indicative(release.parameters.version, label);
-	const stored = await readJson(store, indicativePrintSchema, key);
+	const stored = await readIndicativeAt(store, key, release, label);
 	if (stored !== null) return { status: 'already_frozen', print: stored };
-	const receipts = await readWindowReceipts(store, window);
-	const print = buildIndicativePrint(
-		{ release, window },
-		receipts.map(summarizeReceipt),
-		admission,
-	);
+	const rounds = await readIndicativeRounds(store, window, admission);
+	const print = buildIndicativePrint({ release, window }, rounds, admission);
 	if ((await store.write(key, encode(print), JSON_TYPE, { kind: 'if-absent' })) === 'written') {
 		return { status: 'frozen', print };
 	}
 	// Another run froze it first. Its print may not be readable yet; give it a few reads.
 	for (let attempt = 0; attempt < MAX_CONDITIONAL_ATTEMPTS; attempt += 1) {
-		const winner = await readJson(store, indicativePrintSchema, key);
+		const winner = await readIndicativeAt(store, key, release, label);
 		if (winner !== null) return { status: 'already_frozen', print: winner };
 	}
 	throw new Error(`indicative print ${label} exists but could not be read`);
@@ -601,7 +574,74 @@ export async function readIndicativePrint(
 ): Promise<IndicativePrint | null> {
 	const release = indicativeReleaseFor(label, { includeWithdrawn: true });
 	if (release === null) return null;
-	return readJson(store, indicativePrintSchema, keys.indicative(release.parameters.version, label));
+	return readIndicativeAt(
+		store,
+		keys.indicative(release.parameters.version, label),
+		release,
+		label,
+	);
+}
+
+/**
+ * The indicative print stored at `key`, which must be the print of `label` under `release`: an
+ * object for another date or release at this key is corruption, never served.
+ */
+async function readIndicativeAt(
+	store: ObjectStore,
+	key: string,
+	release: Methodology,
+	label: string,
+): Promise<IndicativePrint | null> {
+	const print = await readJson(store, indicativePrintSchema, key);
+	if (print === null) return null;
+	if (print.date !== label || !isUnder(release, print)) {
+		throw new Error(
+			`${key} holds the indicative print of ${print.date} under ${print.methodologyVersion}`,
+		);
+	}
+	return print;
+}
+
+/**
+ * The rounds of an indicative day's window, read across its UTC partitions with ids filtered to
+ * the window first. A receipt recording an identity the admission policy does not accept, known
+ * to this code or not, is kept as a foreign round: it takes no slot and suspends the day. An
+ * admitted receipt counts only after it rebuilds, from its archived body, under the release and
+ * adapter it records, so a receipt claiming a valid observation it cannot back never counts.
+ * Anything unreadable, failing its hash, or not rebuilding stops the run.
+ */
+async function readIndicativeRounds(
+	store: ObjectStore,
+	window: DayWindow,
+	admission: IndicativeAdmission,
+): Promise<RoundSummary[]> {
+	const inWindow = (id: RoundId) => {
+		const parsed = parseRoundId(id);
+		return parsed !== null && slotIndexIn(window, parsed.slotStart) !== null;
+	};
+	const listed = await Promise.all(
+		partitionsOf(window).map(async (partition) =>
+			(await listReceiptIds(store, partition))
+				.filter(inWindow)
+				.map((id) => keys.receipt(partition, id)),
+		),
+	);
+	return readInBatches(listed.flat(), async (key) => {
+		const object = await store.read(key);
+		if (object === null) throw new Error(`receipt ${key} is listed but could not be read`);
+		const body: unknown = JSON.parse(new TextDecoder().decode(object.body));
+		const shape = receiptShapeSchema.safeParse(body);
+		if (!shape.success)
+			throw new Error(`stored object ${key} fails its schema: ${shape.error.message}`);
+		if (!receiptHashMatches(shape.data))
+			throw new Error(`receipt ${key} does not match its receiptHash`);
+		if (!admits(admission.accepts, shape.data)) return summarizeReceipt(shape.data);
+		const receipt = decode(receiptSchema, key, object);
+		const problems = verifyRound(receipt, await readRaw(store, receipt));
+		if (problems.length > 0)
+			throw new Error(`receipt ${key} does not rebuild: ${problems.join('; ')}`);
+		return summarizeReceipt(receipt);
+	});
 }
 
 const INDICATIVE_KEY = /^indicative\/([^/]+)\/(\d{4}-\d{2}-\d{2})\.json$/;

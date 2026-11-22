@@ -8,7 +8,7 @@ import {
 	indicativeReleaseIn,
 	INDICATIVE_ADMISSION_POLICY,
 } from './indicative';
-import { canonicalJson } from './json';
+import { canonicalJson, hashJson } from './json';
 import { identityOf } from './methodology';
 import { buildIndicativePrint, printHashMatches } from './print';
 import { METHODOLOGY_V1, METHODOLOGY_V2, release, RELEASES } from './releases';
@@ -62,6 +62,30 @@ describe('which release an indicative day is computed under', () => {
 		).toBe('2.0.0');
 	});
 
+	it('pins the admitted pairs by value: no registry order or inserted release changes them', () => {
+		const pinned = [
+			{ methodologyVersion: '1.0.0', parameterHash: hashJson(METHODOLOGY_V1) },
+			{ methodologyVersion: '2.0.0', parameterHash: hashJson(METHODOLOGY_V2) },
+		];
+		expect(ADMISSION.accepts).toEqual(pinned);
+		// The same release object wherever it sits in a registry gets the same policy...
+		expect(indicativeAdmissionFor(release(METHODOLOGY_V2, '2028-01-01'))).toEqual(ADMISSION);
+		// ...a release inserted before v2 gets none, so labels it owns have no indicative day...
+		const inserted = { ...METHODOLOGY_V1, version: '1.5.0' };
+		const registry = [
+			release(METHODOLOGY_V1, '2026-11-17'),
+			release(inserted, '2026-12-01'),
+			release(METHODOLOGY_V2, '2027-01-01'),
+		];
+		expect(indicativeReleaseIn(registry, '2026-11-25', { includeWithdrawn: false })).toBeNull();
+		expect(
+			indicativeReleaseIn(registry, '2026-12-15', { includeWithdrawn: false })?.parameters.version,
+		).toBe('2.0.0');
+		// ...and a release reusing v2's version with other parameters gets none either.
+		const altered = { ...METHODOLOGY_V2, minutesPerActiveSlot: 10 };
+		expect(indicativeAdmissionFor(release(altered, '2027-01-01'))).toBeNull();
+	});
+
 	it('admits exactly v1 and v2, under a named policy, and nothing for a release without one', () => {
 		expect(ADMISSION).toEqual({
 			policy: INDICATIVE_ADMISSION_POLICY,
@@ -108,6 +132,7 @@ describe('the indicative print', () => {
 			schema: 'adi.daily-print/2',
 			date: '2026-11-20',
 			standing: 'indicative',
+			day: 'America/New_York',
 			window: { start: '2026-11-20T05:00:00.000Z', end: '2026-11-21T05:00:00.000Z' },
 			freezesAt: '2026-11-21T05:30:00.000Z',
 			methodologyVersion: '2.0.0',
@@ -150,6 +175,9 @@ describe('the indicative print', () => {
 			issues({ ...print, methodologyVersion: '1.0.0', parameterHash: V1.parameterHash }),
 		).toEqual(['adi.daily-print/2 holds zoned days; 1.0.0 uses UTC days']);
 		expect(issues({ ...print, standing: 'settlement' })).toHaveLength(1);
+		expect(issues({ ...print, day: 'UTC' })).toHaveLength(1);
+		const { day: zone, ...undated } = print;
+		expect(indicativePrintSchema.safeParse(undated).success).toBe(false);
 		// An impossible date is a validation failure, never a throw.
 		expect(indicativePrintSchema.safeParse({ ...print, date: '2026-02-30' }).success).toBe(false);
 	});

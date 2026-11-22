@@ -124,43 +124,48 @@ export const observationSchema = z.discriminatedUnion('status', [
 ]);
 export type Observation = z.infer<typeof observationSchema>;
 
-export const receiptSchema = z
-	.object({
-		schema: z.literal('adi.round-receipt/1'),
-		roundId: roundIdSchema,
-		slotStart: instant,
-		fetchedAt: instant,
-		sourceUrl: z.url(),
-		/**
-		 * The source adapter that fetched and parsed this round (adapters.ts). Absent on receipts
-		 * written before the field existed, which keeps their receiptHash unchanged; those were all
-		 * produced by the first adapter.
-		 */
-		adapterVersion: z.string().optional(),
-		methodologyVersion: z.string(),
-		parameterHash: hex64,
-		/** null when no HTTP response arrived. */
-		httpStatus: z.number().int().nullable(),
-		/** sha256 of the response body bytes as received; null when there was no response. */
-		rawSha256: hex64.nullable(),
-		rawBytes: count.nullable(),
-		observation: observationSchema,
-		receiptHash: hex64,
-	})
-	.superRefine((receipt, ctx) => {
-		checkRecordedMethodology(
-			receipt,
-			receipt.observation.status === 'valid' ? receipt.observation.panel : null,
-			ctx,
-		);
-		if (adapterOf(receipt.adapterVersion) === null) {
-			ctx.addIssue({
-				code: 'custom',
-				message: `feed adapter ${receipt.adapterVersion} is not a known adapter`,
-				path: ['adapterVersion'],
-			});
-		}
-	});
+/**
+ * A receipt's shape alone, without the checks against the release and adapter it records. Only
+ * for reading a receipt that records a release this code may not know, to list it as foreign;
+ * anything counted is parsed with `receiptSchema`.
+ */
+export const receiptShapeSchema = z.object({
+	schema: z.literal('adi.round-receipt/1'),
+	roundId: roundIdSchema,
+	slotStart: instant,
+	fetchedAt: instant,
+	sourceUrl: z.url(),
+	/**
+	 * The source adapter that fetched and parsed this round (adapters.ts). Absent on receipts
+	 * written before the field existed, which keeps their receiptHash unchanged; those were all
+	 * produced by the first adapter.
+	 */
+	adapterVersion: z.string().optional(),
+	methodologyVersion: z.string(),
+	parameterHash: hex64,
+	/** null when no HTTP response arrived. */
+	httpStatus: z.number().int().nullable(),
+	/** sha256 of the response body bytes as received; null when there was no response. */
+	rawSha256: hex64.nullable(),
+	rawBytes: count.nullable(),
+	observation: observationSchema,
+	receiptHash: hex64,
+});
+
+export const receiptSchema = receiptShapeSchema.superRefine((receipt, ctx) => {
+	checkRecordedMethodology(
+		receipt,
+		receipt.observation.status === 'valid' ? receipt.observation.panel : null,
+		ctx,
+	);
+	if (adapterOf(receipt.adapterVersion) === null) {
+		ctx.addIssue({
+			code: 'custom',
+			message: `feed adapter ${receipt.adapterVersion} is not a known adapter`,
+			path: ['adapterVersion'],
+		});
+	}
+});
 export type RoundReceipt = z.infer<typeof receiptSchema>;
 
 /** The part of a receipt the index math needs. Day index blobs store these. */
@@ -362,6 +367,8 @@ export const indicativePrintSchema = z
 		schema: z.literal('adi.daily-print/2'),
 		date: z.string().refine((d) => parseUtcDate(d) !== null, 'invalid date'),
 		standing: z.literal('indicative'),
+		/** The zone the date is read in, hashed with the print. */
+		day: z.literal('America/New_York'),
 		window: z.object({ start: instant, end: instant }),
 		/** When it was built: the day's end plus the settlement cutoff, after admission closed. */
 		freezesAt: instant,
@@ -392,7 +399,7 @@ export type IndicativePrint = z.infer<typeof indicativePrintSchema>;
  * reader never needs tz data to trust what a print covers.
  */
 function checkIndicativeDay(
-	print: Pick<IndicativePrint, 'date' | 'window' | 'freezesAt' | 'admission'>,
+	print: Pick<IndicativePrint, 'date' | 'day' | 'window' | 'freezesAt' | 'admission'>,
 	release: Methodology,
 	ctx: z.RefinementCtx,
 ): void {
@@ -416,11 +423,12 @@ function checkIndicativeDay(
 	}
 	const window = dayWindow(release, print.date);
 	const expected = {
+		day: release.parameters.day.timeZone,
 		window: { start: window.start.toISOString(), end: window.end.toISOString() },
 		freezesAt: settlesAt(window).toISOString(),
 		admission,
 	};
-	for (const field of ['window', 'freezesAt', 'admission'] as const) {
+	for (const field of ['day', 'window', 'freezesAt', 'admission'] as const) {
 		if (canonicalJson(print[field]) !== canonicalJson(expected[field])) {
 			ctx.addIssue({
 				code: 'custom',

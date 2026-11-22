@@ -17,7 +17,16 @@ import { reproduceIndicative } from '@/lib/reproduce';
 import { routeGet } from '@/test/api';
 import { collectAt } from '@/test/collect';
 
-import { freezeIndicativeDay, readIndicativePrints } from './archive';
+import { hashJson } from '@/lib/index/json';
+import { receiptSchema } from '@/lib/index/schemas';
+import type { Get } from '@/lib/reproduce';
+
+import {
+	freezeIndicativeDay,
+	readIndicativePrint,
+	readIndicativePrints,
+	readReceipt,
+} from './archive';
 import { FileStore } from './storage';
 import { indicativeDayView } from './views';
 
@@ -102,6 +111,77 @@ describe('freezing an indicative ET day', () => {
 		).rejects.toThrow();
 	});
 
+	it('keeps a receipt under an identity it does not admit, even an unknown one, and suspends', async () => {
+		await collectAround();
+		const stored = await readReceipt(store, '2026-11-20T05:00Z');
+		if (stored === null) throw new Error('the round was collected');
+		// A receipt from a release this code does not know: listed and counted as foreign, not thrown.
+		const { receiptHash, ...unsigned } = {
+			...stored,
+			roundId: '2026-11-20T06:00Z',
+			slotStart: '2026-11-20T06:00:00.000Z',
+			fetchedAt: '2026-11-20T06:00:03.000Z',
+			methodologyVersion: '9.9.9',
+			parameterHash: 'ef'.repeat(32),
+		};
+		const unknown = { ...unsigned, receiptHash: hashJson(unsigned) };
+		expect(receiptSchema.safeParse(unknown).success).toBe(false);
+		await store.write(
+			'rounds/2026-11-20/2026-11-20T06:00Z.json',
+			new TextEncoder().encode(JSON.stringify(unknown)),
+			'application/json',
+			{ kind: 'if-absent' },
+		);
+		const { print } = await freezeIndicativeDay(store, DAY, AFTER_FREEZE);
+		expect(print.rounds.map((r) => r.roundId)).toContain('2026-11-20T06:00Z');
+		expect(print.result).toMatchObject({
+			status: 'suspended',
+			reason: expect.stringMatching(
+				/^mixed methodology: 1 under 9\.9\.9 \(e{0}(ef){32}\), not 1\.0\.0/,
+			),
+		});
+	});
+
+	it('counts an admitted receipt only after it rebuilds: a valid one with no response stops the run', async () => {
+		await collectAround();
+		const stored = await readReceipt(store, '2026-11-20T23:55Z');
+		if (stored === null) throw new Error('the round was collected');
+		// Valid, but with no HTTP response or body behind it, and a hash that matches the lie.
+		const { receiptHash, ...unsigned } = {
+			...stored,
+			httpStatus: null,
+			rawSha256: null,
+			rawBytes: null,
+		};
+		const forged = { ...unsigned, receiptHash: hashJson(unsigned) };
+		await store.write(
+			'rounds/2026-11-20/2026-11-20T23:55Z.json',
+			new TextEncoder().encode(JSON.stringify(forged)),
+			'application/json',
+			{
+				kind: 'if-version',
+				version: (await store.read('rounds/2026-11-20/2026-11-20T23:55Z.json'))?.version ?? '',
+			},
+		);
+		await expect(freezeIndicativeDay(store, DAY, AFTER_FREEZE)).rejects.toThrow(
+			/2026-11-20T23:55Z\.json does not rebuild: .*valid without an HTTP response/,
+		);
+	});
+
+	it('never serves an object stored at a day’s key that is the print of another day', async () => {
+		await collectAround();
+		const { print } = await freezeIndicativeDay(store, DAY, AFTER_FREEZE);
+		await store.write(
+			'indicative/2.0.0/2026-11-21.json',
+			new TextEncoder().encode(JSON.stringify(print)),
+			'application/json',
+			{ kind: 'if-absent' },
+		);
+		await expect(readIndicativePrint(store, '2026-11-21')).rejects.toThrow(
+			'indicative/2.0.0/2026-11-21.json holds the indicative print of 2026-11-20 under 2.0.0',
+		);
+	});
+
 	it('has no indicative day before the series or from v2’s first day', async () => {
 		await expect(freezeIndicativeDay(store, '2026-11-19', AFTER_FREEZE)).rejects.toThrow(
 			'2026-11-19 has no indicative day',
@@ -152,7 +232,7 @@ describe('the indicative API', () => {
 		expect(await indicativeDayView(store, '2026-11-19')).toEqual({
 			status: 'none',
 			date: '2026-11-19',
-			settlement: null,
+			reason: 'before_series',
 		});
 	});
 
@@ -192,6 +272,26 @@ describe('the settle run and reproduction', () => {
 		expect((await response.json()).indicative).toEqual([
 			expect.objectContaining({ date: DAY, status: 'frozen', result: 'suspended' }),
 		]);
+	});
+
+	it('refuses a served print for another day before fetching any round it lists', async () => {
+		await collectAround();
+		await freezeIndicativeDay(store, DAY, AFTER_FREEZE);
+		const fetched: string[] = [];
+		// The API answers the 2026-11-21 request with the 2026-11-20 print under a 2026-11-21 envelope.
+		const swapped: Get = async (url) => {
+			fetched.push(new URL(url).pathname);
+			if (url.endsWith('/indicative/days/2026-11-21')) {
+				const body = await (await routeGet(url.replace('2026-11-21', DAY))).json();
+				return Response.json({ ...body, date: '2026-11-21' });
+			}
+			return routeGet(url);
+		};
+		expect(await reproduceIndicative('2026-11-21', 'http://test', swapped)).toMatchObject({
+			kind: 'mismatch',
+			problems: ['asked for indicative day 2026-11-21, got the print of 2026-11-20'],
+		});
+		expect(fetched).toEqual(['/api/v1/indicative/days/2026-11-21']);
 	});
 
 	it('reproduces a frozen day from the public API, and cannot verify a pending one', async () => {

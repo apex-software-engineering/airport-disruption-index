@@ -94,6 +94,10 @@ export async function reproduceIndicative(
 			`indicative day ${date}`,
 			(body) => z.object({ print: recordedSchema }).safeParse(body).data?.print,
 		);
+		// The print must be the requested day's before anything it lists is trusted or fetched.
+		if (print.date !== date) {
+			throw new Mismatch([`asked for indicative day ${date}, got the print of ${print.date}`]);
+		}
 		const results = await fetchRounds(
 			api,
 			print.rounds.map((r) => r.roundId),

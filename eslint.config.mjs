@@ -41,6 +41,10 @@ export default defineConfig([
 	...nextVitals,
 	...nextTs,
 	{
+		// `const { field, ...rest } = value` is how a field is dropped; the dropped name is unused.
+		rules: { '@typescript-eslint/no-unused-vars': ['warn', { ignoreRestSiblings: true }] },
+	},
+	{
 		files: ['src/lib/index/day.ts', 'src/lib/index/print.ts'],
 		rules: {
 			'no-restricted-imports': ['error', { patterns: LOOKUPS }],

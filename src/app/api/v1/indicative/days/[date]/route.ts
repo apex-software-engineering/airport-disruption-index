@@ -19,15 +19,20 @@ export async function GET(_request: Request, context: { params: Promise<{ date: 
 		case 'pending':
 			return json(view.body, CACHE.live, 404);
 		case 'none':
-			return view.settlement === null
-				? problem(404, `${date} is before the indicative series starts`)
-				: json(
+			switch (view.reason) {
+				case 'before_series':
+					return problem(404, `${date} is before the indicative series starts`);
+				case 'withdrawn':
+					return problem(404, `${date} was not frozen before its release was withdrawn`);
+				case 'series_ended':
+					return json(
 						{
 							error: `${date} has no indicative day: the indicative series ends before v2 takes effect`,
-							see: view.settlement,
+							see: `/api/v1/days/${date}`,
 						},
 						CACHE.daily,
 						404,
 					);
+			}
 	}
 }

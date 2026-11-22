@@ -66,11 +66,15 @@ export function buildIndicativePrint(
 	rounds: readonly RoundSummary[],
 	admission: IndicativeAdmission,
 ): IndicativePrint {
-	const { window } = day;
+	const { release, window } = day;
+	if (release.parameters.day === 'utc') {
+		throw new Error(`${release.parameters.version} has UTC days, so no indicative series`);
+	}
 	const unsigned: Omit<IndicativePrint, 'printHash'> = {
 		schema: INDICATIVE_PRINT_SCHEMA,
 		date: window.date,
 		standing: 'indicative',
+		day: release.parameters.day.timeZone,
 		window: { start: window.start.toISOString(), end: window.end.toISOString() },
 		freezesAt: settlesAt(window).toISOString(),
 		admission: { policy: admission.policy, accepts: [...admission.accepts] },

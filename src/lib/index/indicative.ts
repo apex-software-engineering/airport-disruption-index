@@ -26,8 +26,47 @@ export type IndicativeAdmission = {
 	readonly accepts: readonly Identity[];
 };
 
-/** The only release with an indicative series: v2, whose receipts are identical to v1's. */
-const INDICATIVE_VERSIONS: ReadonlySet<string> = new Set(['2.0.0']);
+/**
+ * Every indicative admission policy, pinned by value and never derived from the registry's order,
+ * so inserting or reordering a release can never widen what an indicative day admits. Keyed by
+ * the exact release (version and parameter hash) whose days it computes: v2 only, which admits
+ * its own rounds and v1's, whose receipts are identical to v2's (same source, panel and checks).
+ */
+const INDICATIVE_POLICIES: readonly { release: Identity; admission: IndicativeAdmission }[] = [
+	{
+		release: {
+			methodologyVersion: '2.0.0',
+			parameterHash: 'a9fa10889b35417090d909d4f60d9cb9b429a9703d1b626c1c0a95182b7a76e6',
+		},
+		admission: {
+			policy: INDICATIVE_ADMISSION_POLICY,
+			accepts: [
+				{
+					methodologyVersion: '1.0.0',
+					parameterHash: 'e9ef6e94b84699bffefa850b78138355bb427563f6ae42a28567e0ec4303c363',
+				},
+				{
+					methodologyVersion: '2.0.0',
+					parameterHash: 'a9fa10889b35417090d909d4f60d9cb9b429a9703d1b626c1c0a95182b7a76e6',
+				},
+			],
+		},
+	},
+];
+
+/**
+ * The admission policy of an indicative release, or null for a release with none. Matched on the
+ * exact identity: a release that kept v2's version but changed a parameter has no policy.
+ */
+export function indicativeAdmissionFor(release: Methodology): IndicativeAdmission | null {
+	const { methodologyVersion, parameterHash } = identityOf(release);
+	const pinned = INDICATIVE_POLICIES.find(
+		(policy) =>
+			policy.release.methodologyVersion === methodologyVersion &&
+			policy.release.parameterHash === parameterHash,
+	);
+	return pinned?.admission ?? null;
+}
 
 /**
  * The release an indicative day `label` is computed under, chosen by label: the release
@@ -46,7 +85,7 @@ export function indicativeReleaseIn(
 	const owner = releases.findLastIndex((release) => release.effectiveFrom <= label);
 	const successor = releases[owner + 1];
 	if (owner < 0 || successor === undefined) return null;
-	if (!INDICATIVE_VERSIONS.has(successor.parameters.version)) return null;
+	if (indicativeAdmissionFor(successor) === null) return null;
 	if (successor.withdrawn && !options.includeWithdrawn) return null;
 	return successor;
 }
@@ -57,21 +96,6 @@ export function indicativeReleaseFor(
 	options = { includeWithdrawn: false },
 ): Methodology | null {
 	return indicativeReleaseIn(RELEASES, label, options);
-}
-
-/**
- * The admission policy of an indicative release: exactly its own identity and that of the release
- * it replaces, whose receipts it would have written byte for byte (same source, panel and checks).
- * Null for a release with no indicative series.
- */
-export function indicativeAdmissionFor(release: Methodology): IndicativeAdmission | null {
-	const predecessor = RELEASES[RELEASES.indexOf(release) - 1];
-	if (predecessor === undefined || !INDICATIVE_VERSIONS.has(release.parameters.version))
-		return null;
-	return {
-		policy: INDICATIVE_ADMISSION_POLICY,
-		accepts: [identityOf(predecessor), identityOf(release)],
-	};
 }
 
 /** When the indicative print of `label` may be frozen: its day's end plus the settlement cutoff. */
