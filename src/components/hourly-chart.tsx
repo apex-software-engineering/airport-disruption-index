@@ -1,17 +1,20 @@
 /**
  * The day's hourly series as one stacked bar per UTC hour: ground-stop minutes at the base and
  * GDP-only minutes above them, so each bar's height is the headline value for that hour and its
- * lower segment is the GS-only sub-index. Plain SVG, rendered on the server; each hour carries a
- * native tooltip and the same numbers are in the table below the chart.
+ * lower segment is the GS-only sub-index. Plain SVG, rendered on the server in UTC; the browser
+ * adds the viewer's local time under the axis labels and to each hour's native tooltip. The same
+ * numbers are in the table below the chart.
  */
 import type { HourBucket } from '@/lib/index/schemas';
 
 import { formatInteger, formatUtcHour } from './format';
+import { LocalHour, LocalTime, LocalTimeTitle } from './local-time';
 import { Table } from './ui';
 
 const WIDTH = 720;
-const HEIGHT = 220;
-const PLOT = { left: 44, right: 8, top: 8, bottom: 24 } as const;
+const HEIGHT = 234;
+/** The bottom margin holds two axis lines: the UTC hour, and the viewer's local time under it. */
+const PLOT = { left: 44, right: 8, top: 8, bottom: 38 } as const;
 const GAP = 2;
 const RADIUS = 4;
 
@@ -64,15 +67,23 @@ function segmentPath(x: number, y: number, width: number, height: number, rounde
 	].join(' ');
 }
 
-function tooltip(bar: Bar): string {
+/** A native tooltip: the hour in UTC with the viewer's local time, then its numbers. */
+function Tooltip({ bar }: { bar: Bar }) {
 	const { hour } = bar;
-	if (bar.upcoming) return `${bar.label} UTC: not yet ended`;
-	return [
-		`${bar.label} UTC`,
-		`ADI ${formatInteger(hour.airportMinutes)} airport-minutes`,
-		`ADI-GS ${formatInteger(hour.groundStopMinutes)}`,
-		`slots: ${hour.observed} observed, ${hour.carried} carried, ${hour.missing} missing, ${hour.pending} pending`,
-	].join('\n');
+	const lines = bar.upcoming
+		? ['not yet ended']
+		: [
+				`ADI ${formatInteger(hour.airportMinutes)} airport-minutes`,
+				`ADI-GS ${formatInteger(hour.groundStopMinutes)}`,
+				`slots: ${hour.observed} observed, ${hour.carried} carried, ${hour.missing} missing, ${hour.pending} pending`,
+			];
+	return (
+		<LocalTimeTitle
+			at={hour.hourStart}
+			before={`${bar.label} UTC`}
+			after={`\n${lines.join('\n')}`}
+		/>
+	);
 }
 
 export function HourlyChart({ hourly }: { hourly: readonly HourBucket[] }) {
@@ -130,7 +141,7 @@ export function HourlyChart({ hourly }: { hourly: readonly HourBucket[] }) {
 					const totalTop = yOf(total);
 					return (
 						<g key={bar.hour.hourStart}>
-							<title>{tooltip(bar)}</title>
+							<Tooltip bar={bar} />
 							<rect
 								x={x}
 								y={PLOT.top}
@@ -151,20 +162,31 @@ export function HourlyChart({ hourly }: { hourly: readonly HourBucket[] }) {
 								/>
 							) : null}
 							{index % 3 === 0 ? (
-								<text
-									x={x + barWidth / 2}
-									y={HEIGHT - 8}
-									textAnchor='middle'
-									className='fill-ink-subtle text-[11px]'>
-									{bar.label}
-								</text>
+								<>
+									<text
+										x={x + barWidth / 2}
+										y={HEIGHT - 22}
+										textAnchor='middle'
+										className='fill-ink-subtle text-[11px]'>
+										{bar.label}
+									</text>
+									<text
+										x={x + barWidth / 2}
+										y={HEIGHT - 8}
+										textAnchor='middle'
+										className='noscript:hidden fill-ink-subtle text-[10px]'>
+										<LocalHour at={bar.hour.hourStart} />
+									</text>
+								</>
 							) : null}
 						</g>
 					);
 				})}
 			</svg>
 			<figcaption className='text-ink-subtle mt-2 text-xs'>
-				Airport-minutes per UTC hour. Shaded hours have not ended yet.
+				Airport-minutes per UTC hour
+				<span className='noscript:hidden'>, with your local time under each UTC hour</span>. Shaded
+				hours have not ended yet.
 			</figcaption>
 			<details className='mt-4 text-sm'>
 				<summary className='text-ink-muted cursor-pointer'>Hourly table</summary>
@@ -173,7 +195,11 @@ export function HourlyChart({ hourly }: { hourly: readonly HourBucket[] }) {
 						caption='Airport-minutes and slot coverage per UTC hour'
 						head={['Hour (UTC)', 'ADI', 'ADI-GS', 'Observed', 'Carried', 'Missing', 'Pending']}
 						rows={bars.map((bar) => [
-							bar.label,
+							// A fixed width for the local line, so filling it cannot resize the column.
+							<div key='hour' className='w-44'>
+								<time dateTime={bar.hour.hourStart}>{bar.label}</time>
+								<LocalTime at={bar.hour.hourStart} />
+							</div>,
 							formatInteger(bar.hour.airportMinutes),
 							formatInteger(bar.hour.groundStopMinutes),
 							bar.hour.observed,

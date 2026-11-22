@@ -1,6 +1,11 @@
 /** Small presentational pieces shared by the public pages. */
 import type { ReactNode } from 'react';
 
+import { addDays, dayStartMs, type UtcDate } from '@/lib/index/time';
+
+import { formatUtc } from './format';
+import { LocalTime } from './local-time';
+
 export function PageTitle({ title, lede }: { title: string; lede?: ReactNode }) {
 	return (
 		<header className='mb-8'>
@@ -16,7 +21,7 @@ export function Section({
 	children,
 }: {
 	id?: string;
-	title: string;
+	title: ReactNode;
 	children: ReactNode;
 }) {
 	return (
@@ -49,6 +54,35 @@ export function Facts({ rows }: { rows: readonly { term: string; detail: ReactNo
 				</div>
 			))}
 		</dl>
+	);
+}
+
+/**
+ * A UTC instant, the canonical value, with the viewer's local time on the line below. Punctuation
+ * that follows the time goes in `punctuation`, so it stays on the UTC line.
+ */
+export function Instant({ at, punctuation = '' }: { at: string; punctuation?: string }) {
+	return (
+		<>
+			<time dateTime={at}>{formatUtc(at)}</time>
+			{punctuation}
+			<LocalTime at={at} />
+		</>
+	);
+}
+
+/**
+ * A UTC calendar day, labelled by `children` (the date by default), with the stretch of the
+ * viewer's local time it covers on the line below.
+ */
+export function UtcDay({ date, children = date }: { date: UtcDate; children?: ReactNode }) {
+	const start = new Date(dayStartMs(date)).toISOString();
+	const end = new Date(dayStartMs(addDays(date, 1))).toISOString();
+	return (
+		<>
+			<time dateTime={date}>{children}</time>
+			<LocalTime at={start} until={end} />
+		</>
 	);
 }
 

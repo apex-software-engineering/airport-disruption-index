@@ -39,15 +39,21 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
 				</header>
 				<main className='mx-auto w-full max-w-4xl flex-1 px-6 py-10'>{children}</main>
 				<footer className='border-line text-ink-subtle border-t text-sm'>
-					<p className='mx-auto max-w-4xl px-6 py-4'>
-						{site.footer}
-						{footerLinks.map((link) => (
-							<span key={link.href}>
-								{' · '}
-								<Link href={link.href}>{link.label}</Link>
-							</span>
-						))}
-					</p>
+					<div className='mx-auto max-w-4xl space-y-1 px-6 py-4'>
+						<p>
+							{site.footer}
+							{footerLinks.map((link) => (
+								<span key={link.href}>
+									{' · '}
+									<Link href={link.href}>{link.label}</Link>
+								</span>
+							))}
+						</p>
+						<p>
+							Times are UTC
+							<span className='noscript:hidden'>; your local time is shown in parentheses</span>.
+						</p>
+					</div>
 				</footer>
 			</body>
 		</html>
