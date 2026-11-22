@@ -31,15 +31,15 @@ Two different things are at stake, and the sources treat them separately:
 | Kalshi temperature certification (the PM's source for KXHIGH), [GLOBALTEMPERATURE.pdf](https://assets.kalshi.com/regulatory/product-certifications/GLOBALTEMPERATURE.pdf)                                                                                                                                                                                                              | "Expiration time: The Expiration time of the Contract shall be 10:00 AM ET." / "The Last Trading Time will be one minute prior to the final time in <time period>."                                                                                                                                                                                                                                                                                                          | **Unspecified** in the document. It does not name KXHIGH, so the mapping to KXHIGH is **unverified**                             | 10:00 AM ET                                   |
 | Kalshi API, KXFLYCANCJFK markets, [markets?series_ticker=KXFLYCANCJFK](https://api.elections.kalshi.com/trade-api/v2/markets?series_ticker=KXFLYCANCJFK) (read 2026-11-21)                                                                                                                                                                                                             | `rules_primary`: "…that are cancelled during October 21, 2026 is at least 50%, then the market resolves to Yes." / `rules_secondary`: "All dates and times relating to the scheduling and operation of flights are interpreted in the local time of John F. Kennedy International Airport (JFK/KJFK) unless otherwise specified." / "Schedule baseline: The schedule baseline for this market is October 19, 2026 at 11:59:59 PM ET." / `close_time`: `2026-10-22T14:00:00Z` | Airport-local day                                                                                                                | Closes 14:00Z = 10:00 AM EDT the next morning |
 | BTS Technical Directive #17, [bts.gov](https://www.bts.gov/topics/airlines-and-airports/number-17-technical-directive-time-reporting-effective-oct-1-2008) (live page 403 to us; read via [Wayback snapshot 2026-07-21](http://web.archive.org/web/20260721200224/https://www.bts.gov/topics/airlines-and-airports/number-17-technical-directive-time-reporting-effective-oct-1-2008)) | "All scheduled and actual arrival and departure times will be reported in local time using a 24 hour clock" / "In using local time, the reporting carrier must adjust for time zone differences in computing data elements O, P, and S."                                                                                                                                                                                                                                     | US on-time statistics use airport-local times                                                                                    | n/a                                           |
-| PlaneTrack on-time methodology, [planetrack.ai/on-time/#how-we-measure](https://www.planetrack.ai/on-time/#how-we-measure)                                                                                                                                                                                                                                                             | **Verified by reviewer Sol (round 2, 2026-11-22):** the page counts departures by **scheduled UTC day**. It still returns HTTP 403 to our fetchers (2026-11-21 and 2026-11-22), and no archived copy exists, so the verbatim sentence is Sol's to supply. This doc does not invent one.                                                                                                                                                                                      | **UTC day** (by scheduled departure). **A counterexample to "none use UTC"**                                                     | n/a                                           |
+| PlaneTrack on-time methodology, [planetrack.ai/on-time/#how-we-measure](https://planetrack.ai/on-time/#how-we-measure)                                                                                                                                                                                                                                                                 | "Departures are counted by scheduled day (UTC)." **Verified** by reviewer Sol (round 3). The page returns HTTP 403 to our own fetchers, so this quote rests on Sol's reading.                                                                                                                                                                                                                                                                                                | **UTC day** (by scheduled departure). **A counterexample to "none use UTC"**                                                     | n/a                                           |
 | FAA ATCSCC advisory time zone, [fly.faa.gov/ois/help/index.html](https://www.fly.faa.gov/ois/help/index.html)                                                                                                                                                                                                                                                                          | **Unverified.** 404 on 2026-11-21 ("No static resource help/index.html"). `/ois/` redirects to nasstatus.faa.gov.                                                                                                                                                                                                                                                                                                                                                            | Not relied on. In-repo fact: our feed stamps `Update_Time` in GMT ([sources.md](../sources.md)), which is a timestamp, not a day | n/a                                           |
 
 **What this supports, and no more.** Of the contracts checked, the Kalshi documents that state an
 observation day use the airport-local day (AIRPORTDELAY, KXFLYCANCJFK). None of them uses a UTC day.
 Every one states its trading and expiry times in ET. BTS reports in local time. One non-exchange
-tracker, PlaneTrack, counts by scheduled UTC day (verified by Sol), so "nobody uses UTC" is not
-claimed. A 20-airport panel spans four zones (10 airports Eastern: ATL JFK CLT MCO MIA EWR BOS FLL
-LGA DTW; 4 Central: DFW ORD IAH MSP; 2 Mountain: DEN PHX; 4 Pacific: LAX LAS SEA SFO), so no single
+tracker, PlaneTrack, counts "by scheduled day (UTC)", so "nobody uses UTC" is not claimed. A
+20-airport panel spans four zones (10 airports Eastern: ATL JFK CLT MCO MIA EWR BOS FLL LGA DTW; 4
+Central: DFW ORD IAH MSP; 2 Mountain: DEN PHX; 4 Pacific: LAX LAS SEA SFO), so no single
 airport-local day exists. ET is the zone these contracts write their times in, and it is the local
 zone of half the panel. That a multi-airport contract "would be written on an ET day" is the PM's
 inference, not a sourced fact.
@@ -100,14 +100,29 @@ deployment, after the first has been read back:
    settlement lookup ignore it, v1 has no `effectiveUntil`, and the collector keeps tagging v1. Only
    the indicative series (which selects v2 explicitly, see below) and `/api/v1/methodology`'s
    `upcoming` block use it.
-2. **Readback.** The operator records **N = the `ready` timestamp of the Vercel production
-   deployment that first served the entry**. That timestamp is immutable and set by the platform,
-   not by us. The operator also fetches `/incidents` from production and records the readback time
-   and the response's `X-Deployed-Commit`. N must not be later than the readback.
+2. **Readback: the first successful production readback is N.** A Vercel `ready` timestamp is not
+   used, because a deployment can be ready before it serves production traffic. Instead, a
+   `notice-readback` GitHub Actions workflow runs on a schedule (every 15 minutes) and by hand after
+   step 1 deploys. It fetches `https://airports.apexsofteng.com/incidents` and `/api/v1/methodology`
+   over the public internet, and succeeds only when both show the notice (the incidents entry text
+   and the `upcoming` v2 block with its parameter hash). The first successful run writes
+   `notices/2.0.0.readback.json` to the attestations branch, write-once, holding:
+   - the run id;
+   - GitHub's `run_started_at`;
+   - each response's `Date` header and `X-Deployed-Commit`;
+   - the sha256 of each body.
+
+   The file is stamped with OpenTimestamps like a print. **N = the later of the run's
+   `run_started_at` and the response `Date` headers.** Choosing the later is conservative: it can
+   only push E later. What proves it: GitHub's run record (a third party), the bodies' hashes, and
+   an OTS proof that the file existed no later than its Bitcoin block. A reviewer can check that
+   proof time is ≥ N. If the proof's block time is earlier than N, the readback is invalid and the
+   next run retries.
+
 3. **Step 2, the registry deploy.** A follow-up PR sets v2 `announcedAt: N` and v1
-   `effectiveUntil: E−1`, and adds "published at N (deployment `<id>`)" to the incidents entry. A
-   registry test asserts `start(E) ≥ announcedAt + 30 × 24 h`. **This deployment is the rollback
-   floor** (below).
+   `effectiveUntil: E−1`, copied from `notices/2.0.0.readback.json`. It adds "public from N
+   (readback run `<id>`, `notices/2.0.0.readback.json`)" to the incidents entry. A registry test
+   asserts `start(E) ≥ announcedAt + 30 × 24 h`. **This deployment is the rollback floor** (below).
 
 **When the rule-4 amendment authorizes the cutover.** All three must hold:
 
@@ -172,16 +187,27 @@ No cleaner cutover exists, because UTC and ET midnights never coincide:
 
 ### Two lookups: canonical for settlement, explicit for indicative
 
-- **Settlement: `settlementReleaseFor(label)`**, the canonical lookup. It returns the release whose
-  `[effectiveFrom, effectiveUntil]` contains the label (with `announcedAt` set), and throws
-  otherwise. `buildPrint`, `printBody`, `settleDay`, `correctDay`, the settle route, the correction
-  CLI and settlement `reproduce` all derive the release this way, so none of them can be handed one.
-  Every pre-E label gives v1, by design.
-- **Indicative: `INDICATIVE_RELEASE`**, a constant naming v2 explicitly (`{2.0.0, <v2 hash>}`). The
-  indicative builder computes `dayWindow(INDICATIVE_RELEASE, label)` and refuses labels outside
-  `[2026-11-20, E−1]`. `reproduce --indicative` rebuilds under the release **recorded in the
-  indicative print**, and refuses unless that is `INDICATIVE_RELEASE`. Neither path calls the
-  settlement lookup. If they did, they would get v1 and build a UTC day.
+The release is looked up **only at entry points** and **injected** downward. `buildPrint`,
+`printBody` and `aggregateDay` take `{ release, window, admit }` as arguments and never look a
+release up themselves (section 4).
+
+- **Settlement entry points** (`settleDay`, `correctDay`, the settle route, the correction CLI and
+  settlement `reproduce`) call `settlementReleaseFor(label)` once. That is the canonical lookup: it
+  returns the release in effect whose `[effectiveFrom, effectiveUntil]` contains the label, and
+  throws otherwise. A release after the first counts as in effect only once its `announcedAt` is
+  set. Every pre-E label gives v1, by design.
+- **Indicative entry points** (the indicative builder and `reproduce --indicative`) take the release
+  **by role, never by date**:
+  - building: `upcomingRelease()`, the registry's next release after the one in effect. That is v2
+    during the notice period, in step 1 (`announcedAt: null`, v1 `effectiveUntil` null) and in step
+    2 alike. The indicative bound comes from it: labels from 2026-11-20 to
+    `upcomingRelease().effectiveFrom − 1`. It never depends on v1's `effectiveUntil`, which is null
+    in step 1. With no upcoming release, nothing new is built.
+  - reproducing: the release **recorded in the indicative print** (`methodologyOf`). The label must
+    precede that release's `effectiveFrom`, so old indicative prints still reproduce after v2 takes
+    effect.
+
+  Neither path calls `settlementReleaseFor`. If they did, they would get v1 and build a UTC day.
 
 Tests (section 8, item 4):
 
@@ -312,8 +338,10 @@ Schedules: the legacy `45 1 * * *` stays until 2026-12-31 is attested, plus new 
 - **Delayed starts** (GitHub can start a scheduled run hours late) only move `now` later, so the
   gate becomes more permissive, never wrong. **Duplicate runs** are idempotent: an attestation is
   never rewritten, and the workflow keeps one concurrency group so two runs never push at once.
-- Indicative prints are **never** attested here (section 4). The only non-settlement file the
-  workflow ever writes is the one-off gap pin `transition/2027-01-01.json` (D8).
+- Indicative prints are **never** attested here (section 4). The only non-settlement files on the
+  branch are the one-off gap pin `transition/{v2.effectiveFrom}.json` (D8, derived from the
+  activated cutover) and the notice readback `notices/2.0.0.readback.json` (section 2), each written
+  by its own job.
 
 ### Monitor (`lexabu/personal-configs` `scripts/adi-monitor.sh`)
 
@@ -342,7 +370,7 @@ collection. (ET `2026-11-19` has 6 rounds.)
 
 The indicative series runs **the same aggregation code** as settlement (`aggregateDay`, the ladder,
 coverage, `printBody`). That code no longer looks anything up for itself. The caller injects three
-things: the **release** (from `settlementReleaseFor` or `INDICATIVE_RELEASE`), its **`DayWindow`**,
+things: the **release** (from `settlementReleaseFor` or `upcomingRelease()`), its **`DayWindow`**,
 and the **admission predicate**. The two series differ in all three, and in nothing else:
 
 - settlement: `isUnder(dayRelease)`, strict and frozen (section 2).
@@ -387,32 +415,53 @@ included**:
 The two sets must be equal. Nothing may be omitted and nothing added. `reproduce --indicative D`
 also rebuilds the print from those receipts. Outcomes, each with its own exit code:
 
-| Outcome    | Exit | Meaning                                                                                                                                 |
-| ---------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `MATCH`    | 0    | Rebuild matches and the sets are equal against verified v1 references.                                                                  |
-| `MISMATCH` | 1    | Rebuild differs, sets differ, or verified revisions of one v1 day disagree.                                                             |
-| `PENDING`  | 4    | Rebuild matches, but a v1 reference is not yet verified (not attested, or the proof is pending).                                        |
-| `PARTIAL`  | 5    | E−1 only, without the gap pin: the pinned part is equal both ways, and the gap slots are listed as unpinned. Never reported as `MATCH`. |
+| Outcome    | Exit | Meaning                                                                                                                                                  |
+| ---------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MATCH`    | 0    | Rebuild matches and the sets are equal against verified v1 references.                                                                                   |
+| `MISMATCH` | 1    | Rebuild differs, sets differ, or verified revisions of one v1 day disagree.                                                                              |
+| `PENDING`  | 4    | Rebuild matches, but a v1 reference is not yet verified (not attested, or the proof is pending).                                                         |
+| `PARTIAL`  | 5    | E−1 only, when the gap pin is absent: the 228 v1-covered slots are equal both ways, and the gap slots are listed as unpinned. Never reported as `MATCH`. |
 
 The attest workflow runs this for each indicative day once both of its v1 references verify, and
 fails the run on `MISMATCH`. It writes no indicative attestation files.
 
-**E−1 (2026-12-31 ET) and the gap.** Its window is `[2026-12-31T05:00Z, 2027-01-01T05:00Z)`. The gap
-slots `[2027-01-01T00:00Z, 05:00Z)` (60 slots) are in partition 2027-01-01, which has no v1 print.
-They can be reproduced from the archive, but no v1 attestation pins them. Without more,
-`reproduce --indicative 2026-12-31` returns `PARTIAL`: the 228 pinned slots are checked both ways,
-and the receipts in the 60 gap slots are listed.
+**E−1 has its own branch.** The last indicative day (2026-12-31 ET) has **only one** v1 reference.
+Its window `[2026-12-31T05:00Z, 2027-01-01T05:00Z)` spans v1 UTC day 2026-12-31 (228 slots) and the
+gap `[2027-01-01T00:00Z, 05:00Z)` (60 slots). The gap's partition, 2027-01-01, has no v1 print. The
+branch is chosen by role, not by date: the label is the last day before the cutover registered in
+step 2, and the gap is that cutover's transition interval. `reproduce --indicative` for that label
+runs:
 
-**D8, the gap pin (opt-in, recommended, and we will do it).** It is cheap: one file and one stamp.
-At the first attest run after `2027-01-01T05:30Z` (when E−1's indicative print freezes), the
-workflow writes `transition/2027-01-01.json` to the attestations branch. The file holds the window
-`[2027-01-01T00:00Z, 05:00Z)` and its sorted `(roundId, receiptHash, status)` list, read from the
-public API. The workflow stamps it with OpenTimestamps under the same rules as a print (write-once,
-proof committed beside it, cutoff = gap end + 24 h). `verify-attestation` ignores the `transition/`
-directory. `reproduce --indicative 2026-12-31` uses the file, once its proof verifies, as the
-reference for the gap slots. E−1 can then return `MATCH`. Until the proof confirms it returns
-`PENDING`, and without the file `PARTIAL`. The notice states that the gap is pinned only this way,
-and only after the fact.
+1. Verify the single v1 reference (UTC day E−1), as above. If it is unverified, the result is
+   `PENDING`.
+2. Look for the gap pin (D8) at its derived path. If it is absent, compare only the 228 v1-covered
+   slots both ways. Equal gives **`PARTIAL`**, with the gap receipts listed as unpinned. Unequal
+   gives `MISMATCH`.
+3. If the pin is present, **verify it**. It must be the first-committed bytes on the attestations
+   branch, its window must equal the transition interval derived from the registry, and its OTS
+   proof must reach a Bitcoin block before the pin's cutoff (gap end + 24 h). A pending proof gives
+   `PENDING`. An invalid or late proof, or a wrong window, gives `MISMATCH`.
+4. With the pin verified, the reference set is {v1 pairs in the window} ∪ {pin pairs}. **Rerun the
+   full both-ways comparison** over all 288 slots. Equal gives **`MATCH`**, unequal gives
+   `MISMATCH`.
+
+**D8, the gap pin (opt-in, recommended, and we will do it).** It is cheap: one file and one stamp,
+and nothing in it is a constant. It is written only once a cutover is **activated**, meaning step 2
+is live, so v1 has an `effectiveUntil` and v2 an `announcedAt`. Its name and window are derived from
+that activated cutover:
+
+- path: `transition/{v2.effectiveFrom}.json`;
+- window: `[end of v1's last day, start of v2's first day)`, computed by `dayWindow` from the two
+  releases.
+
+For this cutover the path is `transition/2027-01-01.json` and the window is
+`[2027-01-01T00:00Z, 05:00Z)`. At the first attest run after the transition interval has ended and
+E−1's indicative print has frozen (its cutoff), the workflow writes the window and its sorted
+`(roundId, receiptHash, status)` list, read from the public API. It stamps the file under the same
+rules as a print: write-once, proof committed beside it, cutoff = gap end + 24 h.
+`verify-attestation` ignores `transition/`. If the cutover is postponed, the derived path and window
+move with it, and no file is ever written for a superseded date. The notice states that the gap is
+pinned only this way, and only after the fact.
 
 ### Labels and standing
 
@@ -619,9 +668,10 @@ unchanged). The running value reads the two partition indexes and filters to the
 >   days). A withdrawn v2 leaves v1 in effect with no end date. Either way, no day is ever printed
 >   under two methodologies, and older deployments that carry the superseded date are retired from
 >   rollback.
-> - **Effective-date record.** This entry was first served by the production deployment `<id>`,
->   ready at `<N>`, and read back at `<readback>`. Those values are added by the follow-up registry
->   change.
+> - **Effective-date record.** This entry has been public since `<N>`: the first successful public
+>   readback of this notice (readback run `<id>`, recorded and timestamped in
+>   `notices/2.0.0.readback.json` on the attestations branch). That value is added by the follow-up
+>   registry change.
 >
 > Discussion: issue #<n>.
 
@@ -636,7 +686,7 @@ unchanged). The running value reads the two partition indexes and filters to the
 - **Version-scoped settlement rules.** "Settlement rules" opens with: "A day is governed by the
   rules of the methodology version that owns it (`/api/v1/days/{date}` states the version)." Then
   come two normative blocks:
-  - **"Settlement rules, v2.0.0 (ET days from 2027-01-01)"**: the text below.
+  - **"Settlement rules, v2.0.0 (ET days from 2027-01-01)"**: all eight rules below, in order.
   - **"Settlement rules, v1.0.0 (UTC days 2026-11-17 to 2026-12-31)"**: an annex that holds today's
     rules 1 to 8 **verbatim**, including "D+1 01:30Z", "D+2 00:30Z" and "up to 14 can be missing".
     It is never edited again, because v1 prints keep citing it.
@@ -644,36 +694,61 @@ unchanged). The running value reads the two partition indexes and filters to the
 
 #### Settlement rules, v2.0.0 (text to publish)
 
-Rules 1, 2 and 6 read as in v1, with two clarifications. Rule 1: the settlement values of a `final`
-print are its panel totals, `value` (ADI) and `groundStopValue` (ADI-GS), and per-airport and hourly
-figures are informational. Rule 2: the print must be a settlement print (`standing: 'settlement'`).
-Rules 3, 4, 5, 7 and 8 are restated:
+These rules decide what a contract that cites a v2.0.0 day settles on. "Rule n" below always means
+rule n of this list. Where a rule and the rest of the methodology disagree, the rule wins.
 
-3. **Gaps move the value either way, by a bounded amount.** A slot with no valid round carries the
-   last observed state for at most 2 slots (10 minutes), then contributes 0. A carried slot can
-   overcount or undercount by at most 10 airport-minutes per airport per gap. A `missing` slot only
-   undercounts. A `final` day needs `valid × 100 ≥ 95 × slots`, so it can lack at most **13** valid
-   rounds on a 276-slot day, **14** on a 288-slot day and **15** on a 300-slot day. Nothing is
-   estimated or backfilled.
+1. **Only `final` prints are settlement-eligible.** A `degraded` print and a `suspended` print are
+   published, hashed and archived like any other, but neither is a settlement value. A `degraded`
+   value is shown for information only. The settlement values of a `final` print are its panel
+   totals, `value` (ADI) and `groundStopValue` (ADI-GS). Per-airport minutes and the hourly series
+   are informational.
+2. **The print is revision 1 of `GET /api/v1/days/{date}`**, which must have
+   `standing: 'settlement'`, unless a correction replaces it under rule 8. Nothing else (the running
+   value, `/api/v1/history`, the indicative series, the site) is a settlement value.
+3. **Gaps in the data can move the value either way, by a bounded amount.** A slot with no valid
+   round carries the last observed state for at most 2 slots (10 minutes), then contributes 0. A
+   carried slot can overcount or undercount by at most 10 airport-minutes per airport per gap. A
+   `missing` slot only ever undercounts. A `final` day needs `valid × 100 ≥ 95 × slots`, so it can
+   lack at most **13** valid rounds on a 276-slot day, **14** on a 288-slot day and **15** on a
+   300-slot day (see the DST annex). Nothing is estimated or backfilled.
 4. **One methodology per day.** A new methodology version takes effect at the start of its first
    day, under that version's day boundary. It is announced on the incident log at least 30 days
    before that start, and the announcement records the instant it became public. The instants
-   between the end of the previous version's last day and that start belong to no settlement day.
-   Each version stays in the code with the days it governs. A day is computed only under the version
-   that owns it, and a round counts only if it records exactly that version and parameter hash.
-   Otherwise the day prints `suspended` with the reason `mixed methodology`. A postponement or
-   withdrawal is announced at least 14 days before the announced start, and a new start needs a
-   fresh 30 days.
-5. **Feed data the index cannot read never settles.** As in v1, except the coverage sentence: "A few
-   rejected rounds therefore leave a day `final` (up to 13, 14 or 15 by the day's slot count, rule
-   3)."
-6. **Publication deadline and retries.** The print for day D is due **90 minutes after D ends** (D+1
+   between the end of the previous version's last day and that start belong to no settlement day. A
+   postponement or withdrawal is announced at least 14 days before the announced start, and a new
+   start needs a fresh 30 days. Each version stays in the code with the days it governs. A day is
+   computed only under the version that owns it, and a round counts only if it records exactly that
+   version and parameter hash. Otherwise the day prints `suspended` with the reason
+   `mixed methodology` and the number of rounds found under each other version. Such rounds are not
+   counted in the running value either, and `/api/v1/current` lists them in `foreignMethodologies`.
+5. **Feed data the index cannot read never settles.** Redirects are not followed, so a moved feed
+   makes rounds invalid (`network_error` or `http_status`). A changed GS or GDP list fails the round
+   (`parse_error`), and so does an element at the root the feed has never carried or a
+   counted-program block that does not hold exactly its list (`unrecognized_structure`). An invalid
+   round counts as not received: it only lowers coverage, and the coverage thresholds alone decide
+   the status. A few rejected rounds therefore leave a day `final` (up to 13, 14 or 15 by the day's
+   slot count, rule 3), and more make it `degraded` or `suspended`. Restoring collection is a
+   source-adapter fix or a methodology change, and neither ever applies to a day already printed.
+6. **New list types are recorded and flagged, never counted.** A `Delay_type` block whose name v2
+   does not count, holding a list v2 does not know, is recorded in the receipt as `unrecognized`.
+   The round stays valid, and any such list seen in today's valid rounds is listed in
+   `unrecognizedLists` in `/api/v1/current` and on `/status`. A block named for a counted program
+   holding anything but exactly its own list makes the round invalid under rule 5. If the FAA starts
+   reporting ground stops or ground delay programs under a new name and list, v2 undercounts until a
+   methodology change counts it.
+7. **Publication deadline and retries.** The print for day D is due **90 minutes after D ends** (D+1
    01:30 ET, see the DST annex). The settle job runs at the settlement cutoff (30 minutes after D
-   ends, D+1 00:30 ET) and retries 15 and 30 minutes later. The rest of rule 7 is unchanged: verify
-   or stop, never overwrite, a late print is still the print.
-7. **Corrections.** As in v1, except the window: a correction for day D may be issued until **24
-   hours after D's settlement cutoff** (`settlesAt` + 24 h), with the same written-override rule
-   after that.
+   ends, D+1 00:30 ET) and retries 15 and 30 minutes later. A run that finds no print reads every
+   in-window receipt of the day and checks it against its `receiptHash`. A receipt that cannot be
+   read or verified stops that run without printing anything, and the next run tries again. A run
+   that finds a print already stored returns it and repairs the history index. If no print exists at
+   the deadline, the operator opens an incident. **A late print is still the print.**
+8. **Corrections.** Only the operator issues a correction print (revision 2 or later), rebuilt from
+   the day's stored receipts under the version the superseded print records. A correction for day D
+   may be issued until **24 hours after D's settlement cutoff** (`settlesAt` + 24 h). After that the
+   print stands, unless the operator issues a correction with a written justification, recorded in
+   `windowOverride`. Every correction is listed on the incident log, and every revision stays
+   published. A correction never applies a later methodology to a past day.
 
 Rule 4 governs the announcement. Rule 8 applies only as a prohibition: no v1 day is reprinted under
 v2.
@@ -704,13 +779,14 @@ v2.
 3. **Aggregation:** 23 and 25 hourly buckets, the repeated fall-back hour, and a ladder that
    restarts at ET midnight.
 4. **Cutover and labels:** registry windows; `dayAt` gives `transition` for the whole of
-   `[E 00:00Z, E 05:00Z)` and nothing else. Property test over labels E−3 to E+3 through
-   `buildPrint`, `settleDay`, `correctDay`, the settle route (`?date` and default), the correction
-   CLI and settlement `reproduce`: the release is v1 if and only if the label is ≤ E−1, and a v1
-   print for a label ≥ E is impossible on every path. The indicative builder and
-   `reproduce --indicative` use `INDICATIVE_RELEASE` and never the settlement lookup. For
-   `2026-12-15`, the settlement and indicative prints have the distinct windows given in section 2,
-   live at different keys and each `MATCH`.
+   `[E 00:00Z, E 05:00Z)` and nothing else. Property test over labels E−3 to E+3 through every
+   settlement entry point (`settleDay`, `correctDay`, the settle route with `?date` and default, the
+   correction CLI, settlement `reproduce`): the release is v1 if and only if the label is ≤ E−1, and
+   a v1 print for a label ≥ E is impossible on every path. `printBody` and `aggregateDay` have no
+   registry import (a lint rule enforces it), so they can only use the release they are given. The
+   indicative builder uses `upcomingRelease()`, `reproduce --indicative` uses the print's recorded
+   release, and neither calls the settlement lookup. For `2026-12-15`, the settlement and indicative
+   prints have the distinct windows given in section 2, live at different keys and each `MATCH`.
 5. **Rollback and stale writes:** on one `FileStore`, a stale v1 settle (with its history update)
    and a stale v1 correction for label E, run before and after the v2 settle. **Immediately after
    each stale write**, with no repair run, the v2 print, `/api/v1/days`, `/api/v1/history` and
@@ -719,10 +795,14 @@ v2.
    registry: a test registry with a different `effectiveUntil` moves the detection boundary with it.
 
    **Two-step publication:** with `announcedAt: null`, v2 is never in effect (no `effectiveUntil`,
-   no transition, collector tags v1), and the indicative series still works. Step 2 is refused by
-   the registry test unless `start(E) ≥ announcedAt + 30 d`. A postponement entry after the 14-day
-   close is refused. A rollback-floor check rejects deployments older than the latest cutover
-   registry change.
+   no transition, collector tags v1), and the indicative series still works, bounded by
+   `upcomingRelease().effectiveFrom − 1`. The `notice-readback` job succeeds only when both public
+   responses show the notice. It writes its file once, takes N as the later of `run_started_at` and
+   the `Date` headers, and is rejected if its proof's block time precedes N. No gap pin is written
+   before the cutover is activated. A test registry with a postponed `effectiveFrom` moves the pin's
+   path and window with it. Step 2 is refused by the registry test unless
+   `start(E) ≥ announcedAt + 30 d`. A postponement entry after the 14-day close is refused. A
+   rollback-floor check rejects deployments older than the latest cutover registry change.
 
 6. **Admission:** settlement on a v2 day with one v1-tagged round prints `suspended` with the frozen
    reason. Indicative admits v1 and v2 identities. A known-incompatible identity (a test release
@@ -756,8 +836,11 @@ v2.
     - the reference is the latest `verify-attestation` `MATCH` revision, and two verified revisions
       that disagree give `MISMATCH`;
     - `PENDING` before the v1 references verify;
-    - E−1 gives `PARTIAL` (exit 5) with exactly the 60 gap slots listed, never `MATCH`, then `MATCH`
-      once `transition/2027-01-01.json` and its proof verify (D8).
+    - the E−1 branch: an unverified v1 reference gives `PENDING`; with no pin, `PARTIAL` (exit 5)
+      with exactly the 60 gap slots listed, never `MATCH`; with a pending pin proof, `PENDING`; with
+      a late or invalid pin, or a pin whose window differs from the derived transition interval,
+      `MISMATCH`; with a verified pin, the full 288-slot rerun gives `MATCH`, and gives `MISMATCH`
+      when a gap receipt is altered.
 13. **v1 end-to-end fixtures** (section 6): `MATCH` with every pinned byte and deadline.
 14. **API and UI at both boundaries** (`E 00:00Z` and `E 05:00Z`): `/current` switches `provisional`
     → `transition` → `provisional`; `/days`, `/methodology` and `/` render each state; ET, UTC and
@@ -806,6 +889,17 @@ Normative for v2. Copied into `docs/methodology.md` at release.
 6. **Deadlines are durations, on instants:** `settlesAt` = end + 30 min; `publishBy` = end + 90 min;
    corrections until `settlesAt` + 24 h; r1 attestation cutoff = end + 24 h; correction attestation
    cutoff = `issuedAt` + 48 h. On a fall-back night, `publishBy` is the first 01:30 ET (EDT).
+
+## Round 3 review dispositions
+
+| Id  | Disposition                                                                                                                                                                                                                                                                                                                                           |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S5  | Done. An explicit E−1 branch: verify the single v1 reference, then verify the gap pin (first-committed bytes, derived window, proof before its cutoff), then rerun the full both-ways comparison to `MATCH`. `PARTIAL` without the pin, `PENDING` while a proof is pending (section 4, test 12).                                                      |
+| S6  | Done. N is the first successful public production readback, never Vercel `ready`. A `notice-readback` workflow records the run, the `Date` headers, `X-Deployed-Commit` and the body hashes in an OTS-stamped, write-once `notices/2.0.0.readback.json`. N is the later of `run_started_at` and the `Date` headers, and step 2 copies it (section 2). |
+| S13 | Done. Entry points look up the release and inject `{release, window, admit}`. `printBody` and `aggregateDay` never look one up, enforced by a lint rule. Sections 2 and 4 and test 4 now agree.                                                                                                                                                       |
+| S14 | Done. All eight v2 rules are published in order (1 to 8), with cross-references checked. Rule 2 now points at rule 8 for corrections; the earlier list had been renumbered by the formatter (section 7).                                                                                                                                              |
+| O12 | Done. The indicative bound comes from `upcomingRelease().effectiveFrom`, so it works in step 1 when v1 has no `effectiveUntil`. The gap pin's path and window derive from the activated cutover, and none is written before activation or for a superseded date (sections 2, 4).                                                                      |
+| S7  | Done. PlaneTrack quoted verbatim, "Departures are counted by scheduled day (UTC).", and marked verified (section 0).                                                                                                                                                                                                                                  |
 
 ## Round 2 review dispositions
 
