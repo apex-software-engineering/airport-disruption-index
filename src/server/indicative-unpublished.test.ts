@@ -1,7 +1,8 @@
 /**
- * Before v2's notice ships (`noticePublishedAt: null`, the registry as it is today), the indicative
- * series is not public: its API answers 404, no page reads it, and the settle run freezes nothing.
- * v1 settlement is untouched.
+ * Before v2's notice ships (`noticePublishedAt: null`), the indicative series is not public: its
+ * API answers 404, no page reads it, and the settle run freezes nothing. v1 settlement is
+ * untouched. The registry is mocked, mirroring the published suite, so this suite keeps holding
+ * after step 1 sets `noticePublishedAt` in the real one.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,16 +11,25 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GET as settleRoute } from '@/app/api/cron/settle/route';
-import { GET as indicativeDayRoute } from '@/app/api/v1/indicative/days/[date]/route';
-import { GET as indicativeRoundRoute } from '@/app/api/v1/indicative/days/[date]/rounds/[id]/route';
-import { GET as indicativeHistoryRoute } from '@/app/api/v1/indicative/history/route';
 import { readSiteData } from '@/components/index-data';
+import { config, proxy } from '@/proxy';
 import { indicativeSeriesPublished, indicativeSeriesPublishedIn } from '@/lib/index/indicative';
 import { METHODOLOGY_V1, METHODOLOGY_V2, release } from '@/lib/index/releases';
 import { collectAt } from '@/test/collect';
 
 import { readIndicativePrints } from './archive';
 import { FileStore } from './storage';
+
+vi.mock('@/lib/index/releases', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('@/lib/index/releases')>();
+	return {
+		...actual,
+		RELEASES: [
+			actual.release(actual.METHODOLOGY_V1, '2026-11-17'),
+			actual.release(actual.METHODOLOGY_V2, '2027-01-01', { noticePublishedAt: null }),
+		],
+	};
+});
 
 let root: string;
 let store: FileStore;
@@ -55,24 +65,12 @@ describe('the indicative series before its notice', () => {
 		).toBe(false);
 	});
 
-	it('answers 404 on every indicative endpoint', async () => {
-		const day = await indicativeDayRoute(
-			new Request('http://test/api/v1/indicative/days/2026-11-20'),
-			{
-				params: Promise.resolve({ date: '2026-11-20' }),
-			},
-		);
-		const round = await indicativeRoundRoute(
-			new Request('http://test/api/v1/indicative/days/2026-11-20/rounds/2026-11-20T05:00Z'),
-			{ params: Promise.resolve({ date: '2026-11-20', id: '2026-11-20T05:00Z' }) },
-		);
-		const history = await indicativeHistoryRoute(
-			new Request('http://test/api/v1/indicative/history'),
-		);
-		for (const response of [day, round, history]) {
-			expect(response.status).toBe(404);
-			expect(await response.json()).toEqual(NOT_PUBLISHED);
-		}
+	it('answers 404 under /api/v1/indicative before any route, whatever the method', async () => {
+		// The proxy runs for every method (GET, HEAD, OPTIONS, …) on the whole prefix.
+		expect(config.matcher).toEqual(['/api/v1/indicative', '/api/v1/indicative/:path*']);
+		const response = proxy();
+		expect(response.status).toBe(404);
+		expect(await response.json()).toEqual(NOT_PUBLISHED);
 	});
 
 	it('is read by no page', async () => {

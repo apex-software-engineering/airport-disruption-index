@@ -3,18 +3,21 @@
  *
  *   npm run reproduce -- <roundId>      e.g. 2026-11-17T20:45Z
  *   npm run reproduce -- <YYYY-MM-DD>   a settled day: every round, then the print
- *   npm run reproduce -- --indicative <YYYY-MM-DD>   an indicative ET day (never a settlement value)
+ *   npm run reproduce -- --indicative <YYYY-MM-DD>   an indicative ET day (never a settlement value;
+ *                                                    listed in the usage once the series is published)
  *   options: --base-url https://airports.apexsofteng.com
  *
  * Prints MATCH or MISMATCH. Exit codes: 0 match, 1 mismatch, 2 could not verify (unreachable,
  * not found, or published under a methodology or feed adapter this checkout does not include).
  */
+import { indicativeSeriesPublished } from '@/lib/index/indicative';
 import { reproduce, reproduceIndicative } from '@/lib/reproduce';
 
 import { getApi } from './lib/public-api';
 
 const DEFAULT_BASE_URL = 'https://airports.apexsofteng.com';
-const USAGE = 'usage: npm run reproduce -- [--indicative] <roundId|YYYY-MM-DD> [--base-url URL]';
+// `--indicative` always works (preview rehearsal); it is advertised once the series is published.
+const USAGE = `usage: npm run reproduce -- ${indicativeSeriesPublished() ? '[--indicative] ' : ''}<roundId|YYYY-MM-DD> [--base-url URL]`;
 
 function parseArgs(
 	argv: string[],

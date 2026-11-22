@@ -91,10 +91,18 @@ describe('storeTarget', () => {
 		expect(storeTarget({ VERCEL_ENV: 'production' })).toEqual({
 			name: 'Vercel Blob, VERCEL_ENV=production',
 			warning: null,
+			target: { kind: 'blob', vercelEnv: 'production', namespace: 'prod' },
 		});
 		expect(storeTarget({ ADI_DATA_DIR: '/tmp/x' })).toEqual({
 			name: 'filesystem store /tmp/x',
 			warning: null,
+			target: { kind: 'filesystem', root: '/tmp/x' },
+		});
+		// An unknown VERCEL_ENV is named, and refused only when the store is opened.
+		expect(storeTarget({ VERCEL_ENV: 'staging' })?.target).toEqual({
+			kind: 'blob',
+			vercelEnv: 'staging',
+			namespace: null,
 		});
 		expect(storeTarget({ ADI_DATA_DIR: '/tmp/x', VERCEL_ENV: 'production' })).toMatchObject({
 			name: 'filesystem store /tmp/x',

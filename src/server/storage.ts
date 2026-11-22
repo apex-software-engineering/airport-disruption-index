@@ -175,38 +175,65 @@ function isErrno(error: unknown, code: string): boolean {
 	return error instanceof Error && 'code' in error && error.code === code;
 }
 
-const NAMESPACES: Record<string, string> = {
+const NAMESPACES: Record<string, BlobNamespace> = {
 	production: 'prod',
 	preview: 'preview',
 	development: 'dev',
 };
 
+type BlobNamespace = 'prod' | 'preview' | 'dev' | 'local';
+
 /**
- * What `storeFromEnv(env)` opens, named without credentials, for an operator to confirm. Null
- * unless ADI_DATA_DIR or VERCEL_ENV is set explicitly, so a command never guesses a store.
+ * Which store an environment names, before any credential is read: `ADI_DATA_DIR` wins (a
+ * filesystem store); otherwise Vercel Blob, namespaced by `VERCEL_ENV` (`local` when unset,
+ * null when it names no namespace, which opening then refuses). The only owner of these rules.
  */
-export function storeTarget(
-	env: Readonly<Record<string, string | undefined>>,
-): { name: string; warning: string | null } | null {
-	if (env.ADI_DATA_DIR) {
-		const warning = env.VERCEL_ENV
-			? `ADI_DATA_DIR and VERCEL_ENV are both set; ADI_DATA_DIR wins, so Vercel Blob is not used`
-			: null;
-		return { name: `filesystem store ${env.ADI_DATA_DIR}`, warning };
-	}
-	if (env.VERCEL_ENV) return { name: `Vercel Blob, VERCEL_ENV=${env.VERCEL_ENV}`, warning: null };
-	return null;
+export type StoreTarget =
+	| { kind: 'filesystem'; root: string }
+	| { kind: 'blob'; vercelEnv: string | null; namespace: BlobNamespace | null };
+
+export function resolveStoreTarget(env: Readonly<Record<string, string | undefined>>): StoreTarget {
+	if (env.ADI_DATA_DIR) return { kind: 'filesystem', root: env.ADI_DATA_DIR };
+	const vercelEnv = env.VERCEL_ENV || null;
+	return {
+		kind: 'blob',
+		vercelEnv,
+		namespace: vercelEnv === null ? 'local' : (NAMESPACES[vercelEnv] ?? null),
+	};
 }
 
 /**
- * The store for this process. `ADI_DATA_DIR` selects a filesystem store (local runs); otherwise
- * Vercel Blob, namespaced by `VERCEL_ENV` (`local` when not on Vercel).
+ * What `storeFromEnv(env)` opens, named without credentials, for an operator to confirm, with the
+ * target itself. Null unless ADI_DATA_DIR or VERCEL_ENV is set explicitly, so a command never
+ * guesses a store.
  */
-export function storeFromEnv(env: NodeJS.ProcessEnv = process.env): ObjectStore {
-	if (env.ADI_DATA_DIR) return new FileStore(env.ADI_DATA_DIR);
+export function storeTarget(
+	env: Readonly<Record<string, string | undefined>>,
+): { name: string; warning: string | null; target: StoreTarget } | null {
+	if (!env.ADI_DATA_DIR && !env.VERCEL_ENV) return null;
+	const target = resolveStoreTarget(env);
+	if (target.kind === 'filesystem') {
+		const warning = env.VERCEL_ENV
+			? `ADI_DATA_DIR and VERCEL_ENV are both set; ADI_DATA_DIR wins, so Vercel Blob is not used`
+			: null;
+		return { name: `filesystem store ${target.root}`, warning, target };
+	}
+	return { name: `Vercel Blob, VERCEL_ENV=${target.vercelEnv}`, warning: null, target };
+}
+
+/** Opens `target`, reading the Blob token from `env` when it is a Vercel Blob store. */
+export function openStore(
+	target: StoreTarget,
+	env: Readonly<Record<string, string | undefined>>,
+): ObjectStore {
+	if (target.kind === 'filesystem') return new FileStore(target.root);
 	const token = env.BLOB_READ_WRITE_TOKEN;
 	if (!token) throw new Error('BLOB_READ_WRITE_TOKEN is not set and ADI_DATA_DIR is not set');
-	const namespace = env.VERCEL_ENV ? NAMESPACES[env.VERCEL_ENV] : 'local';
-	if (namespace === undefined) throw new Error(`unknown VERCEL_ENV ${env.VERCEL_ENV}`);
-	return new BlobStore(namespace, token);
+	if (target.namespace === null) throw new Error(`unknown VERCEL_ENV ${target.vercelEnv}`);
+	return new BlobStore(target.namespace, token);
+}
+
+/** The store for this process (see `StoreTarget` for how the environment selects it). */
+export function storeFromEnv(env: NodeJS.ProcessEnv = process.env): ObjectStore {
+	return openStore(resolveStoreTarget(env), env);
 }

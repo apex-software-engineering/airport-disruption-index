@@ -13,7 +13,7 @@ import { parseArgs } from 'node:util';
 import { indicativeReleaseFor, indicativeSeriesPublished } from '@/lib/index/indicative';
 import { addDays, parseUtcDate, utcDateOf } from '@/lib/index/time';
 import { freezeIndicativeDay } from '@/server/archive';
-import { storeFromEnv, storeTarget, type ObjectStore } from '@/server/storage';
+import { openStore, storeTarget, type ObjectStore } from '@/server/storage';
 
 import { indicativeWriteRefusal } from './lib/indicative-target';
 
@@ -52,14 +52,15 @@ async function main(): Promise<number> {
 		);
 		return 2;
 	}
-	const refusal = indicativeWriteRefusal(process.env, indicativeSeriesPublished());
+	// One resolved target decides both whether to write and what to open.
+	const refusal = indicativeWriteRefusal(target.target, indicativeSeriesPublished());
 	if (refusal !== null) {
 		console.error(refusal);
 		return 2;
 	}
 	let store: ObjectStore;
 	try {
-		store = storeFromEnv(); // validates the token and VERCEL_ENV before the store is named
+		store = openStore(target.target, process.env); // validates the token and VERCEL_ENV
 	} catch (error) {
 		console.error(error instanceof Error ? error.message : String(error));
 		return 2;

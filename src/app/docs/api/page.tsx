@@ -6,7 +6,6 @@ import {
 	RECENT_PRINT_DAYS,
 	readLastReceipt,
 	readSiteData,
-	type IndicativeDay,
 	type IndicativeHistory,
 } from '@/components/index-data';
 import { Mono, Notice, PageTitle, Section } from '@/components/ui';
@@ -46,7 +45,7 @@ async function requestOrigin(): Promise<string> {
 
 export default async function ApiDocsPage() {
 	const origin = await requestOrigin();
-	const { current, history, recent, indicative, recentIndicative } = await readSiteData(new Date());
+	const { current, history, recent, indicative } = await readSiteData(new Date());
 	const sampleDate = recent[0]?.date ?? history.to;
 	const [day, receipt] = await Promise.all([
 		dayView(storeFromEnv(), sampleDate),
@@ -122,13 +121,7 @@ export default async function ApiDocsPage() {
 				<Mono>publishBy</Mono>.
 			</Endpoint>
 
-			{indicative === null || recentIndicative === null ? null : (
-				<IndicativeEndpoints
-					origin={origin}
-					indicative={indicative}
-					recentIndicative={recentIndicative}
-				/>
-			)}
+			{indicative === null ? null : <IndicativeEndpoints origin={origin} indicative={indicative} />}
 
 			<Endpoint
 				path={`${API_BASE}/rounds/{id}`}
@@ -270,11 +263,9 @@ function Code({ children }: { children: string }) {
 function IndicativeEndpoints({
 	origin,
 	indicative,
-	recentIndicative,
 }: {
 	origin: string;
 	indicative: IndicativeHistory;
-	recentIndicative: readonly IndicativeDay[];
 }) {
 	return (
 		<>
@@ -293,7 +284,7 @@ function IndicativeEndpoints({
 			<Endpoint
 				path={`${API_BASE}/indicative/days/{date}`}
 				cache={`${CACHE.immutable} once frozen; HTTP 404 with status: "pending" and freezesAt until then`}
-				curl={`curl -s ${origin}${API_BASE}/indicative/days/${recentIndicative[0]?.date ?? '{date}'}`}
+				curl={`curl -s ${origin}${API_BASE}/indicative/days/${indicative.days.at(-1)?.date ?? '{date}'}`}
 				sample={null}
 				sampleNote='The frozen print of an ET day, in the adi.daily-print/2 schema: its window, freeze time and admission policy are hashed with it. A date from v2’s first day on returns 404 with see: the settlement print.'>
 				One indicative ET day. Reproduce it with{' '}

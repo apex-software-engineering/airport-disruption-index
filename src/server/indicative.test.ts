@@ -14,6 +14,7 @@ import { GET as indicativeDayRoute } from '@/app/api/v1/indicative/days/[date]/r
 import { GET as indicativeHistoryRoute } from '@/app/api/v1/indicative/history/route';
 import { INDICATIVE_SERIES } from '@/lib/index/indicative';
 import { reproduceIndicative } from '@/lib/reproduce';
+import { proxy } from '@/proxy';
 import { routeGet } from '@/test/api';
 import { collectAt } from '@/test/collect';
 
@@ -219,6 +220,10 @@ describe('freezing an indicative ET day', () => {
 });
 
 describe('the indicative API', () => {
+	it('lets every request through the proxy once published', () => {
+		expect(proxy().headers.get('x-middleware-next')).toBe('1');
+	});
+
 	const getDay = (date: string) =>
 		indicativeDayRoute(new Request(`http://test/api/v1/indicative/days/${date}`), {
 			params: Promise.resolve({ date }),
