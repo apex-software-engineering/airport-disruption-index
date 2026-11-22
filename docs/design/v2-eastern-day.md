@@ -112,10 +112,14 @@ deployment, after the first has been read back:
    - each response's `Date` header and `X-Deployed-Commit`;
    - the sha256 of each body.
 
-   The file is stamped with OpenTimestamps like a print. **N = the later of the run's
-   `run_started_at` and the response `Date` headers.** Choosing the later is conservative: it can
-   only push E later. What proves it: GitHub's run record (a third party), the bodies' hashes, and
-   an OTS proof that the file existed no later than its Bitcoin block.
+   The file is stamped with OpenTimestamps like a print. **For readback revision k,
+   `N_k = max(own run_started_at, own Date headers, N_j for every prior revision j < k)`.** A
+   revision's own instants are its `run_started_at` and its `Date` headers. Revision 1 has no prior
+   revisions. Each record stores its computed `N` and the prior revisions' paths and N values it
+   took the maximum over. So N never decreases across revisions, even if a retry's server clock
+   reports an earlier `Date`. Taking the maximum is conservative: it can only push E later. What
+   proves it: GitHub's run record (a third party), the bodies' hashes, and an OTS proof that the
+   file existed no later than its Bitcoin block.
 
    **N is not usable until its proof is verified.** A readback record counts only once `ots verify`
    (or the same check against mempool.space) shows that the proof commits to the record's
@@ -127,20 +131,25 @@ deployment, after the first has been read back:
    merkle root does not match, or the calendars lost the commitment). The new record is written
    write-once as the next revision, `notices/2.0.0.readback.r2.json`, then `.r3.json`, and so on;
    the first record is revision 1. Each revision has its own run, its own N and its own proof. The
-   **first revision whose proof verifies** is the one used. Its N is necessarily later than every
-   rejected revision's N, so N only moves later. E is then recomputed under the lower-bound rule
-   (the first ET day with `start(E) ≥ N + 30 × 24 h`). If that moves E past the date the notice
-   states, the operator adds an incidents entry giving the new E and the reason, before step 2. v2
-   is not in effect yet, so this is not a postponement, and nothing has printed under v2. **Rollback
-   floor:** unaffected. Until step 2 deploys there is no cutover to protect, and the floor is the
-   step-2 deployment, whichever readback revision it cites.
+   **first revision whose proof verifies** is the one used. Retry order alone would not make N
+   monotonic, because a later run can report an earlier `Date`. The max over prior revisions does. E
+   is then recomputed under the lower-bound rule (the first ET day with `start(E) ≥ N + 30 × 24 h`).
+   If that moves E past the date the notice states, the operator adds an incidents entry giving the
+   new E and the reason, before step 2. v2 is not in effect yet, so this is not a postponement, and
+   nothing has printed under v2. **Rollback floor:** unaffected. Until step 2 deploys there is no
+   cutover to protect, and the floor is the step-2 deployment, whichever readback revision it cites.
 
 3. **Step 2, the registry deploy.** A follow-up PR sets v2 `announcedAt: N` and v1
    `effectiveUntil: E−1`, copied from the verified readback revision, which the PR names by path. It
    adds "public from N (readback run `<id>`, `notices/2.0.0.readback[.rK].json`)" to the incidents
-   entry. The registry test asserts `start(E) ≥ announcedAt + 30 × 24 h`. CI re-verifies the cited
-   record's proof, checking block time ≥ N, and refuses the PR otherwise. **This deployment is the
-   rollback floor** (below).
+   entry. The registry test asserts `start(E) ≥ announcedAt + 30 × 24 h`. Step-2 CI reads **every**
+   readback revision on the attestations branch, as first committed, and refuses the PR unless all
+   of these hold:
+   - each revision's stored N equals the max of its own instants and every prior revision's N;
+   - the cited revision's N is ≥ every prior revision's N;
+   - `announcedAt` equals the cited revision's N;
+   - the cited revision's proof verifies, with a block time ≥ that N. **This deployment is the
+     rollback floor** (below).
 
 **When the rule-4 amendment authorizes the cutover.** All three must hold:
 
@@ -832,14 +841,18 @@ v2.
    **Two-step publication:** with `announcedAt: null`, v2 is never in effect (no `effectiveUntil`,
    no transition, collector tags v1), and the indicative series still works, bounded by
    `v2.effectiveFrom − 1` through `indicativeReleaseFor`. The `notice-readback` job succeeds only
-   when both public responses show the notice. It writes its file once and takes N as the later of
-   `run_started_at` and the `Date` headers. Step 2's CI refuses a readback record whose proof is
-   pending, invalid or in a block earlier than N. A rejected `readback.json` stays untouched; the
-   next run writes `readback.r2.json` with a later N, and E is recomputed from it. No gap pin is
-   written before the cutover is activated. A test registry with a postponed `effectiveFrom` moves
-   the pin's path and window with it. Step 2 is refused by the registry test unless
-   `start(E) ≥ announcedAt + 30 d`. A postponement entry after the 14-day close is refused. A
-   rollback-floor check rejects deployments older than the latest cutover registry change.
+   when both public responses show the notice. It writes its file once, with N as the max of its own
+   instants and every prior revision's N. Step 2's CI refuses a readback record whose proof is
+   pending, invalid or in a block earlier than N, and a cited revision whose N is below any prior
+   revision's. A rejected `readback.json` stays untouched, the next run writes `readback.r2.json`,
+   and E is recomputed from it. **Monotonic N:** revision 1 records a `Date` of 12:20Z and its proof
+   is rejected. Revision 2's own `Date` is 12:15Z (a skewed server clock), with an earlier
+   `run_started_at`. Revision 2 therefore stores N = 12:20Z, not 12:15Z. A hand-edited revision 2
+   with N = 12:15Z is refused by step-2 CI. No gap pin is written before the cutover is activated. A
+   test registry with a postponed `effectiveFrom` moves the pin's path and window with it. Step 2 is
+   refused by the registry test unless `start(E) ≥ announcedAt + 30 d`. A postponement entry after
+   the 14-day close is refused. A rollback-floor check rejects deployments older than the latest
+   cutover registry change.
 
 6. **Admission:** settlement on a v2 day with one v1-tagged round prints `suspended` with the frozen
    reason. Indicative admits v1 and v2 identities. A known-incompatible identity (a test release
@@ -933,6 +946,12 @@ Normative for v2. Copied into `docs/methodology.md` at release.
 6. **Deadlines are durations, on instants:** `settlesAt` = end + 30 min; `publishBy` = end + 90 min;
    corrections until `settlesAt` + 24 h; r1 attestation cutoff = end + 24 h; correction attestation
    cutoff = `issuedAt` + 48 h. On a fall-back night, `publishBy` is the first 01:30 ET (EDT).
+
+## Round 5 review dispositions
+
+| Id  | Disposition                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S6  | Done. For revision k, `N_k = max(own run_started_at, own Date headers, N of every prior revision)`, stored with the priors it took the maximum over, so N never decreases. Step-2 CI recomputes every revision's N and requires the cited revision's N ≥ every prior N, `announcedAt` = that N, and a verified proof with block time ≥ that N. Test: a first `Date` of 12:20Z and a retry `Date` of 12:15Z give N = 12:20Z (section 2, test 5). |
 
 ## Round 4 review dispositions
 
