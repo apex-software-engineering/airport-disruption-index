@@ -8,16 +8,22 @@ export const site = {
 	repoUrl,
 	/** Where incidents and corrections are discussed: issues labelled `incident`. */
 	incidentIssuesUrl: `${repoUrl}/issues?q=label%3Aincident`,
+	/** The credit CC BY 4.0 asks for when the index values, prints or receipts are reused. */
+	dataAttribution: 'Airport Disruption Index by Apex Software Engineering LLC',
 } as const;
+
+/** The footer links, in order, after the attribution. */
+export const footerLinks = [
+	{ href: '/terms', label: 'Terms' },
+	{ href: '/disclaimer', label: 'Disclaimer' },
+	{ href: '/independence', label: 'Independence' },
+	{ href: '/incidents', label: 'Incidents' },
+	{ href: '/contact', label: 'Contact' },
+	{ href: repoUrl, label: 'Source code' },
+] as const;
 
 /** The shell commands that get the source onto a machine, shown before every reproduce command. */
 export const cloneCommand = `git clone ${site.repoUrl} && cd airport-disruption-index && npm ci`;
 
-const CONTACT_PLACEHOLDER = 'TODO(Alex)';
-
-/** The operator's published contact address. Replace the placeholder once it is decided. */
-export const CONTACT_EMAIL: string = CONTACT_PLACEHOLDER;
-
-/** The address to publish, or null while it is still the placeholder, which is never shown. */
-export const contactEmail: string | null =
-	CONTACT_EMAIL === CONTACT_PLACEHOLDER ? null : CONTACT_EMAIL;
+/** The operator's published contact address. docs/terms.md and docs/independence.md quote it. */
+export const contactEmail = 'apexsoftwareengineeringllc@gmail.com';

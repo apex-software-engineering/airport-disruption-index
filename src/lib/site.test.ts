@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import { CONTACT_EMAIL, cloneCommand, contactEmail, site } from '@/lib/site';
+import { cloneCommand, contactEmail, site } from '@/lib/site';
 
 describe('site', () => {
 	it('carries the required footer attribution', () => {
@@ -13,8 +13,28 @@ describe('site', () => {
 		expect(readFileSync('docs/methodology.md', 'utf8')).toContain(cloneCommand);
 	});
 
-	it('never publishes the contact placeholder, and publishes only an email address', () => {
-		if (contactEmail === null) expect(CONTACT_EMAIL).toBe('TODO(Alex)');
-		else expect(contactEmail).toMatch(/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/);
+	it('publishes only an email address as the contact', () => {
+		expect(contactEmail).toMatch(/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/);
 	});
+
+	// Prettier may wrap prose across lines, so whitespace is collapsed before matching.
+	const doc = (name: string) => readFileSync(`docs/${name}.md`, 'utf8').replace(/\s+/g, ' ');
+
+	it('states the same data attribution in the terms as the site uses', () => {
+		expect(doc('terms')).toContain(`"${site.dataAttribution}"`);
+	});
+
+	it.each(['terms', 'disclaimer', 'independence'])(
+		'quotes the site contact address in docs/%s.md',
+		(name) => {
+			expect(doc(name)).toContain(`[${contactEmail}](mailto:${contactEmail})`);
+		},
+	);
+
+	it.each(['terms', 'disclaimer', 'independence', 'methodology'])(
+		'leaves no draft marker in docs/%s.md',
+		(name) => {
+			expect(doc(name)).not.toMatch(/TODO|PROVISIONAL|TBD/);
+		},
+	);
 });

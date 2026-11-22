@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 
-import { site } from '@/lib/site';
+import { footerLinks, site } from '@/lib/site';
 
 import './globals.css';
 
@@ -40,8 +40,13 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
 				<main className='mx-auto w-full max-w-4xl flex-1 px-6 py-10'>{children}</main>
 				<footer className='border-line text-ink-subtle border-t text-sm'>
 					<p className='mx-auto max-w-4xl px-6 py-4'>
-						{site.footer} · <a href={site.repoUrl}>Source code</a> ·{' '}
-						<Link href='/incidents'>Incidents</Link> · <Link href='/contact'>Contact</Link>
+						{site.footer}
+						{footerLinks.map((link) => (
+							<span key={link.href}>
+								{' · '}
+								<Link href={link.href}>{link.label}</Link>
+							</span>
+						))}
 					</p>
 				</footer>
 			</body>

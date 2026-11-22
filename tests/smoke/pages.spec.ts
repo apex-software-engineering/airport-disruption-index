@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { expect, test, type Page } from '@playwright/test';
 
-import { cloneCommand, contactEmail, site } from '@/lib/site';
+import { cloneCommand, contactEmail, footerLinks, site } from '@/lib/site';
 
 const PAGES = [
 	{ path: '/', name: 'home', heading: site.name },
@@ -12,6 +12,9 @@ const PAGES = [
 	{ path: '/status', name: 'status', heading: 'Status' },
 	{ path: '/incidents', name: 'incidents', heading: 'Incidents' },
 	{ path: '/contact', name: 'contact', heading: 'Contact' },
+	{ path: '/terms', name: 'terms', heading: 'Terms of use' },
+	{ path: '/disclaimer', name: 'disclaimer', heading: 'Disclaimer' },
+	{ path: '/independence', name: 'independence', heading: 'Independence policy' },
 ] as const;
 
 /** Set to a directory to keep a full-page screenshot of every page (for PR evidence). */
@@ -23,16 +26,11 @@ for (const page of PAGES) {
 		expect(response?.status(), `${page.path} status`).toBe(200);
 		await expect(browser.getByRole('heading', { level: 1 })).toHaveText(page.heading);
 		await expect(browser.locator('footer')).toContainText(site.footer);
-		const footer = browser.locator('footer');
-		await expect(footer.getByRole('link', { name: 'Source code' })).toHaveAttribute(
-			'href',
-			site.repoUrl,
-		);
-		await expect(footer.getByRole('link', { name: 'Incidents' })).toHaveAttribute(
-			'href',
-			'/incidents',
-		);
-		await expect(footer.getByRole('link', { name: 'Contact' })).toHaveAttribute('href', '/contact');
+		const links = browser.locator('footer').getByRole('link');
+		await expect(links).toHaveText(footerLinks.map((link) => link.label));
+		for (const [index, link] of footerLinks.entries()) {
+			await expect(links.nth(index)).toHaveAttribute('href', link.href);
+		}
 		if (screenshotDir) {
 			await browser.screenshot({
 				path: path.join(screenshotDir, `${page.name}.png`),
@@ -112,12 +110,41 @@ test('/incidents shows the operator log, the correction prints and the discussio
 	).toHaveAttribute('href', site.incidentIssuesUrl);
 });
 
-test('/contact shows the published address, or says it is coming, never a placeholder', async ({
-	page,
-}) => {
+test('/contact shows the published address, never a placeholder', async ({ page }) => {
 	await page.goto('/contact');
-	if (contactEmail === null)
-		await expect(page.getByText('Contact address coming soon.')).toBeVisible();
-	else await expect(page.getByRole('link', { name: contactEmail })).toBeVisible();
+	await expect(page.getByRole('link', { name: contactEmail })).toHaveAttribute(
+		'href',
+		`mailto:${contactEmail}`,
+	);
 	await expect(page.locator('main')).not.toContainText('TODO');
 });
+
+const LEGAL_STATEMENTS = [
+	{
+		path: '/terms',
+		texts: ['Apache License 2.0', 'CC BY 4.0', site.dataAttribution, '"as is"'],
+	},
+	{
+		path: '/disclaimer',
+		texts: ['not affiliated with', 'Not for flight planning', 'Not investment advice'],
+	},
+	{
+		path: '/independence',
+		texts: ['Apex Software Engineering LLC', 'Trading restrictions', '30 days'],
+	},
+] as const;
+
+for (const { path: route, texts } of LEGAL_STATEMENTS) {
+	test(`${route} states what an exchange checks for, with the contact address`, async ({
+		page,
+	}) => {
+		await page.goto(route);
+		const article = page.locator('article');
+		for (const text of texts) await expect(article).toContainText(text);
+		await expect(article).not.toContainText(/TODO|PROVISIONAL|TBD/);
+		await expect(article.getByRole('link', { name: contactEmail })).toHaveAttribute(
+			'href',
+			`mailto:${contactEmail}`,
+		);
+	});
+}
