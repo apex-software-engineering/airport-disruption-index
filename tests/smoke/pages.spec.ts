@@ -164,4 +164,12 @@ test.describe('local time', () => {
 			'Times are UTC; your local time is shown in parentheses.',
 		);
 	});
+
+	test('/incidents gives an instant in the operator log its local time', async ({ page }) => {
+		await page.goto('/incidents');
+		// 2026-11-20 04:30Z, the start of the partial day, was 11:30 PM the evening before in New York.
+		await expect(page.locator('article [data-local-time]').first()).toHaveText(
+			/^\(Nov 19, 11:30\sPM EST\)$/,
+		);
+	});
 });
