@@ -122,7 +122,7 @@ test('/contact shows the published address, never a placeholder', async ({ page 
 const LEGAL_STATEMENTS = [
 	{
 		path: '/terms',
-		texts: ['Apache License 2.0', 'CC BY 4.0', site.dataAttribution, '"as is"', contactEmail],
+		texts: ['Apache License 2.0', 'CC BY 4.0', site.dataAttribution, '"as is"'],
 	},
 	{
 		path: '/disclaimer',
@@ -130,15 +130,21 @@ const LEGAL_STATEMENTS = [
 	},
 	{
 		path: '/independence',
-		texts: ['Apex Software Engineering LLC', 'Trading restrictions', '30 days', contactEmail],
+		texts: ['Apex Software Engineering LLC', 'Trading restrictions', '30 days'],
 	},
 ] as const;
 
 for (const { path: route, texts } of LEGAL_STATEMENTS) {
-	test(`${route} states what an exchange checks for`, async ({ page }) => {
+	test(`${route} states what an exchange checks for, with the contact address`, async ({
+		page,
+	}) => {
 		await page.goto(route);
 		const article = page.locator('article');
 		for (const text of texts) await expect(article).toContainText(text);
 		await expect(article).not.toContainText(/TODO|PROVISIONAL|TBD/);
+		await expect(article.getByRole('link', { name: contactEmail })).toHaveAttribute(
+			'href',
+			`mailto:${contactEmail}`,
+		);
 	});
 }

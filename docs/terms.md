@@ -26,7 +26,8 @@ Effective date: 2026-11-22.
 - **Index values, prints and receipts:** Creative Commons Attribution 4.0 International
   ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)). You may copy, redistribute and build
   on them, commercially or not, if you credit them as **"Airport Disruption Index by Apex Software
-  Engineering LLC"** and say if you changed them.
+  Engineering LLC"**, include the licence's link (https://creativecommons.org/licenses/by/4.0/) or
+  text, keep any notices of earlier modifications, and say if you changed them.
 - **FAA source data:** the FAA NAS Status feed, which we archive byte for byte, is a work of the US
   Government and is not subject to copyright in the US (17 U.S.C. 105). Our licence does not cover
   it and adds no restriction to it. See
@@ -59,4 +60,4 @@ shows every past version.
 ## Contact
 
 Email [apexsoftwareengineeringllc@gmail.com](mailto:apexsoftwareengineeringllc@gmail.com), or see
-the [contact page](/contact).
+the [contact page](https://airports.apexsofteng.com/contact).

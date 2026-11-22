@@ -34,3 +34,8 @@ The index is provided as is, without warranty, and may contain errors, gaps or d
 errors in the FAA feed it reads. The [methodology](methodology.md) says how invalid or missing
 observations are handled and when a day is final, degraded or suspended. See the
 [terms of use](terms.md#no-warranty).
+
+## Contact
+
+Email [apexsoftwareengineeringllc@gmail.com](mailto:apexsoftwareengineeringllc@gmail.com), or see
+the [contact page](https://airports.apexsofteng.com/contact).

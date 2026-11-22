@@ -24,11 +24,14 @@ describe('site', () => {
 		expect(doc('terms')).toContain(`"${site.dataAttribution}"`);
 	});
 
-	it.each(['terms', 'independence'])('quotes the site contact address in docs/%s.md', (name) => {
-		expect(doc(name)).toContain(`[${contactEmail}](mailto:${contactEmail})`);
-	});
-
 	it.each(['terms', 'disclaimer', 'independence'])(
+		'quotes the site contact address in docs/%s.md',
+		(name) => {
+			expect(doc(name)).toContain(`[${contactEmail}](mailto:${contactEmail})`);
+		},
+	);
+
+	it.each(['terms', 'disclaimer', 'independence', 'methodology'])(
 		'leaves no draft marker in docs/%s.md',
 		(name) => {
 			expect(doc(name)).not.toMatch(/TODO|PROVISIONAL|TBD/);

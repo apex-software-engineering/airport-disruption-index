@@ -13,9 +13,10 @@ runs the collector, publishes the methodology and the daily prints, and owns thi
 
 - Write access to the production deployment and its data store is limited to the operator's
   principals.
-- Apart from a correction print (below), the index is written only by its scheduled jobs: the
-  collector records one round per slot and the settlement job builds each day's print, as the
-  [methodology](methodology.md) describes.
+- The index is written only through its collector and settlement jobs: the collector records one
+  round per slot, and settlement builds each day's print or a correction print, as the
+  [methodology](methodology.md) describes. The jobs run on a schedule; the operator's principals may
+  also run settlement or a correction manually.
 - The source code is public. Anyone can read every change to it and recompute any round or print
   from the published archive (see [reproducing](methodology.md#reproducing)).
 - A published print is changed only by a correction print, which names the print it supersedes and
@@ -23,9 +24,9 @@ runs the collector, publishes the methodology and the daily prints, and owns thi
 
 ## Trading restrictions
 
-The operator, its affiliates and their employees, members of their households, and anyone who
-pitches or licenses the index on the operator's behalf, do not trade, directly or through anyone
-else, any contract that references:
+The operator, its affiliates and their employees, every principal with write access to production,
+the household members of all of these, and anyone who pitches or licenses the index on the
+operator's behalf, do not trade, directly or through anyone else, any contract that references:
 
 - the index or its sub-index (ADI, ADI-GS) or any value the site publishes; or
 - a component of the index: the FAA ground stop or ground delay program status of a panel airport.
@@ -33,8 +34,9 @@ else, any contract that references:
 ## Non-public information
 
 The operator does not share information about the index that is not yet public, such as a collection
-outage, a pending correction or an unannounced methodology change, with anyone who trades contracts
-that reference the index, before it is published.
+outage, a pending correction or an unannounced methodology change, with anyone who trades any
+contract covered by the [trading restrictions](#trading-restrictions) (the index or any of its
+components), before it is published.
 
 ## Methodology changes and source-adapter fixes
 
@@ -51,4 +53,4 @@ is announced on the [incident log](incidents.md) when it ships.
 
 Questions and reports about this policy:
 [apexsoftwareengineeringllc@gmail.com](mailto:apexsoftwareengineeringllc@gmail.com). See also the
-[contact page](/contact).
+[contact page](https://airports.apexsofteng.com/contact).
