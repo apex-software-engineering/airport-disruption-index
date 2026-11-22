@@ -1,8 +1,19 @@
 import parse, { Element, Text } from 'html-react-parser';
 import type { ReactNode } from 'react';
 
+import { parseUtcDate } from '@/lib/index/time';
+
 import { renderDoc, type DocName } from './docs';
 import { LocalTime } from './local-time';
+
+/** An ISO instant with its offset stated (`Z` or `±hh:mm`), so it means the same everywhere. */
+const ISO_INSTANT =
+	/^(\d{4}-\d{2}-\d{2})T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+
+function isIsoInstant(text: string): boolean {
+	const date = ISO_INSTANT.exec(text)?.[1];
+	return date !== undefined && parseUtcDate(date) !== null;
+}
 
 /**
  * Rendered doc HTML as React. The one tag given behaviour is `<time datetime="ISO">`, which gets
@@ -16,6 +27,9 @@ export function docToReact(html: string): ReactNode {
 			const [label, ...rest] = node.children;
 			if (at === undefined || !(label instanceof Text) || rest.length > 0) {
 				throw new Error('a <time> in docs needs a datetime instant and plain text');
+			}
+			if (!isIsoInstant(at)) {
+				throw new Error(`docs <time datetime="${at}"> is not an ISO instant with Z or an offset`);
 			}
 			return (
 				<>

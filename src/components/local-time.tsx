@@ -54,13 +54,19 @@ export function LocalHour({ at }: { at: string }) {
 }
 
 /**
- * The local time in parentheses. Its slot is reserved from the first paint by the same text in
- * UTC, laid invisibly in the same grid cell, so the local time fills it instead of pushing the
+ * The widest local form across every IANA zone (measured in Chrome over a year of instants).
+ * Reserving its width means no viewer's local time can change a line break after hydration.
+ */
+const WIDEST_LOCAL = 'May 10, 12:15 PM GMT+10:30';
+const WIDEST = { at: `(${WIDEST_LOCAL})`, span: `(${WIDEST_LOCAL} – ${WIDEST_LOCAL})` } as const;
+
+/**
+ * The local time in parentheses. Its slot is reserved from the first paint by the widest local
+ * form, laid invisibly in the same grid cell, so the local time fills it instead of pushing the
  * text around it. `line` puts it on a line of its own, for headings and table cells.
  */
 export function LocalTime({ at, until, line = false }: Span & { line?: boolean }) {
 	const timeZone = useViewerTimeZone();
-	const span = { at, until };
 	const repeatsUtc =
 		timeZone !== null &&
 		isUtcOffsetZero(at, timeZone) &&
@@ -73,10 +79,10 @@ export function LocalTime({ at, until, line = false }: Span & { line?: boolean }
 			{' '}
 			<span className={line ? 'grid' : 'inline-grid whitespace-nowrap'}>
 				<span aria-hidden className='invisible [grid-area:1/1]'>
-					{localText(span, 'UTC')}
+					{until === undefined ? WIDEST.at : WIDEST.span}
 				</span>
 				<span data-local-time aria-hidden={repeatsUtc} className='[grid-area:1/1]'>
-					{timeZone === null ? null : localText(span, timeZone)}
+					{timeZone === null ? null : localText({ at, until }, timeZone)}
 				</span>
 			</span>
 		</span>
