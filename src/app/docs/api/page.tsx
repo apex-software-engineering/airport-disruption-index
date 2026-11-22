@@ -2,7 +2,13 @@ import type { Metadata } from 'next';
 import { headers } from 'next/headers';
 import type { ReactNode } from 'react';
 
-import { RECENT_PRINT_DAYS, readLastReceipt, readSiteData } from '@/components/index-data';
+import {
+	RECENT_PRINT_DAYS,
+	readLastReceipt,
+	readSiteData,
+	type IndicativeDay,
+	type IndicativeHistory,
+} from '@/components/index-data';
 import { Mono, Notice, PageTitle, Section } from '@/components/ui';
 import { GET as getMethodology } from '@/app/api/v1/methodology/route';
 import { cloneCommand, site } from '@/lib/site';
@@ -116,27 +122,13 @@ export default async function ApiDocsPage() {
 				<Mono>publishBy</Mono>.
 			</Endpoint>
 
-			<Endpoint
-				path={`${API_BASE}/indicative/history?from=YYYY-MM-DD&to=YYYY-MM-DD`}
-				cache={CACHE.live}
-				curl={`curl -s '${origin}${API_BASE}/indicative/history?from=${indicative.from}&to=${indicative.to}'`}
-				sample={indicative}>
-				The indicative ET series, <Mono>{indicative.series.headline}</Mono>: methodology
-				v2.0.0&apos;s America/New_York day, computed from the same archived receipts. It is{' '}
-				<strong>never a settlement value</strong>; every entry carries{' '}
-				<Mono>standing: &quot;indicative&quot;</Mono> and its <Mono>day</Mono> zone and window.
-				Defaults to the 30 days ending yesterday; at most 366 days.
-			</Endpoint>
-
-			<Endpoint
-				path={`${API_BASE}/indicative/days/{date}`}
-				cache={`${CACHE.immutable} once frozen; HTTP 404 with status: "pending" and freezesAt until then`}
-				curl={`curl -s ${origin}${API_BASE}/indicative/days/${recentIndicative[0]?.date ?? '{date}'}`}
-				sample={null}
-				sampleNote='The frozen print of an ET day, in the adi.daily-print/2 schema: its window, freeze time and admission policy are hashed with it. A date from v2’s first day on returns 404 with see: the settlement print.'>
-				One indicative ET day. Reproduce it with{' '}
-				<Mono>npm run reproduce -- --indicative {'{date}'}</Mono>.
-			</Endpoint>
+			{indicative === null || recentIndicative === null ? null : (
+				<IndicativeEndpoints
+					origin={origin}
+					indicative={indicative}
+					recentIndicative={recentIndicative}
+				/>
+			)}
 
 			<Endpoint
 				path={`${API_BASE}/rounds/{id}`}
@@ -271,5 +263,42 @@ function Code({ children }: { children: string }) {
 		<pre className='border-line bg-panel max-h-96 overflow-auto rounded border px-4 py-3 font-mono text-xs leading-relaxed'>
 			<code>{children}</code>
 		</pre>
+	);
+}
+
+/** The indicative ET series' endpoints, documented only once the series is published. */
+function IndicativeEndpoints({
+	origin,
+	indicative,
+	recentIndicative,
+}: {
+	origin: string;
+	indicative: IndicativeHistory;
+	recentIndicative: readonly IndicativeDay[];
+}) {
+	return (
+		<>
+			<Endpoint
+				path={`${API_BASE}/indicative/history?from=YYYY-MM-DD&to=YYYY-MM-DD`}
+				cache={CACHE.live}
+				curl={`curl -s '${origin}${API_BASE}/indicative/history?from=${indicative.from}&to=${indicative.to}'`}
+				sample={indicative}>
+				The indicative ET series, <Mono>{indicative.series.headline}</Mono>: methodology
+				v2.0.0&apos;s America/New_York day, computed from the same archived receipts. It is{' '}
+				<strong>never a settlement value</strong>; every entry carries{' '}
+				<Mono>standing: &quot;indicative&quot;</Mono> and its <Mono>day</Mono> zone and window.
+				Defaults to the 30 days ending yesterday; at most 366 days.
+			</Endpoint>
+
+			<Endpoint
+				path={`${API_BASE}/indicative/days/{date}`}
+				cache={`${CACHE.immutable} once frozen; HTTP 404 with status: "pending" and freezesAt until then`}
+				curl={`curl -s ${origin}${API_BASE}/indicative/days/${recentIndicative[0]?.date ?? '{date}'}`}
+				sample={null}
+				sampleNote='The frozen print of an ET day, in the adi.daily-print/2 schema: its window, freeze time and admission policy are hashed with it. A date from v2’s first day on returns 404 with see: the settlement print.'>
+				One indicative ET day. Reproduce it with{' '}
+				<Mono>npm run reproduce -- --indicative {'{date}'}</Mono>.
+			</Endpoint>
+		</>
 	);
 }

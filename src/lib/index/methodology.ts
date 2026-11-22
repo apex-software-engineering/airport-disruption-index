@@ -86,6 +86,11 @@ export type Methodology = {
 	readonly announcedAt: string | null;
 	/** Set only by a withdrawal notice. A withdrawn release is never in effect. */
 	readonly withdrawn: boolean;
+	/**
+	 * When the release's public notice shipped (cutover step 1), set in the same commit as the
+	 * notice. Until then nothing derived from the release is published: no indicative series.
+	 */
+	readonly noticePublishedAt: string | null;
 };
 
 /** The grid every release shares (see the literal types above). */

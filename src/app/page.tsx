@@ -69,7 +69,7 @@ export default async function HomePage() {
 				</>
 			) : null}
 			<RecentPrints days={recent} parameters={parameters} />
-			<IndicativePrints days={recentIndicative} />
+			{recentIndicative === null ? null : <IndicativePrints days={recentIndicative} />}
 			<WhatItMeasures parameters={parameters} />
 		</>
 	);

@@ -1,3 +1,4 @@
+import { INDICATIVE_UNPUBLISHED, indicativeSeriesPublished } from '@/lib/index/indicative';
 import { parseRoundId, parseUtcDate } from '@/lib/index/time';
 import { readIndicativeRound } from '@/server/archive';
 import { json, problem } from '@/server/http';
@@ -16,6 +17,7 @@ export async function GET(
 	_request: Request,
 	context: { params: Promise<{ date: string; id: string }> },
 ) {
+	if (!indicativeSeriesPublished()) return problem(404, INDICATIVE_UNPUBLISHED);
 	const { date, id } = await context.params;
 	if (parseUtcDate(date) === null) return problem(400, `invalid date ${date}`);
 	if (parseRoundId(id) === null) return problem(400, `invalid round id ${id}`);

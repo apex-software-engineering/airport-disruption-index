@@ -2,7 +2,7 @@ import { freezeIndicativeDay, settleDay } from '@/server/archive';
 import { CACHE, cronAuthorized, json, problem } from '@/server/http';
 import { storeFromEnv, type ObjectStore } from '@/server/storage';
 import { dayWindow, settlesAt } from '@/lib/index/calendar';
-import { dueIndicativeDays } from '@/lib/index/indicative';
+import { dueIndicativeDays, indicativeSeriesPublished } from '@/lib/index/indicative';
 import { settlementReleaseOrNull } from '@/lib/index/methodology';
 import { addDays, parseUtcDate, utcDateOf } from '@/lib/index/time';
 
@@ -36,7 +36,9 @@ export async function GET(request: Request) {
 	const store = storeFromEnv();
 	const { status, print } = await settleDay(store, date);
 	const indicative = [];
-	for (const day of dueIndicativeDays(now, INDICATIVE_LOOKBACK_DAYS)) {
+	// Nothing is frozen into the series before its notice is published.
+	const due = indicativeSeriesPublished() ? dueIndicativeDays(now, INDICATIVE_LOOKBACK_DAYS) : [];
+	for (const day of due) {
 		indicative.push(await freezeIndicative(store, day, now));
 	}
 	return json(

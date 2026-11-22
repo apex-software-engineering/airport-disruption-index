@@ -3,7 +3,7 @@
  * per request so they are as fresh as the 5-minute collector; nothing here computes index values.
  */
 import type { RoundReceipt, SettledStatus } from '@/lib/index/schemas';
-import { FIRST_INDICATIVE_DAY } from '@/lib/index/indicative';
+import { FIRST_INDICATIVE_DAY, indicativeSeriesPublished } from '@/lib/index/indicative';
 import { addDays, utcDateOf } from '@/lib/index/time';
 import { readReceipt } from '@/server/archive';
 import { storeFromEnv } from '@/server/storage';
@@ -21,14 +21,15 @@ export type IndicativeDay = IndicativeHistory['days'][number];
 
 /**
  * Today's running value, the history view of the last `RECENT_PRINT_DAYS` settled days, the
- * same days newest first, and the frozen indicative ET days over the same span, newest first.
+ * same days newest first, and the frozen indicative ET days over the same span, newest first
+ * (null until the indicative series is published, so no page shows it before its notice).
  */
 export async function readSiteData(now: Date): Promise<{
 	current: Current;
 	history: History;
 	recent: HistoryDay[];
-	indicative: IndicativeHistory;
-	recentIndicative: IndicativeDay[];
+	indicative: IndicativeHistory | null;
+	recentIndicative: IndicativeDay[] | null;
 }> {
 	const store = storeFromEnv();
 	const today = utcDateOf(now);
@@ -36,18 +37,20 @@ export async function readSiteData(now: Date): Promise<{
 	const [current, history, indicative] = await Promise.all([
 		currentView(store, now),
 		historyView(store, from, addDays(today, -1)),
-		indicativeHistoryView(
-			store,
-			from > FIRST_INDICATIVE_DAY ? from : FIRST_INDICATIVE_DAY,
-			addDays(today, -1),
-		),
+		indicativeSeriesPublished()
+			? indicativeHistoryView(
+					store,
+					from > FIRST_INDICATIVE_DAY ? from : FIRST_INDICATIVE_DAY,
+					addDays(today, -1),
+				)
+			: null,
 	]);
 	return {
 		current,
 		history,
 		recent: [...history.days].reverse(),
 		indicative,
-		recentIndicative: [...indicative.days].reverse(),
+		recentIndicative: indicative === null ? null : [...indicative.days].reverse(),
 	};
 }
 

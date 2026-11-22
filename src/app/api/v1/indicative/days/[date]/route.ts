@@ -1,3 +1,4 @@
+import { INDICATIVE_UNPUBLISHED, indicativeSeriesPublished } from '@/lib/index/indicative';
 import { parseUtcDate } from '@/lib/index/time';
 import { CACHE, json, problem } from '@/server/http';
 import { storeFromEnv } from '@/server/storage';
@@ -10,6 +11,7 @@ export const dynamic = 'force-dynamic';
  * changes, so it caches forever; a day not frozen yet says when it will be.
  */
 export async function GET(_request: Request, context: { params: Promise<{ date: string }> }) {
+	if (!indicativeSeriesPublished()) return problem(404, INDICATIVE_UNPUBLISHED);
 	const { date } = await context.params;
 	if (parseUtcDate(date) === null) return problem(400, `invalid date ${date}`);
 	const view = await indicativeDayView(storeFromEnv(), date);

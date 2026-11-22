@@ -116,3 +116,22 @@ export function dueIndicativeDays(now: Date, lookbackDays: number): string[] {
 		},
 	);
 }
+
+/**
+ * Whether the indicative series is public: its release's notice has shipped
+ * (`noticePublishedAt`). Until then no indicative day is served, shown or frozen by a settle run,
+ * and none is frozen into production. This is the only place that decides it.
+ */
+export function indicativeSeriesPublished(): boolean {
+	return indicativeSeriesPublishedIn(RELEASES);
+}
+
+/** `indicativeSeriesPublished` over a given registry. */
+export function indicativeSeriesPublishedIn(releases: readonly Methodology[]): boolean {
+	return releases.some(
+		(release) => indicativeAdmissionFor(release) !== null && release.noticePublishedAt !== null,
+	);
+}
+
+/** Why the indicative API answers 404 before the series is public. */
+export const INDICATIVE_UNPUBLISHED = 'the indicative series is not yet published';

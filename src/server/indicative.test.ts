@@ -1,7 +1,7 @@
 /**
  * The indicative ET series end to end over a filesystem store: rounds collected under v1 (as in
  * production today), an ET day frozen from both UTC partitions after its cutoff, served by the API
- * with its zone and standing, and reproduced from the public API.
+ * with its zone and standing, and reproduced from the public API, once the series is published.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -29,6 +29,20 @@ import {
 } from './archive';
 import { FileStore } from './storage';
 import { indicativeDayView } from './views';
+
+// The series is published: v2's notice has shipped (the unpublished state has its own suite).
+vi.mock('@/lib/index/releases', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('@/lib/index/releases')>();
+	return {
+		...actual,
+		RELEASES: [
+			actual.release(actual.METHODOLOGY_V1, '2026-11-17'),
+			actual.release(actual.METHODOLOGY_V2, '2027-01-01', {
+				noticePublishedAt: '2026-11-25T15:00:00.000Z',
+			}),
+		],
+	};
+});
 
 const DAY = '2026-11-20';
 const AFTER_FREEZE = new Date('2026-11-21T05:30:00Z');

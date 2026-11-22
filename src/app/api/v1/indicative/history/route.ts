@@ -1,4 +1,8 @@
-import { FIRST_INDICATIVE_DAY } from '@/lib/index/indicative';
+import {
+	FIRST_INDICATIVE_DAY,
+	INDICATIVE_UNPUBLISHED,
+	indicativeSeriesPublished,
+} from '@/lib/index/indicative';
 import { addDays, dayStartMs, parseUtcDate, utcDateOf } from '@/lib/index/time';
 import { CACHE, json, problem } from '@/server/http';
 import { storeFromEnv } from '@/server/storage';
@@ -11,6 +15,7 @@ const MAX_DAYS = 366;
 
 /** Frozen indicative ET days in [from, to]. Defaults to the 30 days ending yesterday (UTC). */
 export async function GET(request: Request) {
+	if (!indicativeSeriesPublished()) return problem(404, INDICATIVE_UNPUBLISHED);
 	const params = new URL(request.url).searchParams;
 	const to = params.get('to') ?? addDays(utcDateOf(new Date()), -1);
 	if (parseUtcDate(to) === null) return problem(400, `invalid to ${to}`);
