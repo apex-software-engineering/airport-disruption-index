@@ -257,6 +257,8 @@ function checkUtcDay(
 		});
 		return null;
 	}
+	// An impossible date is reported by the date refinement; there is no cutoff to compare.
+	if (parseUtcDate(print.date) === null) return null;
 	const cutoff = settlesAt(dayWindow(release, print.date));
 	if (print.settlesAt !== cutoff.toISOString()) {
 		ctx.addIssue({

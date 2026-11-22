@@ -129,6 +129,13 @@ describe('buildPrint', () => {
 		);
 	});
 
+	it('reports an impossible date as a validation failure, without throwing', () => {
+		const print = buildPrint(settlementDay(DAY), rounds, { revision: 1 });
+		const result = printSchema.safeParse({ ...print, date: '2026-02-30' });
+		expect(result.success).toBe(false);
+		expect(result.error?.issues.map((issue) => issue.message)).toEqual(['invalid UTC date']);
+	});
+
 	it('holds UTC days only: a /1 print recording the America/New_York release is refused', () => {
 		const print = buildPrint(settlementDay(DAY), rounds, { revision: 1 });
 		const zoned = {
