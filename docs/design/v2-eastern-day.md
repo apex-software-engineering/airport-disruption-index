@@ -917,16 +917,16 @@ prohibition: no v1 day is reprinted under v2.
 
 ## Decisions for review
 
-| #   | Decision                  | Recommendation                                                                                                       |
-| --- | ------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| D1  | Effective date            | Target 2027-01-01. Lower bound: start ≥ N + 30 d, with N recorded in step 2. Postponable until E − 14 d, then fixed. |
-| D2  | 5 h cutover gap           | Accept and state it, with no settlement day for those instants.                                                      |
-| D3  | Admission                 | Strict and frozen for settlement. A hashed policy for indicative only.                                               |
-| D4  | Indicative series         | Separate endpoints and keys, ET-indicative labels, `standing` in the hash, no own attestation, both-ways proof.      |
-| D5  | Thresholds                | Percentages of the day's slots.                                                                                      |
-| D6  | Values on 23/25-hour days | Not normalized. Stated.                                                                                              |
-| D7  | Settlement values         | Panel totals only (ADI, ADI-GS). Breakdowns informational.                                                           |
-| D8  | Gap pin                   | Do it: a one-off timestamped `transition/2027-01-01.json` lets E−1's indicative proof reach `MATCH`.                 |
+| #   | Decision                  | Recommendation                                                                                                                             |
+| --- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| D1  | Effective date            | Target 2027-01-01. Lower bound: `effectiveAt ≥ max(N, B) + 30 d`, with N and B recorded in step 2. Postponable until E − 14 d, then fixed. |
+| D2  | 5 h cutover gap           | Accept and state it, with no settlement day for those instants.                                                                            |
+| D3  | Admission                 | Strict and frozen for settlement. A hashed policy for indicative only.                                                                     |
+| D4  | Indicative series         | Separate endpoints and keys, ET-indicative labels, `standing` in the hash, no own attestation, both-ways proof.                            |
+| D5  | Thresholds                | Percentages of the day's slots.                                                                                                            |
+| D6  | Values on 23/25-hour days | Not normalized. Stated.                                                                                                                    |
+| D7  | Settlement values         | Panel totals only (ADI, ADI-GS). Breakdowns informational.                                                                                 |
+| D8  | Gap pin                   | Do it: a one-off timestamped `transition/2027-01-01.json` lets E−1's indicative proof reach `MATCH`.                                       |
 
 ## Settlement annex: the DST rule
 
@@ -1007,7 +1007,7 @@ S6) and `PARTIAL_PENDING` (S5) are superseded by O15 to O17.
 | S6       | Done. Two-step publication: notice deploy with `announcedAt: null` (v2 not in effect), readback of the immutable Vercel `ready` timestamp, step-2 registry deploy; the three conditions under which the amendment authorizes the cutover (section 2). |
 | S7       | Done as far as we can. PlaneTrack is marked verified on Sol's authority, as a UTC-day counterexample. It still returns 403 to our fetchers and has no archive, so the verbatim quote is left for Sol rather than invented (section 0).                |
 | S11      | Done. `standingOf`: `/1` inferred `'settlement'` after `/1` validation, `/2` explicit; standing and window in the response envelope; `/1` bytes unchanged (section 5, test 9).                                                                        |
-| O10      | Done. Postponement closes 14 days before E (`2026-12-18T05:00Z`); fresh 30 days for a new date; each change advances the rollback floor; the "fixed once N is recorded" conflict removed (sections 2, 7, D1).                                         |
+| O10      | Done. Postponement closes 14 days before E (`2026-12-18T00:00Z`); fresh 30 days for a new date; each change advances the rollback floor; the "fixed once N is recorded" conflict removed (sections 2, 7, D1).                                         |
 | O11      | Done. `?parameterHash=` gives a `parameter_hash_mismatch` 404 with expected, actual and the owning release; the notice asks contract writers for a fallback (sections 5, 7, test 9).                                                                  |
 | O12      | Done. E derived from the registry everywhere, misfiled detection included; test with a moved `effectiveUntil` (section 2, test 5).                                                                                                                    |
 | Devin D1 | Done. Aggregation takes the release, `DayWindow` and admission predicate injected; "the only difference" wording replaced (section 4).                                                                                                                |
