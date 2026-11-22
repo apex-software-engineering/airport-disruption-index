@@ -8,7 +8,7 @@ import type { OtsProof } from '@/lib/ots';
 import { sha256Hex } from './json';
 import { methodologyOf } from './methodology';
 import { printHashMatches } from './print';
-import type { Attestation, DailyPrint } from './schemas';
+import { printSchema, type Attestation, type DailyPrint } from './schemas';
 import { dayWindow } from './calendar';
 
 export const ATTESTATION_SCHEMA = 'adi.attestation/1' as const;
@@ -27,6 +27,9 @@ export function serializeAttestation(attestation: Attestation): string {
 }
 
 export function buildAttestation(print: DailyPrint, deployedCommit: string | null): Attestation {
+	// Only a settlement print is ever attested; the settlement schema refuses anything else, such
+	// as an indicative print (design §4).
+	printSchema.parse(print);
 	return {
 		schema: ATTESTATION_SCHEMA,
 		date: print.date,

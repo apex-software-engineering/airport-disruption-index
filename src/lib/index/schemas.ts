@@ -6,6 +6,8 @@ import { z } from 'zod';
 
 import { adapterOf } from './adapters';
 import { correctionDeadline, dayWindow, settlesAt } from './calendar';
+import { INDICATIVE_ADMISSION_POLICY, indicativeAdmissionFor } from './indicative';
+import { canonicalJson } from './json';
 import { methodologyOf, type Methodology } from './methodology';
 import { parseRoundId, parseUtcDate } from './time';
 
@@ -122,43 +124,48 @@ export const observationSchema = z.discriminatedUnion('status', [
 ]);
 export type Observation = z.infer<typeof observationSchema>;
 
-export const receiptSchema = z
-	.object({
-		schema: z.literal('adi.round-receipt/1'),
-		roundId: roundIdSchema,
-		slotStart: instant,
-		fetchedAt: instant,
-		sourceUrl: z.url(),
-		/**
-		 * The source adapter that fetched and parsed this round (adapters.ts). Absent on receipts
-		 * written before the field existed, which keeps their receiptHash unchanged; those were all
-		 * produced by the first adapter.
-		 */
-		adapterVersion: z.string().optional(),
-		methodologyVersion: z.string(),
-		parameterHash: hex64,
-		/** null when no HTTP response arrived. */
-		httpStatus: z.number().int().nullable(),
-		/** sha256 of the response body bytes as received; null when there was no response. */
-		rawSha256: hex64.nullable(),
-		rawBytes: count.nullable(),
-		observation: observationSchema,
-		receiptHash: hex64,
-	})
-	.superRefine((receipt, ctx) => {
-		checkRecordedMethodology(
-			receipt,
-			receipt.observation.status === 'valid' ? receipt.observation.panel : null,
-			ctx,
-		);
-		if (adapterOf(receipt.adapterVersion) === null) {
-			ctx.addIssue({
-				code: 'custom',
-				message: `feed adapter ${receipt.adapterVersion} is not a known adapter`,
-				path: ['adapterVersion'],
-			});
-		}
-	});
+/**
+ * A receipt's shape alone, without the checks against the release and adapter it records. Only
+ * for reading a receipt that records a release this code may not know, to list it as foreign;
+ * anything counted is parsed with `receiptSchema`.
+ */
+export const receiptShapeSchema = z.object({
+	schema: z.literal('adi.round-receipt/1'),
+	roundId: roundIdSchema,
+	slotStart: instant,
+	fetchedAt: instant,
+	sourceUrl: z.url(),
+	/**
+	 * The source adapter that fetched and parsed this round (adapters.ts). Absent on receipts
+	 * written before the field existed, which keeps their receiptHash unchanged; those were all
+	 * produced by the first adapter.
+	 */
+	adapterVersion: z.string().optional(),
+	methodologyVersion: z.string(),
+	parameterHash: hex64,
+	/** null when no HTTP response arrived. */
+	httpStatus: z.number().int().nullable(),
+	/** sha256 of the response body bytes as received; null when there was no response. */
+	rawSha256: hex64.nullable(),
+	rawBytes: count.nullable(),
+	observation: observationSchema,
+	receiptHash: hex64,
+});
+
+export const receiptSchema = receiptShapeSchema.superRefine((receipt, ctx) => {
+	checkRecordedMethodology(
+		receipt,
+		receipt.observation.status === 'valid' ? receipt.observation.panel : null,
+		ctx,
+	);
+	if (adapterOf(receipt.adapterVersion) === null) {
+		ctx.addIssue({
+			code: 'custom',
+			message: `feed adapter ${receipt.adapterVersion} is not a known adapter`,
+			path: ['adapterVersion'],
+		});
+	}
+});
 export type RoundReceipt = z.infer<typeof receiptSchema>;
 
 /** The part of a receipt the index math needs. Day index blobs store these. */
@@ -297,6 +304,27 @@ function checkCorrectionTiming(
 	}
 }
 
+/** A computed day's result: the value and breakdowns, or for a suspended day only the reason. */
+const dayResultSchema = z.discriminatedUnion('status', [
+	z.object({
+		status: z.enum(['final', 'degraded']),
+		value: count,
+		groundStopValue: count,
+		airports: z.array(airportMinutesSchema),
+		hourly: z.array(hourSchema),
+	}),
+	z.object({ status: z.literal('suspended'), reason: z.string() }),
+]);
+
+/** Every round a print was computed from, valid and invalid, with its receipt hash. */
+const printRoundsSchema = z.array(
+	z.object({
+		roundId: roundIdSchema,
+		receiptHash: hex64,
+		status: z.enum(['valid', 'invalid']),
+	}),
+);
+
 export const printSchema = z
 	.object({
 		schema: z.literal('adi.daily-print/1'),
@@ -308,23 +336,8 @@ export const printSchema = z
 		parameterHash: hex64,
 		settlesAt: instant,
 		coverage: coverageSchema,
-		result: z.discriminatedUnion('status', [
-			z.object({
-				status: z.enum(['final', 'degraded']),
-				value: count,
-				groundStopValue: count,
-				airports: z.array(airportMinutesSchema),
-				hourly: z.array(hourSchema),
-			}),
-			z.object({ status: z.literal('suspended'), reason: z.string() }),
-		]),
-		rounds: z.array(
-			z.object({
-				roundId: roundIdSchema,
-				receiptHash: hex64,
-				status: z.enum(['valid', 'invalid']),
-			}),
-		),
+		result: dayResultSchema,
+		rounds: printRoundsSchema,
 		printHash: hex64,
 	})
 	.refine((print) => (print.revision === 1) === (print.correction === null), {
@@ -341,6 +354,90 @@ export const printSchema = z
 		if (cutoff !== null) checkCorrectionTiming(print, cutoff, ctx);
 	});
 export type DailyPrint = z.infer<typeof printSchema>;
+
+export const identitySchema = z.object({ methodologyVersion: z.string(), parameterHash: hex64 });
+
+/**
+ * An indicative print (design §4): an America/New_York day computed under v2 from archived
+ * receipts before v2 takes effect. Its standing, window and admission policy are hashed with it,
+ * so it can never pass as a settlement print. Never revised, so it has no revision.
+ */
+export const indicativePrintSchema = z
+	.object({
+		schema: z.literal('adi.daily-print/2'),
+		date: z.string().refine((d) => parseUtcDate(d) !== null, 'invalid date'),
+		standing: z.literal('indicative'),
+		/** The zone the date is read in, hashed with the print. */
+		day: z.literal('America/New_York'),
+		window: z.object({ start: instant, end: instant }),
+		/** When it was built: the day's end plus the settlement cutoff, after admission closed. */
+		freezesAt: instant,
+		admission: z.object({
+			policy: z.literal(INDICATIVE_ADMISSION_POLICY),
+			accepts: z.array(identitySchema).min(1),
+		}),
+		methodologyVersion: z.string(),
+		parameterHash: hex64,
+		coverage: coverageSchema,
+		result: dayResultSchema,
+		rounds: printRoundsSchema,
+		printHash: hex64,
+	})
+	.superRefine((print, ctx) => {
+		const release = checkRecordedMethodology(
+			print,
+			print.result.status === 'suspended' ? null : print.result.airports,
+			ctx,
+		);
+		if (release !== null) checkIndicativeDay(print, release, ctx);
+	});
+export type IndicativePrint = z.infer<typeof indicativePrintSchema>;
+
+/**
+ * An indicative print states exactly its release's day: the window and freeze time `dayWindow`
+ * computes for its date, and the release's own admission policy. Anything else is refused, so a
+ * reader never needs tz data to trust what a print covers.
+ */
+function checkIndicativeDay(
+	print: Pick<IndicativePrint, 'date' | 'day' | 'window' | 'freezesAt' | 'admission'>,
+	release: Methodology,
+	ctx: z.RefinementCtx,
+): void {
+	if (parseUtcDate(print.date) === null) return;
+	if (release.parameters.day === 'utc') {
+		ctx.addIssue({
+			code: 'custom',
+			message: `adi.daily-print/2 holds zoned days; ${release.parameters.version} uses UTC days`,
+			path: ['methodologyVersion'],
+		});
+		return;
+	}
+	const admission = indicativeAdmissionFor(release);
+	if (admission === null) {
+		ctx.addIssue({
+			code: 'custom',
+			message: `${release.parameters.version} has no indicative series`,
+			path: ['methodologyVersion'],
+		});
+		return;
+	}
+	const window = dayWindow(release, print.date);
+	const expected = {
+		day: release.parameters.day.timeZone,
+		window: { start: window.start.toISOString(), end: window.end.toISOString() },
+		freezesAt: settlesAt(window).toISOString(),
+		admission,
+	};
+	for (const field of ['day', 'window', 'freezesAt', 'admission'] as const) {
+		if (canonicalJson(print[field]) !== canonicalJson(expected[field])) {
+			ctx.addIssue({
+				code: 'custom',
+				message: `${field} is not the one ${release.parameters.version} gives ${print.date}`,
+				path: [field],
+			});
+		}
+	}
+}
 
 export const historyEntrySchema = z.object({
 	date: utcDateSchema,

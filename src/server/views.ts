@@ -1,6 +1,7 @@
 /** Read models for the public API, shaped for direct rendering. */
 import {
 	dayAt,
+	dayWindow,
 	elapsedSlots,
 	partitionsOf,
 	publishBy,
@@ -11,17 +12,36 @@ import {
 	type SettlementDay,
 } from '@/lib/index/calendar';
 import { aggregateDay, type SlotState } from '@/lib/index/day';
-import { settlementReleaseOrNull } from '@/lib/index/methodology';
+import {
+	FIRST_INDICATIVE_DAY,
+	INDICATIVE_SERIES,
+	indicativeFreezesAt,
+	indicativeReleaseFor,
+} from '@/lib/index/indicative';
+import {
+	identityOf,
+	methodologyOf,
+	settlementReleaseOrNull,
+	type Methodology,
+} from '@/lib/index/methodology';
 import type {
 	Correction,
 	DailyPrint,
+	IndicativePrint,
 	RoundReceipt,
 	RoundSummary,
 	UnrecognizedList,
 } from '@/lib/index/schemas';
 import { addDays, parseRoundId, utcDateOf, type RoundId, type UtcDate } from '@/lib/index/time';
 
-import { readCorrectionPrints, readDayIndex, readHistory, readPrints } from './archive';
+import {
+	readCorrectionPrints,
+	readDayIndex,
+	readHistory,
+	readIndicativePrint,
+	readIndicativePrints,
+	readPrints,
+} from './archive';
 import { CACHE } from './http';
 import type { ObjectStore } from './storage';
 
@@ -64,7 +84,7 @@ async function heartbeat(store: ObjectStore, now: Date) {
 async function provisionalView(store: ObjectStore, today: SettlementDay, now: Date) {
 	const { window } = today;
 	const rounds = await readWindowRounds(store, window);
-	const day = aggregateDay(today, rounds, now);
+	const day = aggregateDay(today, rounds, now, [identityOf(today.release)]);
 	const elapsed = elapsedSlots(window, now);
 	// The slot open now: `pending` until its round arrives, then `observed`.
 	const latestSlot: SlotState | undefined = day.slots[elapsed];
@@ -180,6 +200,96 @@ export async function historyView(store: ObjectStore, from: UtcDate, to: UtcDate
 		days: days
 			.filter((day) => day.date >= from && day.date <= to)
 			.map((day) => ({ ...day, url: `${API_BASE}/days/${day.date}` })),
+	};
+}
+
+/**
+ * What every indicative response carries beside the data, so the series' zone and standing travel
+ * with every value: never a settlement value (design §4).
+ */
+function indicativeEnvelope(release: Methodology) {
+	const { day } = release.parameters;
+	if (day === 'utc') {
+		throw new Error(`${release.parameters.version} has UTC days, not an indicative series`);
+	}
+	return { series: INDICATIVE_SERIES, standing: 'indicative' as const, day: day.timeZone };
+}
+
+type IndicativeEnvelope = ReturnType<typeof indicativeEnvelope>;
+
+export type IndicativeDayView =
+	| { status: 'frozen'; body: IndicativeEnvelope & { date: string; print: IndicativePrint } }
+	| {
+			status: 'pending';
+			body: IndicativeEnvelope & {
+				date: string;
+				status: 'pending';
+				window: { start: string; end: string };
+				freezesAt: string;
+			};
+	  }
+	/**
+	 * No indicative day: before the series starts, after it ends (then see the settlement print),
+	 * or never frozen before its release was withdrawn.
+	 */
+	| { status: 'none'; date: string; reason: 'before_series' | 'series_ended' | 'withdrawn' };
+
+/** An indicative ET day: its frozen print, when it will freeze, or why it has none. */
+export async function indicativeDayView(
+	store: ObjectStore,
+	date: string,
+): Promise<IndicativeDayView> {
+	const release = indicativeReleaseFor(date, { includeWithdrawn: true });
+	if (release === null) {
+		return {
+			status: 'none',
+			date,
+			reason: date >= FIRST_INDICATIVE_DAY ? 'series_ended' : 'before_series',
+		};
+	}
+	const envelope = indicativeEnvelope(release);
+	const print = await readIndicativePrint(store, date);
+	if (print !== null) return { status: 'frozen', body: { ...envelope, date, print } };
+	// A withdrawn release freezes nothing more: only its published prints stay.
+	if (release.withdrawn) return { status: 'none', date, reason: 'withdrawn' };
+	const window = dayWindow(release, date);
+	return {
+		status: 'pending',
+		body: {
+			...envelope,
+			date,
+			status: 'pending',
+			window: { start: window.start.toISOString(), end: window.end.toISOString() },
+			freezesAt: indicativeFreezesAt(release, date).toISOString(),
+		},
+	};
+}
+
+/** Frozen indicative days in [from, to], with the series' zone and standing on every entry. */
+export async function indicativeHistoryView(store: ObjectStore, from: string, to: string) {
+	const prints = await readIndicativePrints(store, from, to);
+	return {
+		series: INDICATIVE_SERIES,
+		standing: 'indicative' as const,
+		from,
+		to,
+		days: prints.map((print) => {
+			const settled = print.result.status === 'suspended' ? null : print.result;
+			const release = methodologyOf(print.methodologyVersion, print.parameterHash);
+			if (release === null) throw new Error(`${print.date} records an unknown methodology`);
+			return {
+				date: print.date,
+				...indicativeEnvelope(release),
+				window: print.window,
+				status: print.result.status,
+				value: settled === null ? null : settled.value,
+				groundStopValue: settled === null ? null : settled.groundStopValue,
+				coveragePercent: print.coverage.percent,
+				methodologyVersion: print.methodologyVersion,
+				printHash: print.printHash,
+				url: `${API_BASE}/indicative/days/${print.date}`,
+			};
+		}),
 	};
 }
 

@@ -1,20 +1,27 @@
 /**
- * The daily settlement print: an immutable, hashed statement of day D's value, built only from
- * day D's round receipts after the settlement cutoff. The day and its release are resolved by the
- * entry point (settle, correct, reproduce) and passed in; nothing here looks them up.
+ * The daily prints: an immutable, hashed statement of day D's value, built only from day D's round
+ * receipts after the day's cutoff. A settlement print (`adi.daily-print/1`) can be corrected; an
+ * indicative print (`adi.daily-print/2`, design §4) is never revised. The day and its release are
+ * resolved by the entry point (settle, correct, reproduce, the indicative builder) and passed in;
+ * nothing here looks them up.
  */
 import { settlesAt, type SettlementDay } from './calendar';
 import { aggregateDay, settledStatus, type DayAggregate } from './day';
+import type { IndicativeAdmission } from './indicative';
 import { hashJson } from './json';
+import { identityOf, type Identity } from './methodology';
 import {
+	indicativePrintSchema,
 	printSchema,
 	type Correction,
 	type DailyPrint,
 	type HistoryEntry,
+	type IndicativePrint,
 	type RoundSummary,
 } from './schemas';
 
 export const PRINT_SCHEMA = 'adi.daily-print/1' as const;
+export const INDICATIVE_PRINT_SCHEMA = 'adi.daily-print/2' as const;
 
 /** Revision 1 is the settlement. Any later revision is a correction and must say why. */
 export type PrintRevision = { revision: 1 } | { revision: number; correction: Correction };
@@ -35,20 +42,64 @@ export function printBody(
 	settlementDay: SettlementDay,
 	rounds: readonly RoundSummary[],
 ): PrintBody {
-	const { window } = settlementDay;
-	const day = aggregateDay(settlementDay, rounds, window.end);
-	// A day settles under one methodology: any round under another suspends it, whatever the coverage.
+	const { release, window } = settlementDay;
+	// Settlement admits exactly the day's own release (settlement rule 4).
+	const computed = computeDay(settlementDay, rounds, [identityOf(release)]);
+	return {
+		schema: PRINT_SCHEMA,
+		date: window.date,
+		methodologyVersion: computed.methodologyVersion,
+		parameterHash: computed.parameterHash,
+		settlesAt: settlesAt(window).toISOString(),
+		coverage: computed.coverage,
+		result: computed.result,
+		rounds: computed.rounds,
+	};
+}
+
+/**
+ * The indicative print of `day` (design §4): the same computation as a settlement print, over the
+ * rounds `admission` admits, frozen once admission for the day has closed and never revised.
+ */
+export function buildIndicativePrint(
+	day: SettlementDay,
+	rounds: readonly RoundSummary[],
+	admission: IndicativeAdmission,
+): IndicativePrint {
+	const { release, window } = day;
+	if (release.parameters.day === 'utc') {
+		throw new Error(`${release.parameters.version} has UTC days, so no indicative series`);
+	}
+	const unsigned: Omit<IndicativePrint, 'printHash'> = {
+		schema: INDICATIVE_PRINT_SCHEMA,
+		date: window.date,
+		standing: 'indicative',
+		day: release.parameters.day.timeZone,
+		window: { start: window.start.toISOString(), end: window.end.toISOString() },
+		freezesAt: settlesAt(window).toISOString(),
+		admission: { policy: admission.policy, accepts: [...admission.accepts] },
+		...computeDay(day, rounds, admission.accepts),
+	};
+	return indicativePrintSchema.parse({ ...unsigned, printHash: hashJson(unsigned) });
+}
+
+/** What every print states about its day, computed from the rounds `admitted` lets count. */
+function computeDay(
+	settlementDay: SettlementDay,
+	rounds: readonly RoundSummary[],
+	admitted: readonly Identity[],
+): Pick<PrintBody, 'methodologyVersion' | 'parameterHash' | 'coverage' | 'result' | 'rounds'> {
+	const day = aggregateDay(settlementDay, rounds, settlementDay.window.end, admitted);
+	// A day is computed under one methodology: any round outside it suspends the day, whatever
+	// the coverage.
 	const { parameters, parameterHash } = day.methodology;
 	const status =
 		day.foreignMethodologies.length > 0
 			? 'suspended'
 			: settledStatus(day.coverage, parameters.coverage);
 	return {
-		schema: PRINT_SCHEMA,
-		date: window.date,
 		methodologyVersion: parameters.version,
 		parameterHash,
-		settlesAt: settlesAt(window).toISOString(),
 		coverage: day.coverage,
 		result:
 			status === 'suspended'
@@ -89,14 +140,16 @@ function suspensionReason(day: DayAggregate): string {
 		const found = day.foreignMethodologies
 			.map((m) => `${m.rounds} under ${m.methodologyVersion} (${m.parameterHash})`)
 			.join(', ');
-		const { parameters, parameterHash } = day.methodology;
-		return `mixed methodology: ${found}, not ${parameters.version} (${parameterHash}); a day settles under one methodology`;
+		const expected = day.admitted
+			.map((m) => `${m.methodologyVersion} (${m.parameterHash})`)
+			.join(' or ');
+		return `mixed methodology: ${found}, not ${expected}; a day settles under one methodology`;
 	}
 	const { validRounds, slotsPerDay } = day.coverage;
 	return `coverage ${validRounds}/${slotsPerDay} valid rounds is below ${day.methodology.parameters.coverage.degradedMinPercent}%`;
 }
 
-export function printHashMatches(print: DailyPrint): boolean {
+export function printHashMatches(print: DailyPrint | IndicativePrint): boolean {
 	const { printHash, ...unsigned } = print;
 	return hashJson(unsigned) === printHash;
 }

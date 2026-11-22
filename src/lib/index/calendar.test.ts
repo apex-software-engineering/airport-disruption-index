@@ -15,7 +15,7 @@ import {
 	type SettlementDay,
 } from './calendar';
 import { aggregateDay, settledStatus } from './day';
-import { settlementReleaseFor } from './methodology';
+import { identityOf, settlementReleaseFor } from './methodology';
 import { METHODOLOGY_V1, RELEASES } from './releases';
 import type { RoundSummary } from './schemas';
 import { addDays, roundIdFor } from './time';
@@ -143,7 +143,7 @@ describe('aggregating a v2 day', () => {
 	it('has 23 hourly buckets on the spring-forward day and a 27,600 maximum', () => {
 		const day = dayOf('2027-03-14');
 		const all = V2.parameters.panel.map(String);
-		const result = aggregateDay(day, everySlot(day, all), day.window.end);
+		const result = aggregateDay(day, everySlot(day, all), day.window.end, [identityOf(V2)]);
 		expect(result.hourly).toHaveLength(23);
 		expect(result.value).toBe(27_600);
 		expect(result.coverage).toMatchObject({ slotsPerDay: 276, validRounds: 276, percent: 100 });
@@ -151,7 +151,7 @@ describe('aggregating a v2 day', () => {
 
 	it('has 25 distinct UTC-keyed hourly buckets on the fall-back day', () => {
 		const day = dayOf('2027-11-07');
-		const result = aggregateDay(day, everySlot(day, ['ATL']), day.window.end);
+		const result = aggregateDay(day, everySlot(day, ['ATL']), day.window.end, [identityOf(V2)]);
 		expect(result.hourly).toHaveLength(25);
 		expect(new Set(result.hourly.map((h) => h.hourStart)).size).toBe(25);
 		// 01:00 EDT and 01:00 EST: the repeated local hour is two buckets.
@@ -165,7 +165,9 @@ describe('aggregating a v2 day', () => {
 	it('restarts the carry ladder at ET midnight, not at UTC midnight', () => {
 		const day = dayOf('2027-01-05');
 		const lastUtcSlot = new Date('2027-01-05T23:55:00Z');
-		const result = aggregateDay(day, [v2Round(lastUtcSlot, ['JFK'])], day.window.end);
+		const result = aggregateDay(day, [v2Round(lastUtcSlot, ['JFK'])], day.window.end, [
+			identityOf(V2),
+		]);
 		// 00:00Z on the 6th is 19:00 ET on the 5th: the same day, so the round carries into it.
 		const next = slotIndexIn(day.window, new Date('2027-01-06T00:00:00Z'));
 		expect(next).not.toBeNull();
@@ -176,7 +178,9 @@ describe('aggregating a v2 day', () => {
 	it('refuses a round from outside the day', () => {
 		const day = dayOf('2027-01-05');
 		expect(() =>
-			aggregateDay(day, [v2Round(new Date('2027-01-05T04:55:00Z'))], day.window.end),
+			aggregateDay(day, [v2Round(new Date('2027-01-05T04:55:00Z'))], day.window.end, [
+				identityOf(V2),
+			]),
 		).toThrow(/not on 2027-01-05/);
 	});
 });

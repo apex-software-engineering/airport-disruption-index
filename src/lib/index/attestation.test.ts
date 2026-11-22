@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { settlementDay } from './calendar';
+import { dayWindow, settlementDay } from './calendar';
 
 import { readOtsProof } from '@/lib/ots';
 import { feedFixture, otsFixture } from '@/test/fixtures';
@@ -16,11 +16,12 @@ import {
 import { hashJson, sha256Hex } from './json';
 import { CURRENT_ADAPTER } from './adapters';
 import { settlementReleaseFor } from './methodology';
-import { buildPrint } from './print';
-import { METHODOLOGY_V1 } from './releases';
+import { buildIndicativePrint, buildPrint } from './print';
+import { METHODOLOGY_V1, RELEASES } from './releases';
 import { summarizeReceipt } from './round';
 import { collectedReceipt } from '@/test/receipts';
-import { attestationSchema } from './schemas';
+import { indicativeAdmissionFor } from './indicative';
+import { attestationSchema, type DailyPrint } from './schemas';
 
 const raw = feedFixture('synthetic-gs-gdp.xml');
 const receipts = ['2026-11-17T20:45:02.123Z', '2026-11-17T20:50:01.500Z'].map((at) =>
@@ -147,6 +148,22 @@ const r1Of = (date: string) => ({
 	correction: null,
 	methodologyVersion: METHODOLOGY_V1.version,
 	parameterHash: hashJson(METHODOLOGY_V1),
+});
+
+describe('attesting only settlement prints', () => {
+	it('refuses an indicative print: only a settlement print is ever attested', () => {
+		const v2 = RELEASES[1];
+		const admission = v2 === undefined ? null : indicativeAdmissionFor(v2);
+		if (v2 === undefined || admission === null) throw new Error('v2 has an indicative policy');
+		const indicative = buildIndicativePrint(
+			{ release: v2, window: dayWindow(v2, '2026-11-20') },
+			[],
+			admission,
+		);
+		// The type system already refuses this; the cast stands in for an untyped caller.
+		expect(() => buildAttestation(indicative as unknown as DailyPrint, null)).toThrow();
+		expect(buildAttestation(print, null).printHash).toBe(print.printHash);
+	});
 });
 
 describe('publicationCutoff', () => {

@@ -12,15 +12,23 @@ import { z } from 'zod';
 
 import { DEPLOYED_COMMIT_HEADER, parseDeployedCommit } from '@/lib/deployment';
 import { adapterOf } from '@/lib/index/adapters';
-import { methodologyOf } from '@/lib/index/methodology';
+import { admits, methodologyOf, type Identity } from '@/lib/index/methodology';
+import { receiptHashMatches } from '@/lib/index/round';
 import {
+	indicativePrintSchema,
 	printSchema,
 	receiptSchema,
+	receiptShapeSchema,
 	type DailyPrint,
 	type RoundReceipt,
 } from '@/lib/index/schemas';
 import { parseRoundId, parseUtcDate, type UtcDate } from '@/lib/index/time';
-import { dayResponseProblems, verifyPrint, verifyRound } from '@/lib/index/verify';
+import {
+	dayResponseProblems,
+	verifyIndicativePrint,
+	verifyPrint,
+	verifyRound,
+} from '@/lib/index/verify';
 
 const CONCURRENCY = 8;
 
@@ -62,6 +70,50 @@ export async function reproduce(
 		throw new CannotVerify(
 			`${target} is neither a round id (2026-11-17T20:45Z) nor a date (2026-11-17)`,
 		);
+	});
+}
+
+/**
+ * Reproduces the indicative ET print of `date` (design §4) from the public API: every round it
+ * lists, then the print, rebuilt under the release its date gives the indicative series.
+ */
+export async function reproduceIndicative(
+	date: UtcDate,
+	baseUrl: string,
+	get: Get,
+): Promise<ReproduceOutcome> {
+	const log: string[] = [];
+	const api = new PublicApi(baseUrl, get);
+	return outcomeOf(log, async () => {
+		if (parseUtcDate(date) === null) throw new CannotVerify(`${date} is not a date (2026-11-20)`);
+		const { print } = await api.getRecorded(
+			`/api/v1/indicative/days/${date}`,
+			z.object({
+				standing: z.literal('indicative'),
+				date: z.literal(date),
+				print: indicativePrintSchema,
+			}),
+			`indicative day ${date}`,
+			(body) => z.object({ print: recordedSchema }).safeParse(body).data?.print,
+		);
+		// The print must be the requested day's before anything it lists is trusted or fetched.
+		if (print.date !== date) {
+			throw new Mismatch([`asked for indicative day ${date}, got the print of ${print.date}`]);
+		}
+		const results = await fetchRounds(
+			print.rounds.map((r) => r.roundId),
+			(id) => fetchIndicativeRound(api, date, id, print.admission.accepts),
+		);
+		log.push(
+			`indicative ${print.date} (ET): ${print.result.status}, ${print.rounds.length} rounds, printHash ${print.printHash}`,
+		);
+		return [
+			...results.flatMap((r) => r.problems),
+			...verifyIndicativePrint(
+				print,
+				results.map((r) => r.receipt),
+			),
+		];
 	});
 }
 
@@ -151,16 +203,34 @@ class PublicApi {
 		return response;
 	}
 
-	/** A published object, after checking this checkout knows the versions it records. */
-	async getRecorded<T>(path: string, schema: z.ZodType<T>, what: string): Promise<T> {
+	/**
+	 * A published object, after checking this checkout knows the versions it records. `recordOf`
+	 * finds them in the body when they are not at its top level.
+	 */
+	async getRecorded<T>(
+		path: string,
+		schema: z.ZodType<T>,
+		what: string,
+		recordOf: (body: unknown) => unknown = (body) => body,
+	): Promise<T> {
 		const body: unknown = await (await this.fetch(path)).json();
-		const recorded = recordedSchema.safeParse(body);
-		if (recorded.success) requireKnown(recorded.data, what);
-		const parsed = schema.safeParse(body);
-		if (!parsed.success)
-			throw new Mismatch([`${what} fails its schema: ${z.prettifyError(parsed.error)}`]);
-		return parsed.data;
+		return parseRecorded(body, schema, what, recordOf);
 	}
+}
+
+/** A published body, after checking this checkout knows the versions it records. */
+function parseRecorded<T>(
+	body: unknown,
+	schema: z.ZodType<T>,
+	what: string,
+	recordOf: (body: unknown) => unknown = (b) => b,
+): T {
+	const recorded = recordedSchema.safeParse(recordOf(body));
+	if (recorded.success) requireKnown(recorded.data, what);
+	const parsed = schema.safeParse(body);
+	if (!parsed.success)
+		throw new Mismatch([`${what} fails its schema: ${z.prettifyError(parsed.error)}`]);
+	return parsed.data;
 }
 
 function requireKnown(recorded: z.infer<typeof recordedSchema>, what: string): void {
@@ -177,12 +247,51 @@ function requireKnown(recorded: z.infer<typeof recordedSchema>, what: string): v
 	}
 }
 
-async function fetchRound(
+type FetchedRound = { receipt: RoundReceipt; problems: string[] };
+
+async function fetchRound(api: PublicApi, id: string): Promise<FetchedRound> {
+	const path = `/api/v1/rounds/${id}`;
+	return verifyFetchedRound(api, id, await (await api.fetch(path)).json());
+}
+
+/**
+ * A round an indicative print lists. One under an identity its admission accepts is verified in
+ * full, rebuilt from its body. Any other is foreign: it took no slot, so it is checked by shape
+ * and hash alone, which keeps a day suspended by a receipt from a release this checkout does not
+ * know reproducible (the rebuilt print then states why it is suspended).
+ */
+async function fetchIndicativeRound(
+	api: PublicApi,
+	date: string,
+	id: string,
+	accepts: readonly Identity[],
+): Promise<FetchedRound> {
+	// Scoped to the print: the only endpoint that serves a foreign receipt, and only as its evidence.
+	const body: unknown = await (
+		await api.fetch(`/api/v1/indicative/days/${date}/rounds/${id}`)
+	).json();
+	const recorded = recordedSchema.safeParse(body);
+	if (recorded.success && admits(accepts, recorded.data)) return verifyFetchedRound(api, id, body);
+	const shape = receiptShapeSchema.safeParse(body);
+	if (!shape.success)
+		throw new Mismatch([`round ${id} fails its schema: ${z.prettifyError(shape.error)}`]);
+	if (shape.data.roundId !== id)
+		throw new Mismatch([`asked for round ${id}, got a receipt for ${shape.data.roundId}`]);
+	const hashed = receiptHashMatches(shape.data);
+	return {
+		receipt: shape.data,
+		problems: hashed ? [] : [`${id}: receiptHash does not match the receipt contents`],
+	};
+}
+
+/** Checks a fetched receipt under the release and adapter it records, then rebuilds it. */
+async function verifyFetchedRound(
 	api: PublicApi,
 	id: string,
-): Promise<{ receipt: RoundReceipt; problems: string[] }> {
+	body: unknown,
+): Promise<FetchedRound> {
 	const path = `/api/v1/rounds/${id}`;
-	const receipt = await api.getRecorded(path, receiptSchema, `round ${id}`);
+	const receipt = parseRecorded(body, receiptSchema, `round ${id}`);
 	if (receipt.roundId !== id)
 		throw new Mismatch([`asked for round ${id}, got a receipt for ${receipt.roundId}`]);
 	const raw =
@@ -198,15 +307,22 @@ async function reproduceRound(api: PublicApi, id: string, log: string[]): Promis
 	return problems;
 }
 
+/** Every round in `ids`, fetched and verified CONCURRENCY at a time, in order. */
+async function fetchRounds(
+	ids: readonly string[],
+	fetchOne: (id: string) => Promise<FetchedRound>,
+): Promise<FetchedRound[]> {
+	const results: FetchedRound[] = [];
+	for (let i = 0; i < ids.length; i += CONCURRENCY) {
+		results.push(...(await Promise.all(ids.slice(i, i + CONCURRENCY).map(fetchOne))));
+	}
+	return results;
+}
+
 async function reproduceDay(api: PublicApi, day: SettledDay, log: string[]): Promise<string[]> {
 	const { print } = day;
 	const ids = print.rounds.map((r) => r.roundId);
-	const results: { receipt: RoundReceipt; problems: string[] }[] = [];
-	for (let i = 0; i < ids.length; i += CONCURRENCY) {
-		results.push(
-			...(await Promise.all(ids.slice(i, i + CONCURRENCY).map((id) => fetchRound(api, id)))),
-		);
-	}
+	const results = await fetchRounds(ids, (id) => fetchRound(api, id));
 	log.push(
 		`print ${print.date} r${print.revision}: ${print.result.status}, ${ids.length} rounds, printHash ${print.printHash}`,
 	);

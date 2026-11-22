@@ -14,6 +14,7 @@
 		"format:check": "prettier --check .",
 		"reproduce": "tsx scripts/reproduce.ts",
 		"correct": "tsx scripts/correct.ts",
+		"indicative": "tsx scripts/indicative.ts",
 		"attest": "tsx scripts/attest.ts",
 		"verify-attestation": "tsx scripts/verify-attestation.ts",
 		"check-proofs": "tsx scripts/check-proofs.ts",
