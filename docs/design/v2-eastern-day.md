@@ -100,76 +100,64 @@ deployment, after the first has been read back:
    settlement lookup ignore it, v1 has no `effectiveUntil`, and the collector keeps tagging v1. Only
    the indicative series (which selects v2 explicitly, see below) and `/api/v1/methodology`'s
    `upcoming` block use it.
-2. **Readback: the first successful production readback is N.** A Vercel `ready` timestamp is not
-   used, because a deployment can be ready before it serves production traffic. Instead, a
-   `notice-readback` GitHub Actions workflow runs on a schedule (every 15 minutes) and by hand after
-   step 1 deploys. It fetches `https://airports.apexsofteng.com/incidents` and `/api/v1/methodology`
-   over the public internet, and succeeds only when both show the notice (the incidents entry text
-   and the `upcoming` v2 block with its parameter hash). The first successful run writes
-   `notices/2.0.0.readback.json` to the attestations branch, write-once, holding:
-   - the run id;
-   - GitHub's `run_started_at`;
-   - each response's `Date` header and `X-Deployed-Commit`;
-   - the sha256 of each body.
+2. **Readback: one record.** A Vercel `ready` timestamp is not used, because a deployment can be
+   ready before it serves production traffic. Instead, a `notice-readback` GitHub Actions workflow
+   runs after step 1 deploys, by hand and then every 15 minutes until it succeeds. It fetches
+   `https://airports.apexsofteng.com/incidents` and `/api/v1/methodology` over the public internet.
+   It succeeds only when both show the notice: the incidents entry text, and the `upcoming` v2 block
+   with its parameter hash.
+   - **A failed run writes nothing.** The workflow is simply run again.
+   - **The one successful run writes a single write-once record**, `notices/2.0.0.readback.json`, to
+     the attestations branch. It holds the run id, GitHub's `run_started_at`, each response's `Date`
+     header and `X-Deployed-Commit`, and the sha256 of each body.
+   - **N = max(the `Date` headers, `run_started_at`).**
+   - The record is stamped with OpenTimestamps like a print. **B** is the header time of the
+     earliest Bitcoin block its proof reaches. If a proof is ever lost, the same bytes are stamped
+     again. B is then the new, later block time, which can only push E later.
+   - The record is never rewritten.
 
-   The file is stamped with OpenTimestamps like a print. **For readback revision k,
-   `N_k = max(own run_started_at, own Date headers, N_j for every prior revision j < k)`.** A
-   revision's own instants are its `run_started_at` and its `Date` headers. Revision 1 has no prior
-   revisions. Each record stores its computed `N` and the prior revisions' paths and N values it
-   took the maximum over. So N never decreases across revisions, even if a retry's server clock
-   reports an earlier `Date`. Taking the maximum is conservative: it can only push E later. What
-   proves it: GitHub's run record (a third party), the bodies' hashes, and an OTS proof that the
-   file existed no later than its Bitcoin block.
+   **The notice bound is `max(N, B) + 30 × 24 h`.** N is when the notice was demonstrably public. B
+   is when an independent timestamp proves the record existed. Using the later of the two needs no
+   check that B ≥ N, and no clock can make the bound earlier.
 
-   **N is not usable until its proof is verified.** A readback record counts only once `ots verify`
-   (or the same check against mempool.space) shows that the proof commits to the record's
-   first-committed bytes, reaches an existing Bitcoin block, and that block's header time is **≥
-   N**. While the proof is pending, step 2 waits.
+3. **Step 2, the registry deploy.** Once the record's proof has a block, a follow-up PR sets v2
+   `announcedAt: N`, `announcedProofAt: B` and v1 `effectiveUntil: E−1`. It adds "public from N
+   (readback run `<id>`, `notices/2.0.0.readback.json`)" to the incidents entry. Step-2 CI verifies
+   the single record and one inequality, and refuses the PR otherwise:
+   - the record's bytes are as first committed;
+   - the record's N and the proof's B match the registry;
+   - the proof verifies;
+   - `effectiveAt(v2) ≥ max(N, B) + 30 × 24 h`.
 
-   **Recovery.** A record is never overwritten or deleted. If a record's proof is rejected, the
-   operator runs the readback again (for example because the block time is earlier than N, the
-   merkle root does not match, or the calendars lost the commitment). The new record is written
-   write-once as the next revision, `notices/2.0.0.readback.r2.json`, then `.r3.json`, and so on;
-   the first record is revision 1. Each revision has its own run, its own N and its own proof. The
-   **first revision whose proof verifies** is the one used. Retry order alone would not make N
-   monotonic, because a later run can report an earlier `Date`. The max over prior revisions does. E
-   is then recomputed under the lower-bound rule (the first ET day with `start(E) ≥ N + 30 × 24 h`).
-   If that moves E past the date the notice states, the operator adds an incidents entry giving the
-   new E and the reason, before step 2. v2 is not in effect yet, so this is not a postponement, and
-   nothing has printed under v2. **Rollback floor:** unaffected. Until step 2 deploys there is no
-   cutover to protect, and the floor is the step-2 deployment, whichever readback revision it cites.
+   **This deployment is the rollback floor** (below). Until it deploys there is no cutover to
+   protect.
 
-3. **Step 2, the registry deploy.** A follow-up PR sets v2 `announcedAt: N` and v1
-   `effectiveUntil: E−1`, copied from the verified readback revision, which the PR names by path. It
-   adds "public from N (readback run `<id>`, `notices/2.0.0.readback[.rK].json`)" to the incidents
-   entry. The registry test asserts `start(E) ≥ announcedAt + 30 × 24 h`. Step-2 CI reads **every**
-   readback revision on the attestations branch, as first committed, and refuses the PR unless all
-   of these hold:
-   - each revision's stored N equals the max of its own instants and every prior revision's N;
-   - the cited revision's N is ≥ every prior revision's N;
-   - `announcedAt` equals the cited revision's N;
-   - the cited revision's proof verifies, with a block time ≥ that N. **This deployment is the
-     rollback floor** (below).
+**When the cutover happens.** v1 rule 4 says a new version "takes effect only at 00:00Z of a UTC
+day" and is announced at least 30 days before. v2 complies as written:
 
-**When the rule-4 amendment authorizes the cutover.** All three must hold:
+- v2 **takes effect at `2027-01-01T00:00Z`**, the end of v1's last day (`effectiveAt`);
+- **its first settlement day starts at `2027-01-01T05:00Z`** (00:00 EST);
+- the five hours between are v2's, but belong to no settlement day (below).
 
-- the notice was public at N, and `start(E) ≥ N + 30 × 24 h`;
-- step 2 is deployed to production before `E 00:00Z`;
+No rule is amended. The cutover happens only if all three hold:
+
+- `effectiveAt(v2) ≥ max(N, B) + 30 × 24 h`;
+- step 2 is deployed to production before `effectiveAt(v2)`;
 - v2 has not been postponed or withdrawn by the postponement close.
 
 If any condition fails, v1 simply continues. With no `effectiveUntil`, no gap and no v2 day exist.
 
-**D1: target `E = 2027-01-01`**, possible only if `N ≤ 2026-12-02T05:00Z`. If N is later, E is the
-first ET day that satisfies the bound, and step 2 states it. E can change after step 2 only by a
-postponement (section 7), which **closes 14 days before E** (`2026-12-18T05:00Z` for this E). After
-that, E is fixed.
+**D1: target `E = 2027-01-01`**, possible only if `max(N, B) ≤ 2026-12-02T00:00Z`. If it is later, E
+is the first ET day whose `E 00:00Z` satisfies the bound, and step 2 states it. E can change after
+step 2 only by a postponement (section 7), which **closes 14 days before `effectiveAt`**
+(`2026-12-18T00:00Z` for this E). After that, E is fixed.
 
 ### Release windows in the registry
 
-| Release | `effectiveFrom` | `effectiveUntil` (new, inclusive) | Day        | First instant       | Last instant (excl.) |
-| ------- | --------------- | --------------------------------- | ---------- | ------------------- | -------------------- |
-| v1      | `2026-11-17`    | **`2026-12-31`** (E−1)            | UTC        | `2026-11-17T00:00Z` | `2027-01-01T00:00Z`  |
-| v2      | `2027-01-01`    | (open)                            | America/NY | `2027-01-01T05:00Z` | n/a                  |
+| Release | `effectiveFrom` | `effectiveUntil` (new, inclusive) | Day        | First instant                                                                     | Last instant (excl.) |
+| ------- | --------------- | --------------------------------- | ---------- | --------------------------------------------------------------------------------- | -------------------- |
+| v1      | `2026-11-17`    | **`2026-12-31`** (E−1)            | UTC        | `2026-11-17T00:00Z`                                                               | `2027-01-01T00:00Z`  |
+| v2      | `2027-01-01`    | (open)                            | America/NY | takes effect `2027-01-01T00:00Z`; first settlement day starts `2027-01-01T05:00Z` | n/a                  |
 
 `effectiveUntil` is a registry field, not a hashed parameter, like `effectiveFrom`. The v1 parameter
 object and its hash `e9ef6e94…c363` are untouched. `effectiveUntil` is set only by step 2. After
@@ -192,14 +180,13 @@ dayAt(instant): DayAt   // the only function that maps an instant to a settlemen
 ```
 
 `dayAt` returns `transition` for any instant after the end of the last day of a release with an
-`effectiveUntil` and before the first instant of the next release. Every caller (running value,
-settle default, collector, monitor-facing API, UI) handles `transition` explicitly. The type has no
-fallback branch that could quietly use the wrong release.
+`effectiveUntil` and before the start of the next release's first settlement day. Every caller
+(running value, settle default, collector, monitor-facing API, UI) handles `transition` explicitly.
+The type has no fallback branch that could quietly use the wrong release.
 
-Collection never stops. Gap rounds are collected and archived as usual, and they are tagged with the
-release whose collection instant they follow: v1, because v2's first instant is 05:00Z. They count
-in no settlement print. They appear in the **indicative** v2 print for ET day 2026-12-31 (section
-4).
+Collection never stops. Gap rounds are collected and archived as usual. They are tagged with the
+release in effect at their collection instant: v2, which takes effect at 00:00Z. They count in no
+settlement print. They appear in the **indicative** v2 print for ET day 2026-12-31 (section 4).
 
 No cleaner cutover exists, because UTC and ET midnights never coincide:
 
@@ -221,16 +208,23 @@ release up themselves (section 4).
 - **Settlement entry points** (`settleDay`, `correctDay`, the settle route, the correction CLI and
   settlement `reproduce`) call `settlementReleaseFor(label)` once. That is the canonical lookup: it
   returns the release in effect whose `[effectiveFrom, effectiveUntil]` contains the label, and
-  throws otherwise. A release after the first counts as in effect only once its `announcedAt` is
-  set. Every pre-E label gives v1, by design.
+  throws otherwise. A release after the first counts as in effect only once its `announcedAt` is set
+  and it is not `withdrawn`. Every pre-E label gives v1, by design.
 - **Indicative entry points** (the indicative builder and `reproduce --indicative`) select the
   release **by label**, through `indicativeReleaseFor(label)`, and never through the settlement
   lookup:
   - It takes the release registered **immediately after** the last release with
     `effectiveFrom ≤ label`, in registry order. It ignores which release is currently in effect and
     whether `announcedAt` or `effectiveUntil` are set.
-  - It returns that successor only if the successor is v2.0.0, the only release with an indicative
-    admission policy, and `2026-11-20 ≤ label < v2.effectiveFrom`. Otherwise it returns none.
+  - It returns that successor only if the successor is v2.0.0 (the only release with an indicative
+    admission policy), `2026-11-20 ≤ label < v2.effectiveFrom`, and the successor is **not
+    `withdrawn`**. Otherwise it returns none.
+  - **Withdrawal ends the series.** Each registry entry has a `withdrawn` flag, false by default and
+    set only by a withdrawal notice. A withdrawn release is never in effect, and
+    `indicativeReleaseFor` returns none for it, so no further indicative prints are built. Prints
+    already published stay published, frozen and labelled indicative. `reproduce --indicative`
+    checks them against `indicativeReleaseFor(label, { includeWithdrawn: true })`, so they still
+    reproduce.
   - So for every label up to E−1 it is **v2's ET definition, explicitly**. The answer depends only
     on the label and the registry, and is the same in step 1, step 2 and after v2 takes effect. That
     matters for E−1: its print freezes at its cutoff, about 30 minutes after v2 takes effect
@@ -448,20 +442,26 @@ included**:
 The two sets must be equal. Nothing may be omitted and nothing added. `reproduce --indicative D`
 also rebuilds the print from those receipts. Outcomes, each with its own exit code:
 
-| Outcome           | Exit | Meaning                                                                                                                         |
-| ----------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `MATCH`           | 0    | Rebuild matches and the sets are equal against verified v1 references.                                                          |
-| `MISMATCH`        | 1    | Rebuild differs, sets differ, or verified revisions of one v1 day disagree.                                                     |
-| `PENDING`         | 4    | Rebuild matches, but a v1 reference is not yet verified (not attested, or the proof is pending). No set comparison has run yet. |
-| `PARTIAL`         | 5    | E−1 only: the 228 v1-covered slots are equal both ways, and the gap pin is absent. The gap receipts are listed as unpinned.     |
-| `PARTIAL_PENDING` | 6    | E−1 only: the 228 v1-covered slots are equal both ways, and the gap pin exists but its proof has not reached a block yet.       |
+| Outcome    | Exit | Meaning                                                                                                                                                                                                                                    |
+| ---------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `MATCH`    | 0    | Rebuild matches and the sets are equal against verified v1 references.                                                                                                                                                                     |
+| `MISMATCH` | 1    | Rebuild differs, sets differ, or verified revisions of one v1 day disagree.                                                                                                                                                                |
+| `PENDING`  | 4    | Rebuild matches, but a reference is not yet verified. Either a v1 reference is not attested or its proof is pending (no set comparison has run yet), or, for E−1 only, the 228 covered slots are equal and the gap pin's proof is pending. |
+| `PARTIAL`  | 5    | E−1 only: the 228 v1-covered slots are equal both ways, and the gap pin is absent. The gap receipts are listed as unpinned.                                                                                                                |
 
 The attest workflow runs this for each indicative day once **its** v1 references verify. That is
 both UTC days D and D+1 for every day up to E−2, and **only UTC day E−1 for E−1**, through the
 explicit E−1 path below. The workflow never waits for a second reference, because none exists for
-E−1. The run fails on `MISMATCH`. `PARTIAL` and `PARTIAL_PENDING` are reported in the run summary,
-not as failures. They are rechecked on every run until E−1 reaches `MATCH`. The workflow writes no
-indicative attestation files.
+E−1. The run fails on `MISMATCH`. `PENDING` and `PARTIAL` are reported in the run summary, not as
+failures. Like settlement days, indicative days are checked only while they are inside the run's
+7-day reconcile window. The workflow writes no indicative attestation files.
+
+**A missed pin cutoff is a `MISMATCH`, and operators should expect it to fail runs for a week.** If
+the gap pin's proof first reaches a block after its cutoff (gap end + 24 h, `2027-01-02T05:00Z`),
+E−1 is `MISMATCH` (step 4 below). That fails every attest run whose 7-day window still contains
+2026-12-31: the runs of 2027-01-01 to 2027-01-07. From 2027-01-08, E−1 has left the window and runs
+pass again. Nothing is rewritten to make them pass. The operator logs an incident saying the gap
+slots of the indicative series have no timely external pin. This affects no settlement print.
 
 **E−1 has its own branch.** The last indicative day (2026-12-31 ET) has **only one** v1 reference.
 Its window `[2026-12-31T05:00Z, 2027-01-01T05:00Z)` spans v1 UTC day 2026-12-31 (228 slots) and the
@@ -483,7 +483,8 @@ first outcome:
    - present, but its window differs from the derived transition interval, its bytes differ from the
      first-committed bytes, or its proof is invalid or reaches a block after the pin's cutoff (gap
      end + 24 h): `MISMATCH` (exit 1);
-   - present with a valid but pending proof: `PARTIAL_PENDING` (exit 6);
+   - present with a valid but pending proof: `PENDING` (exit 4). The covered part has already been
+     compared equal in step 3, so this `PENDING` never hides a mismatch;
    - present and verified: go to step 5.
 5. **Compare the 60 gap slots both ways** against the pin. With step 3 that is the full 288-slot
    comparison. Equal gives `MATCH` (exit 0). Any difference gives `MISMATCH` (exit 1).
@@ -542,7 +543,11 @@ type Methodology = {
 	parameterHash;
 	effectiveFrom: DayLabel;
 	effectiveUntil: DayLabel | null;
-	announcedAt: string | null;
+	/** When it takes effect: 00:00Z of `effectiveFrom` for v2 (v1 rule 4); its first day may start later. */
+	effectiveAt: string;
+	announcedAt: string | null; // N, from the readback record
+	announcedProofAt: string | null; // B, the readback proof's block time
+	withdrawn: boolean;
 };
 ```
 
@@ -625,7 +630,8 @@ unchanged). The running value reads the two partition indexes and filters to the
   latest day whose cutoff has passed.
 - `/api/v1/methodology`: during the notice period adds
   `upcoming: { version, parameterHash, effectiveFrom, effectiveAt, announcedAt }`. During the
-  transition interval it reports v2 as `upcoming`, with no `current` day.
+  transition interval it reports v2 as the release in effect (since 00:00Z), with no settlement day
+  yet.
 - `/api/v1/rounds/{id}`: unchanged.
 
 ### UI
@@ -682,18 +688,18 @@ unchanged). The running value reads the two partition indexes and filters to the
 >   archived, and shown only in the indicative series. No v1 attestation covers them. Their receipt
 >   list is pinned once, after the fact, by a timestamped file `transition/2027-01-01.json` on the
 >   attestations branch.
-> - **Rule changes.** The settlement rules become version-scoped. v1.0.0 days keep the v1 rules word
->   for word. v2.0.0 days follow the v2 rules published with this notice, which restate rules 3, 4,
->   5, 7 and 8 for the ET day:
+> - **When it takes effect.** As v1 rule 4 requires, v2.0.0 takes effect at **00:00Z of a UTC day,
+>   2027-01-01T00:00Z**, at least 30 days after this notice. Its first settlement day, ET day
+>   2027-01-01, starts at 05:00Z (00:00 EST). No rule is amended.
+> - **Rules for v2 days.** The settlement rules become version-scoped. v1.0.0 days keep the v1 rules
+>   word for word. v2.0.0 days follow the v2 rules published with this notice, rules 1 to 8:
 >   - deadlines are durations from the day's end (cutoff +30 min, publication +90 min, corrections
 >     until cutoff +24 h);
 >   - a `final` day may miss 13, 14 or 15 rounds (276-, 288- and 300-slot days);
->   - rule 4's requirement that a version "takes effect only at 00:00Z of a UTC day" is replaced: a
->     version takes effect at the start of its first day under its own boundary, and the instants
->     between the previous release's last day and that start belong to no settlement day. Admission
->     stays strict: a settlement day counts only rounds collected under exactly its own version and
->     parameter hash. Only the panel totals (ADI and ADI-GS) are settlement values; per-airport and
->     hourly figures are informational.
+>   - later versions take effect at 00:00 ET of a day. Admission stays strict: a settlement day
+>     counts only rounds collected under exactly its own version and parameter hash. Only the panel
+>     totals (ADI and ADI-GS) are settlement values; per-airport and hourly figures are
+>     informational.
 > - **Indicative series.** Until then, an indicative ET series, computed under v2 from the same
 >   archived receipts, is at `/api/v1/indicative/…`, labelled "ADI (ET, indicative)". It is never a
 >   settlement value. Its admission policy accepts receipts collected under v1.0.0 or v2.0.0 and is
@@ -706,15 +712,16 @@ unchanged). The running value reads the two partition indexes and filters to the
 >   and 2027-01-01: they would mix a UTC day, the gap and an ET day. No v1 print is changed or
 >   corrected. Corrections are never used to apply v2 to past days (rule 8).
 > - **Postponement or withdrawal.** Either is announced on this log **no later than
->   2026-12-18T05:00Z**, 14 days before the first v2 instant. After that, 2027-01-01 is fixed. A
+>   2026-12-18T00:00Z**, 14 days before v2 takes effect. After that, 2027-01-01 is fixed. A
 >   postponed v2 gets a new effective day at least 30 days after the postponement notice (a fresh 30
->   days). A withdrawn v2 leaves v1 in effect with no end date. Either way, no day is ever printed
->   under two methodologies, and older deployments that carry the superseded date are retired from
+>   days). A withdrawn v2 leaves v1 in effect with no end date and ends the indicative series. Its
+>   published indicative prints stay, labelled indicative. Either way, no day is ever printed under
+>   two methodologies, and older deployments that carry the superseded date are retired from
 >   rollback.
-> - **Effective-date record.** This entry has been public since `<N>`: the first successful public
->   readback of this notice (readback run `<id>`, recorded and timestamped in
->   `notices/2.0.0.readback.json` on the attestations branch). That value is added by the follow-up
->   registry change.
+> - **Effective-date record.** This entry has been public since `<N>`, the time of the successful
+>   public readback of this notice (readback run `<id>`). The readback is recorded and timestamped
+>   in `notices/2.0.0.readback.json` on the attestations branch, and its proof's Bitcoin block time
+>   is `<B>`. These values are added by the follow-up registry change.
 >
 > Discussion: issue #<n>.
 
@@ -723,16 +730,19 @@ unchanged). The running value reads the two partition indexes and filters to the
 - A new **"Version history"** section:
   - **v2.0.0, effective ET day 2027-01-01, announced `<N>`.** Day boundary UTC → America/New_York.
     Slots per day 288 → 276/288/300. Thresholds as percentages of the day's slots. Deadlines
-    unchanged as durations. Rule 4 amended (text above). Settlement values clarified. Parameter hash
-    `<v2 hash>`.
+    unchanged as durations. Takes effect at 2027-01-01T00:00Z under v1 rule 4, with the first
+    settlement day starting at 05:00Z. Settlement values clarified. Parameter hash `<v2 hash>`.
   - **v1.0.0, UTC days 2026-11-17 to 2026-12-31.** As published.
 - **Version-scoped settlement rules.** "Settlement rules" opens with: "A day is governed by the
   rules of the methodology version that owns it (`/api/v1/days/{date}` states the version)." Then
   come two normative blocks:
   - **"Settlement rules, v2.0.0 (ET days from 2027-01-01)"**: all eight rules below, in order.
   - **"Settlement rules, v1.0.0 (UTC days 2026-11-17 to 2026-12-31)"**: an annex that holds today's
-    rules 1 to 8 **verbatim**, including "D+1 01:30Z", "D+2 00:30Z" and "up to 14 can be missing".
-    It is never edited again, because v1 prints keep citing it.
+    rules 1 to 8 **verbatim in their final wording**: as on `main`, with no "PROVISIONAL, pending
+    owner decision" markers, because the owner made those values final. That includes "D+1 01:30Z",
+    "D+2 00:30Z", "up to 14 can be missing" and rule 4's "takes effect only at 00:00Z of a UTC day …
+    at least 30 days before". A test fails the build if "PROVISIONAL" appears anywhere in
+    `docs/methodology.md`. The annex is never edited again, because v1 prints keep citing it.
 - The DST annex below is copied in as normative for v2.
 
 #### Settlement rules, v2.0.0 (text to publish)
@@ -754,16 +764,17 @@ rule n of this list. Where a rule and the rest of the methodology disagree, the 
    `missing` slot only ever undercounts. A `final` day needs `valid × 100 ≥ 95 × slots`, so it can
    lack at most **13** valid rounds on a 276-slot day, **14** on a 288-slot day and **15** on a
    300-slot day (see the DST annex). Nothing is estimated or backfilled.
-4. **One methodology per day.** A new methodology version takes effect at the start of its first
-   day, under that version's day boundary. It is announced on the incident log at least 30 days
-   before that start, and the announcement records the instant it became public. The instants
-   between the end of the previous version's last day and that start belong to no settlement day. A
-   postponement or withdrawal is announced at least 14 days before the announced start, and a new
-   start needs a fresh 30 days. Each version stays in the code with the days it governs. A day is
-   computed only under the version that owns it, and a round counts only if it records exactly that
-   version and parameter hash. Otherwise the day prints `suspended` with the reason
-   `mixed methodology` and the number of rounds found under each other version. Such rounds are not
-   counted in the running value either, and `/api/v1/current` lists them in `foreignMethodologies`.
+4. **One methodology per day.** A new methodology version takes effect only at 00:00
+   America/New_York of a day, and is announced on the incident log at least 30 days before. The
+   announcement records the instant it became public. A postponement or withdrawal is announced at
+   least 14 days before the announced effective instant, and a new effective day needs a fresh 30
+   days. Each version stays in the code with the days it governs. A day is computed only under the
+   version that owns it, and a round counts only if it records exactly that version and parameter
+   hash. Otherwise the day prints `suspended` with the reason `mixed methodology` and the number of
+   rounds found under each other version. Such rounds are not counted in the running value either,
+   and `/api/v1/current` lists them in `foreignMethodologies`. (v2.0.0 itself took effect at
+   2027-01-01T00:00Z under v1 rule 4. The instants from then to 05:00Z, the start of its first
+   settlement day, belong to no settlement day.)
 5. **Feed data the index cannot read never settles.** Redirects are not followed, so a moved feed
    makes rounds invalid (`network_error` or `http_status`). A changed GS or GDP list fails the round
    (`parse_error`), and so does an element at the root the feed has never carried or a
@@ -793,8 +804,8 @@ rule n of this list. Where a rule and the rest of the methodology disagree, the 
    `windowOverride`. Every correction is listed on the incident log, and every revision stays
    published. A correction never applies a later methodology to a past day.
 
-Rule 4 governs the announcement. Rule 8 applies only as a prohibition: no v1 day is reprinted under
-v2.
+v1 rule 4 governs this announcement and the effective instant. v1 rule 8 applies only as a
+prohibition: no v1 day is reprinted under v2.
 
 ## 8. Risks and test plan
 
@@ -840,19 +851,16 @@ v2.
 
    **Two-step publication:** with `announcedAt: null`, v2 is never in effect (no `effectiveUntil`,
    no transition, collector tags v1), and the indicative series still works, bounded by
-   `v2.effectiveFrom − 1` through `indicativeReleaseFor`. The `notice-readback` job succeeds only
-   when both public responses show the notice. It writes its file once, with N as the max of its own
-   instants and every prior revision's N. Step 2's CI refuses a readback record whose proof is
-   pending, invalid or in a block earlier than N, and a cited revision whose N is below any prior
-   revision's. A rejected `readback.json` stays untouched, the next run writes `readback.r2.json`,
-   and E is recomputed from it. **Monotonic N:** revision 1 records a `Date` of 12:20Z and its proof
-   is rejected. Revision 2's own `Date` is 12:15Z (a skewed server clock), with an earlier
-   `run_started_at`. Revision 2 therefore stores N = 12:20Z, not 12:15Z. A hand-edited revision 2
-   with N = 12:15Z is refused by step-2 CI. No gap pin is written before the cutover is activated. A
-   test registry with a postponed `effectiveFrom` moves the pin's path and window with it. Step 2 is
-   refused by the registry test unless `start(E) ≥ announcedAt + 30 d`. A postponement entry after
-   the 14-day close is refused. A rollback-floor check rejects deployments older than the latest
-   cutover registry change.
+   `v2.effectiveFrom − 1` through `indicativeReleaseFor`. A failed `notice-readback` run writes
+   nothing. The successful run writes the single record once, with N = max(`Date` headers,
+   `run_started_at`). Step-2 CI accepts it only if its bytes are as first committed, its proof
+   verifies, and `effectiveAt(v2) ≥ max(N, B) + 30 d`, including a case where B < N and one where
+   B > N. A `withdrawn` v2 is never in effect, and `indicativeReleaseFor` returns none for it, while
+   its already-published indicative prints still reproduce. No gap pin is written before the cutover
+   is activated. A test registry with a postponed `effectiveFrom` moves the pin's path and window
+   with it. Step 2 is refused by the registry test unless `start(E) ≥ announcedAt + 30 d`. A
+   postponement entry after the 14-day close is refused. A rollback-floor check rejects deployments
+   older than the latest cutover registry change.
 
 6. **Admission:** settlement on a v2 day with one v1-tagged round prints `suspended` with the frozen
    reason. Indicative admits v1 and v2 identities. A known-incompatible identity (a test release
@@ -889,10 +897,12 @@ v2.
     - the E−1 branch, one test per exit: a rebuild difference gives 1; an unverified UTC E−1
       reference gives 4; a covered-slot difference gives 1 **with the pin absent and with it
       pending** (a pin never masks a covered mismatch); no pin gives 5, with exactly the 60 gap
-      slots listed; a pending pin gives 6; a late or invalid pin, a wrong window or rewritten pin
-      bytes give 1; a verified pin with equal gap slots gives 0; an altered gap receipt gives 1;
+      slots listed; a pending pin gives 4 (after the covered slots compared equal); a late or
+      invalid pin, a wrong window or rewritten pin bytes give 1; a verified pin with equal gap slots
+      gives 0; an altered gap receipt gives 1;
     - the attest workflow checks E−1 with only UTC E−1 attested, and never waits for a second
-      reference;
+      reference. With a late pin, the runs of 2027-01-01 to 2027-01-07 fail on E−1's `MISMATCH`, and
+      the 2027-01-08 run passes;
     - **after activation**, with v2 in effect: at `2027-01-01T05:30Z` the settle run still builds
       and freezes the E−1 indicative print, because `indicativeReleaseFor('2026-12-31')` is v2. The
       05:45Z attest run writes and stamps `transition/2027-01-01.json`. `indicativeReleaseFor` gives
@@ -946,6 +956,19 @@ Normative for v2. Copied into `docs/methodology.md` at release.
 6. **Deadlines are durations, on instants:** `settlesAt` = end + 30 min; `publishBy` = end + 90 min;
    corrections until `settlesAt` + 24 h; r1 attestation cutoff = end + 24 h; correction attestation
    cutoff = `issuedAt` + 48 h. On a fall-back night, `publishBy` is the first 01:30 ET (EDT).
+
+## Final confirm (Opus) dispositions
+
+| Id  | Disposition                                                                                                                                                                                                                                                                                                                                                                                  |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| O15 | Done. No rule-4 amendment. v2 takes effect at 2027-01-01T00:00Z, the end of v1's last day, as v1 rule 4 requires, and its first settlement day starts at 05:00Z. Gap rounds are tagged v2. All amendment text is removed, and the notice says no rule is amended. The v1 annex carries the final wording from `main`, with no PROVISIONAL markers, and a test enforces that (sections 2, 7). |
+| O16 | Done. One readback record. A failed run writes nothing and is simply rerun. N = max(`Date` headers, `run_started_at`), and B is the proof's block time. The bound is `effectiveAt ≥ max(N, B) + 30 d`, with no B ≥ N check. The readback revisions, the cross-revision max and the CI walk are deleted. Step-2 CI verifies the one record and the inequality (section 2, test 5).            |
+| O17 | Done. `PARTIAL_PENDING` (exit 6) is merged into `PENDING` (exit 4). Because the covered slots are compared first, `PENDING` never hides a mismatch (section 4, test 12).                                                                                                                                                                                                                     |
+| O18 | Done. A `withdrawn` registry flag. `indicativeReleaseFor` returns none for a withdrawn release, ending the series. Published indicative prints stay and still reproduce (sections 2, 7, test 5).                                                                                                                                                                                             |
+| O19 | Done. A missed pin cutoff makes E−1 a `MISMATCH`, which fails the attest runs of 2027-01-01 to 2027-01-07 until E−1 leaves the 7-day window. Operators should expect it, log an incident and rewrite nothing (section 4, test 12).                                                                                                                                                           |
+
+The round 2 to 5 entries below about the readback revision chain (S6), the rule-4 amendment (S14,
+S6) and `PARTIAL_PENDING` (S5) are superseded by O15 to O17.
 
 ## Round 5 review dispositions
 
