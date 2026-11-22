@@ -7,7 +7,13 @@ import { FIRST_INDICATIVE_DAY, indicativeSeriesPublished } from '@/lib/index/ind
 import { addDays, utcDateOf } from '@/lib/index/time';
 import { readReceipt } from '@/server/archive';
 import { storeFromEnv } from '@/server/storage';
-import { currentView, historyView, indicativeHistoryView } from '@/server/views';
+import {
+	API_BASE,
+	currentView,
+	HISTORY_MAX_DAYS,
+	historyView,
+	indicativeHistoryView,
+} from '@/server/views';
 
 export const RECENT_PRINT_DAYS = 14;
 
@@ -52,6 +58,21 @@ export async function readSiteData(now: Date): Promise<{
 		indicative,
 		recentIndicative: indicative === null ? null : [...indicative.days].reverse(),
 	};
+}
+
+/** Where the home chart's data comes from, so its source links are the real requests. */
+export const CHART_ENDPOINTS = {
+	history: `${API_BASE}/history`,
+	current: `${API_BASE}/current`,
+} as const;
+
+/**
+ * The home chart's prints: the longest span one `/api/v1/history` request returns, ending
+ * yesterday, so a single public request rebuilds the whole chart.
+ */
+export async function readChartHistory(now: Date): Promise<History> {
+	const to = addDays(utcDateOf(now), -1);
+	return historyView(storeFromEnv(), addDays(to, 1 - HISTORY_MAX_DAYS), to);
 }
 
 /** The receipt behind `current.lastRound`, or null when no round has been recorded today. */

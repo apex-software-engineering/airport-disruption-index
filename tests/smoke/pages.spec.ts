@@ -92,6 +92,52 @@ test('/ shows the running value with its chart, or says plainly there is none', 
 	}
 });
 
+/** The home chart, or the plain statement that there is nothing to chart yet. */
+async function homeChart(page: Page) {
+	await page.goto('/');
+	const chart = page.getByRole('region', { name: 'Daily ADI chart' });
+	const empty = page.getByText('there is nothing to chart');
+	await expect(chart.or(empty)).toBeVisible();
+	return (await chart.isVisible()) ? chart : null;
+}
+
+test('/ leads with the daily chart, its range buttons and its public API sources', async ({
+	page,
+	request,
+}) => {
+	const chart = await homeChart(page);
+	test.skip(chart === null, 'no day has a value yet');
+	if (chart === null) return;
+	await expect(chart.getByRole('group', { name: /^Line chart of the daily ADI/ })).toBeVisible();
+	await expect(
+		chart
+			.getByRole('group', { name: /^ADI, (running|latest print)$/ })
+			.getByText(/^\d{1,3}(,\d{3})*$/),
+	).toBeVisible();
+	const buttons = chart.getByRole('group', { name: 'Chart range' }).getByRole('button');
+	await expect(buttons).toHaveText(['1W', '1M', 'All']);
+	await expect(chart.locator('button[aria-pressed="true"]')).toHaveCount(1);
+	for (const button of await buttons.all()) {
+		const off = (await button.getAttribute('aria-disabled')) === 'true';
+		const wasPressed = (await button.getAttribute('aria-pressed')) ?? 'false';
+		// Playwright waits for an aria-disabled button to enable, so the click on one is forced.
+		await button.click({ force: off });
+		// A disabled range explains itself and changes nothing; an enabled one takes over.
+		await expect(button).toHaveAttribute('aria-pressed', off ? wasPressed : 'true');
+		if (off) await expect(button).toHaveAttribute('title', /shows the same/);
+		const sources = chart.locator('figcaption a');
+		await expect(sources.first()).toHaveAttribute('href', /^\/api\/v1\/(history\?from=|current$)/);
+		for (const href of await sources.evaluateAll((links) =>
+			links.map((link) => link.getAttribute('href') ?? ''),
+		)) {
+			const response = await request.get(href);
+			expect(response.status(), href).toBe(200);
+		}
+	}
+	// The table twin lists every point for screen readers.
+	await expect(chart.getByRole('table')).toHaveCount(1);
+});
+
 test('/incidents shows the operator log, the correction prints and the discussion channel', async ({
 	page,
 }) => {
@@ -163,6 +209,28 @@ test.describe('local time', () => {
 		await expect(page.locator('footer')).toContainText(
 			'Times are UTC; your local time is shown in parentheses.',
 		);
+	});
+
+	test('/ chart tooltip gives a point its day in local time, on hover and on keyboard focus', async ({
+		page,
+	}) => {
+		const chart = await homeChart(page);
+		test.skip(chart === null, 'no day has a value yet');
+		if (chart === null) return;
+		const tooltip = chart.locator('[data-chart-tooltip]');
+		// e.g. "(Nov 20, 7:00 PM – Nov 21, 7:00 PM EST)", the UTC day in New York time.
+		const localDay =
+			/^\([A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}\s[AP]M – [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}\s[AP]M E[SD]T\)$/;
+		const plot = chart.getByRole('group', { name: /^Line chart of the daily ADI/ });
+		const box = await plot.boundingBox();
+		if (box === null) throw new Error('the chart has no box');
+		await page.mouse.move(box.x + box.width - 80, box.y + box.height / 2);
+		await expect(tooltip).toContainText(/\d{4}-\d{2}-\d{2} \(UTC\)/);
+		await expect(tooltip.locator('[data-local-time]').first()).toHaveText(localDay);
+		await page.mouse.move(0, 0);
+		await expect(tooltip).toHaveCount(0);
+		await chart.locator('svg [role="img"][tabindex="0"]').focus();
+		await expect(tooltip.locator('[data-local-time]').first()).toHaveText(localDay);
 	});
 
 	test('/incidents gives an instant in the operator log its local time', async ({ page }) => {

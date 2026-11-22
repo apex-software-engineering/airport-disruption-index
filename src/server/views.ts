@@ -46,6 +46,8 @@ import { CACHE } from './http';
 import type { ObjectStore } from './storage';
 
 export const API_BASE = '/api/v1';
+/** The longest span one `/api/v1/history` request returns, in days. */
+export const HISTORY_MAX_DAYS = 366;
 export const roundUrl = (id: string) => `${API_BASE}/rounds/${id}`;
 
 /**
