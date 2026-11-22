@@ -40,7 +40,7 @@ export default async function StatusPage() {
 				title='Status'
 				lede={
 					<>
-						As of <Instant at={current.asOf} />.
+						As of <Instant at={current.asOf} punctuation='.' />
 					</>
 				}
 			/>
@@ -67,14 +67,10 @@ export default async function StatusPage() {
 					rows={[
 						{
 							term: 'Status',
-							detail: (
-								<>
-									<StatusLabel tone='neutral'>{current.status}</StatusLabel>, settles at{' '}
-									<Instant at={current.settlesAt} />, print due by{' '}
-									<Instant at={current.publishBy} />
-								</>
-							),
+							detail: <StatusLabel tone='neutral'>{current.status}</StatusLabel>,
 						},
+						{ term: 'Settles at', detail: <Instant at={current.settlesAt} /> },
+						{ term: 'Print due by', detail: <Instant at={current.publishBy} /> },
 						{
 							term: 'Unrecognized lists',
 							detail:

@@ -43,6 +43,7 @@ const LOCAL_OPTIONS = {
 		minute: '2-digit',
 		timeZoneName: 'short',
 	},
+	noZone: { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' },
 	hour: { hour: 'numeric', minute: '2-digit' },
 	wallClock: {
 		year: 'numeric',
@@ -72,12 +73,24 @@ export function formatLocal(iso: string, timeZone: string): string {
 	return localFormat(timeZone, 'full').format(instant(iso));
 }
 
+function zoneName(at: Date, timeZone: string): string | undefined {
+	return localFormat(timeZone, 'full')
+		.formatToParts(at)
+		.find((part) => part.type === 'timeZoneName')?.value;
+}
+
 /**
- * Both ends in full, each with its own zone abbreviation, so a range across a DST change reads
- * right even when both ends fall on the same local date.
+ * `Nov 20, 6:00 PM – Nov 21, 6:00 PM CST`. The zone is written once when both ends share it,
+ * and at each end when they differ (a DST change), even when both fall on the same local date.
  */
 export function formatLocalRange(startIso: string, endIso: string, timeZone: string): string {
-	return `${formatLocal(startIso, timeZone)} – ${formatLocal(endIso, timeZone)}`;
+	const start = instant(startIso);
+	const end = instant(endIso);
+	const startText =
+		zoneName(start, timeZone) === zoneName(end, timeZone)
+			? localFormat(timeZone, 'noZone').format(start)
+			: localFormat(timeZone, 'full').format(start);
+	return `${startText} – ${localFormat(timeZone, 'full').format(end)}`;
 }
 
 /** A compact clock time for chart axes: `6 PM`, or `5:30 AM` off the hour. */

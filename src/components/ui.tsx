@@ -57,11 +57,15 @@ export function Facts({ rows }: { rows: readonly { term: string; detail: ReactNo
 	);
 }
 
-/** A UTC instant, the canonical value, with the viewer's local time beside it. */
-export function Instant({ at }: { at: string }) {
+/**
+ * A UTC instant, the canonical value, with the viewer's local time on the line below. Punctuation
+ * that follows the time goes in `punctuation`, so it stays on the UTC line.
+ */
+export function Instant({ at, punctuation = '' }: { at: string; punctuation?: string }) {
 	return (
 		<>
 			<time dateTime={at}>{formatUtc(at)}</time>
+			{punctuation}
 			<LocalTime at={at} />
 		</>
 	);
@@ -69,7 +73,7 @@ export function Instant({ at }: { at: string }) {
 
 /**
  * A UTC calendar day, labelled by `children` (the date by default), with the stretch of the
- * viewer's local time it covers on a line below.
+ * viewer's local time it covers on the line below.
  */
 export function UtcDay({ date, children = date }: { date: UtcDate; children?: ReactNode }) {
 	const start = new Date(dayStartMs(date)).toISOString();
@@ -77,7 +81,7 @@ export function UtcDay({ date, children = date }: { date: UtcDate; children?: Re
 	return (
 		<>
 			<time dateTime={date}>{children}</time>
-			<LocalTime at={start} until={end} line />
+			<LocalTime at={start} until={end} />
 		</>
 	);
 }

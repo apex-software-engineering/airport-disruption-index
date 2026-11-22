@@ -31,9 +31,14 @@ export function docToReact(html: string): ReactNode {
 			if (!isIsoInstant(at)) {
 				throw new Error(`docs <time datetime="${at}"> is not an ISO instant with Z or an offset`);
 			}
+			// Punctuation right after the time stays with it on the UTC line, above the local one.
+			const next = node.next;
+			const punctuation = next instanceof Text ? (/^[.,;:!?)]+/.exec(next.data)?.[0] ?? '') : '';
+			if (next instanceof Text) next.data = next.data.slice(punctuation.length);
 			return (
 				<>
 					<time dateTime={at}>{label.data}</time>
+					{punctuation}
 					<LocalTime at={at} />
 				</>
 			);

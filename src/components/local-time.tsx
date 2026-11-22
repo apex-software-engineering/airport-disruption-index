@@ -54,37 +54,25 @@ export function LocalHour({ at }: { at: string }) {
 }
 
 /**
- * The widest local form across every IANA zone (measured in Chrome over a year of instants).
- * Reserving its width means no viewer's local time can change a line break after hydration.
+ * The local time in parentheses, on a line of its own under the UTC text. The line is reserved
+ * from the first paint at a fixed one-line height, never wraps (a form too long for it ends in
+ * an ellipsis, in full in its tooltip) and adds nothing to its container's width, so filling it
+ * in after hydration cannot move anything else on the page.
  */
-const WIDEST_LOCAL = 'May 10, 12:15 PM GMT+10:30';
-const WIDEST = { at: `(${WIDEST_LOCAL})`, span: `(${WIDEST_LOCAL} – ${WIDEST_LOCAL})` } as const;
-
-/**
- * The local time in parentheses. Its slot is reserved from the first paint by the widest local
- * form, laid invisibly in the same grid cell, so the local time fills it instead of pushing the
- * text around it. `line` puts it on a line of its own, for headings and table cells.
- */
-export function LocalTime({ at, until, line = false }: Span & { line?: boolean }) {
+export function LocalTime({ at, until }: Span) {
 	const timeZone = useViewerTimeZone();
+	const text = timeZone === null ? undefined : localText({ at, until }, timeZone);
 	const repeatsUtc =
 		timeZone !== null &&
 		isUtcOffsetZero(at, timeZone) &&
 		(until === undefined || isUtcOffsetZero(until, timeZone));
 	return (
 		<span
-			className={
-				line ? 'noscript:hidden text-ink-muted block text-sm font-normal' : 'noscript:hidden'
-			}>
-			{' '}
-			<span className={line ? 'grid' : 'inline-grid whitespace-nowrap'}>
-				<span aria-hidden className='invisible [grid-area:1/1]'>
-					{until === undefined ? WIDEST.at : WIDEST.span}
-				</span>
-				<span data-local-time aria-hidden={repeatsUtc} className='[grid-area:1/1]'>
-					{timeZone === null ? null : localText({ at, until }, timeZone)}
-				</span>
-			</span>
+			data-local-time
+			title={text}
+			aria-hidden={repeatsUtc}
+			className='noscript:hidden text-ink-muted block h-[1lh] overflow-hidden text-xs font-normal text-ellipsis whitespace-nowrap contain-inline-size'>
+			{text}
 		</span>
 	);
 }

@@ -39,10 +39,10 @@ describe('formatLocal', () => {
 });
 
 describe('formatLocalRange', () => {
-	it('gives the local stretch a UTC day covers', () => {
+	it('gives the local stretch a UTC day covers, with the zone once when both ends share it', () => {
 		expect(
 			formatLocalRange('2026-11-21T00:00:00.000Z', '2026-11-22T00:00:00.000Z', 'America/Chicago'),
-		).toBe('Nov 20, 6:00 PM CST – Nov 21, 6:00 PM CST');
+		).toBe('Nov 20, 6:00 PM – Nov 21, 6:00 PM CST');
 	});
 
 	it('marks each end with its own abbreviation on a DST change day', () => {

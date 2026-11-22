@@ -95,15 +95,15 @@ function Today({ current }: { current: Current }) {
 			)}
 			<p className='text-ink-muted mt-6 text-sm'>
 				<StatusLabel tone='neutral'>Provisional.</StatusLabel> The running value can still change
-				until the day settles at <Instant at={current.settlesAt} />.{' '}
+				until the day settles at <Instant at={current.settlesAt} punctuation='.' />
 				{lastRound === null ? (
 					'No round has been recorded today.'
 				) : (
 					<>
-						Last round <a href={lastRound.url}>{lastRound.roundId}</a>, fetched{' '}
-						<Instant at={lastRound.fetchedAt} />, {lastRound.status}.
+						Last round <a href={lastRound.url}>{lastRound.roundId}</a>, {lastRound.status}, fetched{' '}
+						<Instant at={lastRound.fetchedAt} punctuation='.' />
 					</>
-				)}{' '}
+				)}
 				<Link href='/status'>Status</Link>
 			</p>
 		</Section>
@@ -130,9 +130,12 @@ function RecentPrints({
 					caption='Settled days, newest first'
 					head={['Date (UTC)', 'Status', 'ADI', 'ADI-GS', 'Coverage', 'Revision']}
 					rows={days.map((day) => [
-						<UtcDay key='date' date={day.date}>
-							<a href={day.url}>{day.date}</a>
-						</UtcDay>,
+						// A fixed width for the local line, so filling it cannot resize the column.
+						<div key='date' className='w-80'>
+							<UtcDay date={day.date}>
+								<a href={day.url}>{day.date}</a>
+							</UtcDay>
+						</div>,
 						<StatusLabel key='status' tone={SETTLED_TONE[day.status]}>
 							{day.status}
 						</StatusLabel>,

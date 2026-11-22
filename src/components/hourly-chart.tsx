@@ -195,10 +195,11 @@ export function HourlyChart({ hourly }: { hourly: readonly HourBucket[] }) {
 						caption='Airport-minutes and slot coverage per UTC hour'
 						head={['Hour (UTC)', 'ADI', 'ADI-GS', 'Observed', 'Carried', 'Missing', 'Pending']}
 						rows={bars.map((bar) => [
-							<>
+							// A fixed width for the local line, so filling it cannot resize the column.
+							<div key='hour' className='w-44'>
 								<time dateTime={bar.hour.hourStart}>{bar.label}</time>
 								<LocalTime at={bar.hour.hourStart} />
-							</>,
+							</div>,
 							formatInteger(bar.hour.airportMinutes),
 							formatInteger(bar.hour.groundStopMinutes),
 							bar.hour.observed,

@@ -7,11 +7,20 @@ import { LocalHour, LocalTime, LocalTimeTitle } from './local-time';
 
 // renderToStaticMarkup renders the server snapshot, which is also what hydration renders.
 describe('local time on the server', () => {
-	it('reserves the widest local form, hidden, and leaves the local time empty', () => {
+	it('reserves an empty one-line slot of its own, hidden without scripting', () => {
 		const html = renderToStaticMarkup(<LocalTime at='2026-11-22T00:30:00.000Z' />);
-		expect(html).toContain('class="invisible [grid-area:1/1]">(May 10, 12:15 PM GMT+10:30)</span>');
-		expect(html).toMatch(/<span data-local-time="true" aria-hidden="false"[^>]*><\/span>/);
-		expect(html).toContain('noscript:hidden');
+		expect(html).toMatch(
+			/^<span data-local-time="true" aria-hidden="false" class="[^"]*"><\/span>$/,
+		);
+		for (const name of [
+			'noscript:hidden',
+			'block',
+			'h-[1lh]',
+			'whitespace-nowrap',
+			'contain-inline-size',
+		]) {
+			expect(html).toContain(name);
+		}
 	});
 
 	it('renders the whole tooltip text in UTC, as one string', () => {
@@ -39,6 +48,13 @@ describe('docToReact', () => {
 		);
 		expect(html).toContain('<p>started <time dateTime="2026-11-20T04:30:00Z">04:30Z</time>');
 		expect(html).toContain('data-local-time');
+	});
+
+	it('keeps punctuation right after a <time> on the UTC line, above the local one', () => {
+		const html = renderToStaticMarkup(
+			docToReact('<p>at <time datetime="2026-11-20T04:30:00Z">04:30Z</time>, then on.</p>'),
+		);
+		expect(html).toMatch(/04:30Z<\/time>,<span data-local-time[^>]*><\/span> then on\.<\/p>$/);
 	});
 
 	it('refuses a <time> without an instant or with markup inside', () => {
