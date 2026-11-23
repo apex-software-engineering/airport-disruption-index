@@ -1,0 +1,10 @@
+{
+	"schema": "adi.attestation/1",
+	"date": "2026-11-22",
+	"revision": 1,
+	"printHash": "049c6c790dd815c671ff6efb76c88aa7aada403a99138b374afdac4f8782e9b0",
+	"roundsDigest": "0cee52ad4eb82afef78b66a5e6e72fe0baad4bbb0170aade3f4f36888f38af55",
+	"parameterHash": "e9ef6e94b84699bffefa850b78138355bb427563f6ae42a28567e0ec4303c363",
+	"methodologyVersion": "1.0.0",
+	"deployedCommit": "93fef6500cf9ea682c3629a98dafeb6ff7c94a5c"
+}
