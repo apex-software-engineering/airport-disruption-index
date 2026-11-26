@@ -15,9 +15,11 @@ export function UpcomingNotice({ now }: { now: Date }) {
 	return (
 		<div className='mb-8'>
 			<Notice>
-				<strong>Methodology v{version} is announced.</strong> It takes effect at{' '}
-				<Instant at={effectiveAt(upcoming).toISOString()} punctuation=',' /> and from{' '}
-				{upcoming.effectiveFrom} each settlement day is the {zone} day. Days up to{' '}
+				<strong>Methodology v{version} is announced.</strong> It is set to take effect at{' '}
+				<Instant at={effectiveAt(upcoming).toISOString()} punctuation=',' /> if this notice’s public
+				readback and its timestamp proof are recorded at least 30 days before, and the follow-up
+				registry change is deployed before then; otherwise v{current} continues. From{' '}
+				{upcoming.effectiveFrom} each settlement day would be the {zone} day; days up to{' '}
 				{addDays(upcoming.effectiveFrom, -1)} stay under v{current} and its rules. Read the{' '}
 				<a href='/incidents'>notice</a> and the{' '}
 				<a href='/methodology#settlement-rules'>v{version} rules</a>. Until then the ADI (ET,

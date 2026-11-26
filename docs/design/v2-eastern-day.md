@@ -103,20 +103,21 @@ deployment, after the first has been read back:
 2. **Readback: one record.** A Vercel `ready` timestamp is not used, because a deployment can be
    ready before it serves production traffic. Instead, a `notice-readback` GitHub Actions workflow
    runs after step 1 deploys, by hand and then every 15 minutes until it succeeds. It fetches
-   `https://airports.apexsofteng.com/incidents` and `/api/v1/methodology` over the public internet.
-   It succeeds only when both show the notice: the incidents entry text, and the `upcoming` v2 block
-   with its parameter hash.
+   `https://airports.apexsofteng.com/incidents`, `/methodology` and `/api/v1/methodology` over the
+   public internet. It succeeds only when all three show the notice: the incidents entry (its
+   headline, dated with `noticePublishedAt`'s UTC date, and the release's parameter hash), the
+   release's rules heading on the methodology page, and the `upcoming` v2 block with its parameter
+   hash.
    - **A failed run writes nothing.** The workflow is simply run again.
    - **The one successful run writes a single write-once record**, `notices/2.0.0.readback.json`, to
-     the attestations branch, with the two response bodies beside it. It holds the run id and
-     attempt, GitHub's `run_started_at`, the runner's own clock once both responses are in
+     the attestations branch, with the three response bodies beside it. It holds the run id and
+     attempt, GitHub's `run_started_at`, the runner's own clock once all responses are in
      (`run.observedAt`), and per response its URL, the runner's clock just before and just after the
      request (`requestedAt`, `receivedAt`), its `Date` header (an RFC 9110 IMF-fixdate in GMT,
      refused unless at most 1 hour before (an edge cache's copy) or 5 minutes after those two), its
-     `X-Deployed-Commit`, and the sha256 of its body. The incidents response counts only as an HTML
-     page whose visible text (parsed, entities decoded, hidden elements and attributes ignored)
-     holds the entry's headline and the release's parameter hash; a redirect is refused, never
-     followed.
+     `X-Deployed-Commit`, and the sha256 of its body. Each page counts only as HTML whose visible
+     text (parsed, entities decoded, hidden elements and attributes ignored) holds what it must; a
+     redirect is refused, never followed.
    - **N = max(the `Date` headers, `run_started_at`, `run.observedAt`).** An auditor can replay the
      `Date` check from the record alone.
    - The record is stamped with OpenTimestamps like a print. **B** is the header time of the
@@ -132,13 +133,14 @@ deployment, after the first has been read back:
    `announcedAt: N`, `announcedProofAt: B` and v1 `effectiveUntil: E−1`. It adds "public from N
    (readback run `<id>`, `notices/2.0.0.readback.json`)" to the incidents entry. Step-2 CI verifies
    the single record and one inequality, and refuses the PR otherwise:
-   - the record's bytes are as first committed, and the two body files match the record's hashes;
+   - the record's bytes are as first committed, and the three body files match the record's hashes;
    - the record's N and the proof's B match the registry;
    - the proof verifies;
    - `effectiveAt(v2) ≥ max(N, B) + 30 × 24 h`.
 
-   The same PR removes the notice-readback workflow's 15-minute schedule: the proof is complete by
-   then, and the workflow stays for a manual run.
+   The same PR removes the notice-readback workflow's 15-minute schedule (the proof is complete by
+   then, and the workflow stays for a manual run), and the docs' `before-notice` passages and the
+   notice markers, which have done their work once the notice is public.
 
    **This deployment is the rollback floor** (below). Until it deploys there is no cutover to
    protect.
@@ -712,7 +714,10 @@ unchanged). The running value reads the two partition indexes and filters to the
 >   attestations branch.
 > - **When it takes effect.** As v1 rule 4 requires, v2.0.0 takes effect at **00:00Z of a UTC day,
 >   2027-01-01T00:00Z**, at least 30 days after this notice. Its first settlement day, ET day
->   2027-01-01, starts at 05:00Z (00:00 EST). No rule is amended.
+>   2027-01-01, starts at 05:00Z (00:00 EST). No rule is amended. **That date is the target, and it
+>   holds only if** this notice's public readback is recorded and its timestamp proof reaches a
+>   Bitcoin block by 2026-12-02T00:00Z, and the follow-up registry change is deployed before
+>   2027-01-01T00:00Z. Otherwise v1.0.0 continues, and this log says so.
 > - **Rules for v2 days.** The settlement rules become version-scoped. v1.0.0 days keep the v1 rules
 >   word for word. v2.0.0 days follow the v2 rules published with this notice, rules 1 to 8:
 >   - deadlines are durations from the day's end (cutoff +30 min, publication +90 min, corrections
@@ -734,12 +739,12 @@ unchanged). The running value reads the two partition indexes and filters to the
 >   and 2027-01-01: they would mix a UTC day, the gap and an ET day. No v1 print is changed or
 >   corrected. Corrections are never used to apply v2 to past days (rule 8).
 > - **Postponement or withdrawal.** Either is announced on this log **no later than
->   2026-12-18T00:00Z**, 14 days before v2 takes effect. After that, 2027-01-01 is fixed. A
->   postponed v2 gets a new effective day at least 30 days after the postponement notice (a fresh 30
->   days). A withdrawn v2 leaves v1 in effect with no end date and ends the indicative series. Its
->   published indicative prints stay, labelled indicative. Either way, no day is ever printed under
->   two methodologies, and older deployments that carry the superseded date are retired from
->   rollback.
+>   2026-12-18T00:00Z**, 14 days before v2 takes effect. After that, v2 is no longer postponed or
+>   withdrawn, though it still takes effect only under the conditions above. A postponed v2 gets a
+>   new effective day at least 30 days after the postponement notice (a fresh 30 days). A withdrawn
+>   v2 leaves v1 in effect with no end date and ends the indicative series. Its published indicative
+>   prints stay, labelled indicative. Either way, no day is ever printed under two methodologies,
+>   and older deployments that carry the superseded date are retired from rollback.
 > - **Effective-date record.** This entry has been public since `<N>`, the time of the successful
 >   public readback of this notice (readback run `<id>`). The readback is recorded and timestamped
 >   in `notices/2.0.0.readback.json` on the attestations branch, and its proof's Bitcoin block time
@@ -1012,14 +1017,14 @@ S6) and `PARTIAL_PENDING` (S5) are superseded by O15 to O17.
 
 ## Round 3 review dispositions
 
-| Id  | Disposition                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S5  | Done. An explicit E−1 branch: verify the single v1 reference, then verify the gap pin (first-committed bytes, derived window, proof before its cutoff), then rerun the full both-ways comparison to `MATCH`. `PARTIAL` without the pin, `PENDING` while a proof is pending (section 4, test 12).                                                                                                                                             |
-| S6  | Done. N is the first successful public production readback, never Vercel `ready`. A `notice-readback` workflow records the run (id, attempt, start, observation), each response's timing bounds, `Date`, `X-Deployed-Commit` and body hash, with both bodies kept beside it, in an OTS-stamped, write-once `notices/2.0.0.readback.json`. N = max(`run_started_at`, `run.observedAt`, the `Date` headers), and step 2 copies it (section 2). |
-| S13 | Done. Entry points look up the release and inject `{release, window, admit}`. `printBody` and `aggregateDay` never look one up, enforced by a lint rule. Sections 2 and 4 and test 4 now agree.                                                                                                                                                                                                                                              |
-| S14 | Done. All eight v2 rules are published in order (1 to 8), with cross-references checked. Rule 2 now points at rule 8 for corrections; the earlier list had been renumbered by the formatter (section 7).                                                                                                                                                                                                                                     |
-| O12 | Done. The indicative bound comes from `upcomingRelease().effectiveFrom`, so it works in step 1 when v1 has no `effectiveUntil`. The gap pin's path and window derive from the activated cutover, and none is written before activation or for a superseded date (sections 2, 4).                                                                                                                                                             |
-| S7  | Done. PlaneTrack quoted verbatim, "Departures are counted by scheduled day (UTC).", and marked verified (section 0).                                                                                                                                                                                                                                                                                                                         |
+| Id  | Disposition                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S5  | Done. An explicit E−1 branch: verify the single v1 reference, then verify the gap pin (first-committed bytes, derived window, proof before its cutoff), then rerun the full both-ways comparison to `MATCH`. `PARTIAL` without the pin, `PENDING` while a proof is pending (section 4, test 12).                                                                                                                                                  |
+| S6  | Done. N is the first successful public production readback, never Vercel `ready`. A `notice-readback` workflow records the run (id, attempt, start, observation), each response's timing bounds, `Date`, `X-Deployed-Commit` and body hash, with all three bodies kept beside it, in an OTS-stamped, write-once `notices/2.0.0.readback.json`. N = max(`run_started_at`, `run.observedAt`, the `Date` headers), and step 2 copies it (section 2). |
+| S13 | Done. Entry points look up the release and inject `{release, window, admit}`. `printBody` and `aggregateDay` never look one up, enforced by a lint rule. Sections 2 and 4 and test 4 now agree.                                                                                                                                                                                                                                                   |
+| S14 | Done. All eight v2 rules are published in order (1 to 8), with cross-references checked. Rule 2 now points at rule 8 for corrections; the earlier list had been renumbered by the formatter (section 7).                                                                                                                                                                                                                                          |
+| O12 | Done. The indicative bound comes from `upcomingRelease().effectiveFrom`, so it works in step 1 when v1 has no `effectiveUntil`. The gap pin's path and window derive from the activated cutover, and none is written before activation or for a superseded date (sections 2, 4).                                                                                                                                                                  |
+| S7  | Done. PlaneTrack quoted verbatim, "Departures are counted by scheduled day (UTC).", and marked verified (section 0).                                                                                                                                                                                                                                                                                                                              |
 
 ## Round 2 review dispositions
 

@@ -15,7 +15,7 @@ describe('the notice-period banner', () => {
 		expect(markup).toContain('href="/methodology#settlement-rules"');
 		expect(markup).toContain('dateTime="2027-01-01T00:00:00.000Z"');
 		expect(text('2026-11-29T00:00:00Z')).toContain(
-			'from 2027-01-01 each settlement day is the America/New_York (US Eastern) day. Days up to 2026-12-31 stay under v1.0.0',
+			'if this notice’s public readback and its timestamp proof are recorded at least 30 days before, and the follow-up registry change is deployed before then; otherwise v1.0.0 continues. From 2027-01-01 each settlement day would be the America/New_York (US Eastern) day; days up to 2026-12-31 stay under v1.0.0',
 		);
 	});
 

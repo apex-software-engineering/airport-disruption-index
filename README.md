@@ -116,16 +116,18 @@ one after its first commit as a failure. A proof (`.ots`) may change only by `ot
 **Notice readback.** After a methodology notice deploys, run the notice-readback workflow
 (`.github/workflows/notice-readback.yml`) by hand; it also runs every 15 minutes, and its first job
 stops at once before the notice instant or once the record's proof reaches a Bitcoin block. A run
-that sees the notice on both `/incidents` and `/api/v1/methodology` (`upcoming`) writes the single
-record `notices/{version}.readback.json` and, beside it, the two response bodies it hashes
-(`.incidents.html`, `.methodology.json`), stamps the record and publishes them; a run that does not
-writes nothing. N is the latest of the responses' `Date` headers, the run's start and the runner's
-own clock once both responses are in; the record names the run and its attempt, and the commit links
-the run. Later runs upgrade the proof until it reaches a block (B). Nothing is ever rewritten; if
-the proof is ever lost, stamp the same bytes again. The CLI reads only the production site, and
-refuses a redirected response, a redirect (never followed), a `Date` that is not an HTTP-date or
-lies more than 5 minutes after or an hour before its own clock around the request, a response naming
-no deployed commit, and a headline or hash that is not in the page's visible text. Locally:
+that sees the notice on `/incidents` (the dated entry and the hash), `/methodology` (the release's
+rules) and `/api/v1/methodology` (`upcoming`) writes the single record
+`notices/{version}.readback.json` and, beside it, the three response bodies it hashes
+(`.incidents.html`, `.methodology.html`, `.methodology.json`), stamps the record and publishes them;
+a run that does not writes nothing. N is the latest of the responses' `Date` headers, the run's
+start and the runner's own clock once all responses are in; the record names the run and its
+attempt, and the commit links the run. Later runs upgrade the proof until it reaches a block (B).
+Nothing is ever rewritten; if the proof is ever lost, stamp the same bytes again. The CLI reads only
+the production site, and refuses a redirected response, a redirect (never followed), a `Date` that
+is not an HTTP-date or lies more than 5 minutes after or an hour before its own clock around the
+request, a response naming no deployed commit, and a headline or hash that is not in the page's
+visible text. Locally:
 `npm run notice-readback -- 2.0.0 --run-id <id> --run-attempt <n> --run-started-at <ISO> --dir <checkout>`
 (exit 3: not public yet).
 

@@ -1,15 +1,16 @@
 /**
  * The notice readback (design §2): N, the instant a methodology notice is first shown to be public,
- * from one read of the incidents page and `/api/v1/methodology` over the public internet. A run
- * either shows both (the incidents entry's headline, and the `upcoming` block naming the release's
- * version and parameter hash) and yields the one write-once record, or shows neither and yields
- * nothing: a failed run writes nothing and is simply run again.
+ * from one read of the incidents page, the methodology page and `/api/v1/methodology` over the
+ * public internet. A run either sees all three (the incidents entry's dated headline and the
+ * release's hash, the release's rules heading, and the `upcoming` block naming the release's
+ * version and hash) and yields the one write-once record, or yields nothing: a failed run writes
+ * nothing and is simply run again.
  *
  * N = max(each response's `Date` header, the run's `run_started_at`, the runner's own clock once
- * both responses are in), so N is never before the notice was seen. The record names the run (id
- * and attempt), and the two response bodies are kept beside it, each hashed in it, so stamping the
- * record with OpenTimestamps covers them too; the step-2 registry change reads N and its proof's
- * block time B from it.
+ * all responses are in), so N is never before the notice was seen. The record names the run (id
+ * and attempt), and the three response bodies are kept beside it, each hashed in it, so stamping
+ * the record with OpenTimestamps covers them too; the step-2 registry change reads N and its
+ * proof's block time B from it.
  */
 import { htmlToDOM, type Element } from 'html-react-parser';
 import { z } from 'zod';
@@ -18,6 +19,7 @@ import { DEPLOYED_COMMIT_HEADER, parseDeployedCommit } from '@/lib/deployment';
 import { sha256Hex } from '@/lib/index/json';
 import type { Methodology } from '@/lib/index/methodology';
 import { commitShaSchema } from '@/lib/index/schemas';
+import { utcDateOf } from '@/lib/index/time';
 import { CannotVerify, Mismatch, type Get } from '@/lib/reproduce';
 
 export const READBACK_SCHEMA = 'adi.notice-readback/1';
@@ -41,7 +43,7 @@ export const readbackSchema = z.object({
 		/** The runner's own clock once both responses were in. */
 		observedAt: z.iso.datetime(),
 	}),
-	/** The incidents page, then `/api/v1/methodology`, as received. */
+	/** The incidents page, the methodology page, then `/api/v1/methodology`, as received. */
 	responses: z
 		.array(
 			z.object({
@@ -59,7 +61,7 @@ export const readbackSchema = z.object({
 				bodySha256: hex64,
 			}),
 		)
-		.length(2),
+		.length(3),
 	/** N: the latest of the `Date` headers, the run's start and the run's observation. */
 	noticeAt: z.iso.datetime(),
 });
@@ -72,7 +74,25 @@ export type NoticeReadback = z.infer<typeof readbackSchema>;
 export function noticeHeadline(release: Methodology): string {
 	const { day, version } = release.parameters;
 	if (day === 'utc') throw new Error(`${version} has UTC days; no ET notice announces it`);
-	return `methodology v${version} announced, effective ET day ${release.effectiveFrom}`;
+	if (release.noticePublishedAt === null) throw new Error(`${version} has no notice instant`);
+	return `${noticeDate(release)}: methodology v${version} announced, effective ET day ${release.effectiveFrom}`;
+}
+
+/**
+ * The UTC date a release's notice is published on, which its incidents entry and its Version
+ * history line state: derived from `noticePublishedAt`, so a moved instant fails the docs test and
+ * the readback until the text moves with it.
+ */
+export function noticeDate(release: Methodology): string {
+	if (release.noticePublishedAt === null) {
+		throw new Error(`${release.parameters.version} has no notice instant`);
+	}
+	return utcDateOf(new Date(release.noticePublishedAt));
+}
+
+/** The heading the methodology page shows a release's rules under, once its notice is out. */
+export function rulesHeading(release: Methodology): string {
+	return `Settlement rules, v${release.parameters.version}`;
 }
 
 /** What `/api/v1/methodology` states about a release announced but not yet in effect. */
@@ -101,9 +121,14 @@ function shown(value: string): string {
 export type ReadbackRun = { id: number; attempt: number; startedAt: Date };
 
 /** The files beside `notices/{version}.readback.json` holding the two response bodies. */
-export function readbackBodyNames(version: string): { incidents: string; methodology: string } {
+export function readbackBodyNames(version: string): {
+	incidents: string;
+	rules: string;
+	methodology: string;
+} {
 	return {
 		incidents: `${version}.readback.incidents.html`,
+		rules: `${version}.readback.methodology.html`,
 		methodology: `${version}.readback.methodology.json`,
 	};
 }
@@ -134,19 +159,12 @@ export async function readBackNotice(
 ): Promise<Readback> {
 	const { version } = release.parameters;
 	const incidents = await fetchPublic(`${baseUrl}/incidents`, clock, get);
+	const rules = await fetchPublic(`${baseUrl}/methodology`, clock, get);
 	const methodology = await fetchPublic(`${baseUrl}/api/v1/methodology`, clock, get);
 	const reasons: string[] = [];
-	if (incidents.status !== 200) {
-		reasons.push(`${incidents.url} answered HTTP ${incidents.status}`);
-	} else if (incidents.contentType !== 'text/html') {
-		reasons.push(`${incidents.url} is ${shown(incidents.contentType)}, not an HTML page`);
-	} else {
-		// The rendered entry: its headline and the release's hash, both in the page's visible text.
-		const text = visibleTextOf(incidents.body);
-		for (const required of [noticeHeadline(release), release.parameterHash]) {
-			if (!text.includes(required)) reasons.push(`${incidents.url} does not show "${required}"`);
-		}
-	}
+	// The rendered entry (its dated headline and the release's hash), and the rules it publishes.
+	reasons.push(...pageShows(incidents, [noticeHeadline(release), release.parameterHash]));
+	reasons.push(...pageShows(rules, [rulesHeading(release)]));
 	if (methodology.status !== 200) {
 		reasons.push(`${methodology.url} answered HTTP ${methodology.status}`);
 	} else if (methodology.contentType !== 'application/json') {
@@ -167,6 +185,7 @@ export async function readBackNotice(
 	const names = readbackBodyNames(version);
 	const responses = [
 		{ ...incidents, name: names.incidents },
+		{ ...rules, name: names.rules },
 		{ ...methodology, name: names.methodology },
 	];
 	const noticeAt = new Date(
@@ -201,6 +220,17 @@ export async function readBackNotice(
 		}),
 		bodies: responses.map(({ name, body }) => ({ name, bytes: body })),
 	};
+}
+
+/** Why `page` is not an HTML page whose visible text holds every `required` phrase; none if it is. */
+function pageShows(page: Fetched, required: readonly string[]): string[] {
+	if (page.status !== 200) return [`${page.url} answered HTTP ${page.status}`];
+	if (page.contentType !== 'text/html')
+		return [`${page.url} is ${shown(page.contentType)}, not an HTML page`];
+	const text = visibleTextOf(page.body);
+	return required
+		.filter((phrase) => !text.includes(phrase))
+		.map((phrase) => `${page.url} does not show "${phrase}"`);
 }
 
 type Fetched = {

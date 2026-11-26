@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { RELEASES } from '@/lib/index/releases';
-import { noticeHeadline } from '@/lib/notice-readback';
+import { METHODOLOGY_V1, METHODOLOGY_V2, RELEASES, release } from '@/lib/index/releases';
+import { noticeDate, noticeHeadline } from '@/lib/notice-readback';
 
 import {
 	DOC_NAMES,
 	DOC_ROUTES,
 	gateNotices,
+	gateNoticesIn,
 	headingId,
 	readDoc,
 	renderDoc,
@@ -53,6 +54,43 @@ describe('docs rendering', () => {
 		expect(from).toContain('id="settlement-rules-v200-et-days-from-2027-01-01"');
 		expect(from).toContain('id="settlement-rules-v100-utc-days-2026-11-17-to-2026-12-31"');
 		expect(from).not.toContain('methodology v1.0.0</h1>');
+	});
+
+	it('refuses nested, stray or mismatched notice markers before hiding anything (Sol #39 r1, finding 4)', () => {
+		for (const malformed of [
+			// An unclosed outer block around a closed inner one: its tail must never leak early.
+			'<!-- notice 2.0.0 -->\na\n<!-- notice 2.0.0 -->\nb\n<!-- /notice -->\nsecret\n',
+			'<!-- notice 2.0.0 -->\na\n<!-- before-notice 2.0.0 -->\nb\n<!-- /before-notice -->\n<!-- /notice -->\n',
+			'text\n<!-- /notice -->\n',
+			'<!-- notice 2.0.0 -->\na\n<!-- /before-notice -->\n',
+		]) {
+			expect(() => gateNotices(malformed, BEFORE), malformed).toThrow();
+		}
+	});
+
+	it('shows a withdrawn release’s passages as before its notice, but keeps its log entry (Opus #39 r1, finding 5)', () => {
+		const doc =
+			'<!-- before-notice 2.0.0 -->\nv1 only\n<!-- /before-notice -->\n' +
+			'<!-- notice 2.0.0 -->\nv2 rules\n<!-- /notice -->\n' +
+			'<!-- log 2.0.0 -->\nannounced\n<!-- /log -->\n';
+		const registry = (withdrawn: boolean) => [
+			release(METHODOLOGY_V1, '2026-11-17'),
+			release(METHODOLOGY_V2, '2027-01-01', {
+				noticePublishedAt: '2026-11-29T00:00:00.000Z',
+				withdrawn,
+			}),
+		];
+		expect(gateNoticesIn(doc, FROM, registry(false))).toBe('v2 rules\nannounced\n');
+		expect(gateNoticesIn(doc, FROM, registry(true))).toBe('v1 only\nannounced\n');
+		expect(gateNoticesIn(doc, BEFORE, registry(false))).toBe('v1 only\n');
+	});
+
+	it('dates each notice with its instant’s UTC date, in the log and the version history (Opus #39 r1, finding 1)', async () => {
+		const history = (await readDoc('methodology')).replace(/\s+/g, ' ');
+		for (const notified of RELEASES.filter((r) => r.noticePublishedAt !== null)) {
+			expect(history).toContain(`announced ${noticeDate(notified)}`);
+			expect(noticeHeadline(notified).startsWith(`${noticeDate(notified)}: `)).toBe(true);
+		}
 	});
 
 	it('refuses a notice marker naming no release, or left unclosed', () => {

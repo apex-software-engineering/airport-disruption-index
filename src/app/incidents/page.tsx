@@ -12,10 +12,11 @@ export const metadata: Metadata = { title: 'Incidents' };
 
 /** The operator's log is docs/incidents.md; the correction prints are read from the archive. */
 export default async function IncidentsPage() {
+	const now = new Date();
 	const corrections = await correctionsView(storeFromEnv());
 	return (
 		<>
-			<DocBody name='incidents' />
+			<DocBody name='incidents' now={now} />
 			<Section id='correction-prints' title='Correction prints'>
 				<p className='text-ink-muted mb-4 text-sm'>
 					Every revision after the first of any day, read from the published prints, most recently

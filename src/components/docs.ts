@@ -9,7 +9,7 @@ import path from 'node:path';
 
 import { Marked, type Tokens } from 'marked';
 
-import { isNoticePublished } from '@/lib/index/methodology';
+import { isNoticePublished, type Methodology } from '@/lib/index/methodology';
 import { RELEASES } from '@/lib/index/releases';
 
 /** Each rendered doc and the route that renders it. */
@@ -75,22 +75,63 @@ export async function readDoc(name: DocName): Promise<string> {
 /**
  * A notice's passages, marked in the markdown with HTML comments (invisible on GitHub), appear on
  * the site together at the release's `noticePublishedAt`, with everything else the notice gates:
- * `<!-- notice 2.0.0 -->…<!-- /notice -->` from that instant, and
- * `<!-- before-notice 2.0.0 -->…<!-- /before-notice -->` until it. A marker naming no registered
- * release, or left unclosed, is an error, never silently shown or hidden.
+ * - `<!-- notice 2.0.0 -->…<!-- /notice -->` from that instant, while the release stands;
+ * - `<!-- before-notice 2.0.0 -->…<!-- /before-notice -->` otherwise: until the instant, and again
+ *   once the release is withdrawn, so withdrawn rules are never shown as upcoming;
+ * - `<!-- log 2.0.0 -->…<!-- /log -->` from that instant for good: the incident log never drops
+ *   an entry, a withdrawn release's announcement included.
+ * Malformed markers are an error, never silently shown or hidden (`checkNoticeMarkers`).
  */
 export function gateNotices(markdown: string, now: Date): string {
-	const gated = markdown.replace(
-		/<!-- (notice|before-notice) (\S+) -->\n([\s\S]*?)<!-- \/\1 -->\n?/g,
+	return gateNoticesIn(markdown, now, RELEASES);
+}
+
+/** `gateNotices` over a given registry. */
+export function gateNoticesIn(
+	markdown: string,
+	now: Date,
+	releases: readonly Methodology[],
+): string {
+	checkNoticeMarkers(markdown, releases);
+	return markdown.replace(
+		/<!-- (notice|before-notice|log) (\S+) -->\n([\s\S]*?)<!-- \/\1 -->\n?/g,
 		(_, kind: string, version: string, passage: string) => {
-			const release = RELEASES.find((candidate) => candidate.parameters.version === version);
+			const release = releases.find((candidate) => candidate.parameters.version === version);
 			if (release === undefined) throw new Error(`docs mark a notice of ${version}, no release`);
-			return isNoticePublished(release, now) === (kind === 'notice') ? passage : '';
+			const published = isNoticePublished(release, now);
+			const standing = published && !release.withdrawn;
+			const shown = kind === 'log' ? published : kind === 'notice' ? standing : !standing;
+			return shown ? passage : '';
 		},
 	);
-	if (/<!-- \/?(notice|before-notice)\b/.test(gated))
-		throw new Error('docs leave a notice marker unclosed or malformed');
-	return gated;
+}
+
+/**
+ * Every notice marker, checked as a structure before anything is hidden: each opener names a
+ * registered release and is closed, by the matching closer, before the next opener. Nesting, a
+ * stray or mismatched closer, or an opener left open throws, so no malformed marker can ever show
+ * a passage early.
+ */
+function checkNoticeMarkers(markdown: string, releases: readonly Methodology[]): void {
+	let open: { kind: string; version: string } | null = null;
+	for (const [marker, closing, kind, version] of markdown.matchAll(
+		/<!--\s*(\/?)(notice|before-notice|log)\b(?:\s+(\S+))?\s*-->/g,
+	)) {
+		if (closing === '/') {
+			if (open === null || open.kind !== kind || version !== undefined)
+				throw new Error(`docs close ${JSON.stringify(marker)} with no matching open marker`);
+			open = null;
+		} else {
+			if (open !== null)
+				throw new Error(`docs open ${JSON.stringify(marker)} inside ${open.kind} ${open.version}`);
+			if (version === undefined || kind === undefined)
+				throw new Error(`docs open ${JSON.stringify(marker)} without a version`);
+			if (!releases.some((release) => release.parameters.version === version))
+				throw new Error(`docs mark a notice of ${version}, no release`);
+			open = { kind, version };
+		}
+	}
+	if (open !== null) throw new Error(`docs leave ${open.kind} ${open.version} unclosed`);
 }
 
 /** A doc as the site renders it at `now`. */

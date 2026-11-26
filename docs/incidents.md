@@ -8,7 +8,7 @@ prints themselves, under this log.
 
 ## Log
 
-<!-- notice 2.0.0 -->
+<!-- log 2.0.0 -->
 
 - **2026-11-29: methodology v2.0.0 announced, effective ET day 2027-01-01.**
 
@@ -28,7 +28,10 @@ prints themselves, under this log.
     attestations branch.
   - **When it takes effect.** As v1 rule 4 requires, v2.0.0 takes effect at **00:00Z of a UTC day,
     2027-01-01T00:00Z**, at least 30 days after this notice. Its first settlement day, ET day
-    2027-01-01, starts at 05:00Z (00:00 EST). No rule is amended.
+    2027-01-01, starts at 05:00Z (00:00 EST). No rule is amended. **That date is the target, and it
+    holds only if** this notice's public readback is recorded and its timestamp proof reaches a
+    Bitcoin block by 2026-12-02T00:00Z, and the follow-up registry change is deployed before
+    2027-01-01T00:00Z. Otherwise v1.0.0 continues, and this log says so.
   - **Rules for v2 days.** The settlement rules become version-scoped. v1.0.0 days keep the v1 rules
     word for word. v2.0.0 days follow the v2 rules published with this notice, rules 1 to 8:
     - deadlines are durations from the day's end (cutoff +30 min, publication +90 min, corrections
@@ -50,20 +53,20 @@ prints themselves, under this log.
     and 2027-01-01: they would mix a UTC day, the gap and an ET day. No v1 print is changed or
     corrected. Corrections are never used to apply v2 to past days (rule 8).
   - **Postponement or withdrawal.** Either is announced on this log **no later than
-    2026-12-18T00:00Z**, 14 days before v2 takes effect. After that, 2027-01-01 is fixed. A
-    postponed v2 gets a new effective day at least 30 days after the postponement notice (a fresh 30
-    days). A withdrawn v2 leaves v1 in effect with no end date and ends the indicative series. Its
-    published indicative prints stay, labelled indicative. Either way, no day is ever printed under
-    two methodologies, and older deployments that carry the superseded date are retired from
-    rollback.
-  - **Effective-date record.** The instant this entry became public is recorded once, by a public
-    readback of this notice, in `notices/2.0.0.readback.json` on the attestations branch, and
-    timestamped with OpenTimestamps. That instant and its proof's Bitcoin block time are added to
-    this entry by the follow-up registry change.
+    2026-12-18T00:00Z**, 14 days before v2 takes effect. After that, v2 is no longer postponed or
+    withdrawn, though it still takes effect only under the conditions above. A postponed v2 gets a
+    new effective day at least 30 days after the postponement notice (a fresh 30 days). A withdrawn
+    v2 leaves v1 in effect with no end date and ends the indicative series. Its published indicative
+    prints stay, labelled indicative. Either way, no day is ever printed under two methodologies,
+    and older deployments that carry the superseded date are retired from rollback.
+  - **Effective-date record.** This entry is demonstrably public on the site at N, the instant
+    recorded once by a public readback of this notice in `notices/2.0.0.readback.json` on the
+    attestations branch and timestamped with OpenTimestamps. N and its proof's Bitcoin block time
+    are added to this entry by the follow-up registry change.
 
   Discussion: issue #11.
 
-<!-- /notice -->
+<!-- /log -->
 
 - **2026-11-20: partial day, collector started <time datetime="2026-11-20T04:30:00Z">04:30Z</time>,
   print degraded.** The collector's first round was `2026-11-20T04:30Z`, so the 54 slots from

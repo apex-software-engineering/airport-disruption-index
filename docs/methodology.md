@@ -19,22 +19,23 @@ generated from `src/lib/index/methodology.ts`, the same constant the calculation
 
 <!-- notice 2.0.0 -->
 
-**Versions.** v1.0.0 governs the UTC days 2026-11-17 to 2026-12-31. v2.0.0, announced on the
-[incident log](#incident-log), governs the US Eastern (America/New_York) days from 2027-01-01. It
-changes only where a day begins and ends (see [Version history](#version-history)). The sections
-below describe v1.0.0 as it runs today; [Settlement rules](#settlement-rules) holds each version's
-rules, and `/api/v1/days/{date}` states the version of every day.
+**Versions.** v1.0.0 governs the UTC days from 2026-11-17, through 2026-12-31 if v2.0.0 takes effect
+as scheduled. v2.0.0, announced on the [incident log](#incident-log), is scheduled to govern the US
+Eastern (America/New_York) days from 2027-01-01, under the conditions its notice states. It changes
+only where a day begins and ends (see [Version history](#version-history)). The sections below
+describe v1.0.0 as it runs today; [Settlement rules](#settlement-rules) holds each version's rules,
+and `/api/v1/days/{date}` states the version of every day.
 
 ## Version history
 
-- **v2.0.0, effective ET day 2027-01-01, announced 2026-11-29.** Day boundary UTC →
-  America/New_York. Slots per day 288 → 276, 288 or 300. Coverage thresholds as percentages of the
-  day's slots. Deadlines unchanged as durations from the day's end. Takes effect at
-  2027-01-01T00:00Z under v1.0.0 rule 4, with the first settlement day starting at 05:00Z (00:00
-  EST). Settlement values clarified: only the panel totals are settlement values. Parameter hash
-  `a9fa10889b35417090d909d4f60d9cb9b429a9703d1b626c1c0a95182b7a76e6`. The instant the notice became
-  public, recorded by its readback, is added to the incident log entry by the follow-up registry
-  change.
+- **v2.0.0, scheduled for ET day 2027-01-01 (conditions on the incident log), announced
+  2026-11-29.** Day boundary UTC → America/New_York. Slots per day 288 → 276, 288 or 300. Coverage
+  thresholds as percentages of the day's slots. Deadlines unchanged as durations from the day's end.
+  Takes effect at 2027-01-01T00:00Z under v1.0.0 rule 4, with the first settlement day starting at
+  05:00Z (00:00 EST). Settlement values clarified: only the panel totals are settlement values.
+  Parameter hash `a9fa10889b35417090d909d4f60d9cb9b429a9703d1b626c1c0a95182b7a76e6`. The instant the
+  notice became public, recorded by its readback, is added to the incident log entry by the
+  follow-up registry change.
 - **v1.0.0, UTC days 2026-11-17 to 2026-12-31.** As published. Parameter hash
   `e9ef6e94b84699bffefa850b78138355bb427563f6ae42a28567e0ec4303c363`.
 
@@ -606,6 +607,10 @@ These notes bind whoever deploys the index.
   correction-aware print reader (`correction.issuedAt` and `correction.windowOverride` in
   `src/lib/index/schemas.ts`). An older reader drops those fields when it parses the print, so it
   would serve a correction whose contents no longer match its `printHash`.
+- **Never roll back past a published notice.** From a release's `noticePublishedAt` on, every
+  rollback target must carry that notice: the incidents entry, the version-scoped rules, the
+  `upcoming` block and the indicative series. A deployment from before it would withdraw the notice
+  from the site without a withdrawal entry.
 - **Never remove a release or an adapter.** Every entry in `src/lib/index/releases.ts` and
   `src/lib/index/adapters.ts` stays for as long as any receipt or print cites it. An adapter
   revision is frozen once any production receipt records it: a later fix is a new revision. Preview

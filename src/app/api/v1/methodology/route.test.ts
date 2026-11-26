@@ -18,7 +18,8 @@ describe('/api/v1/methodology', () => {
 	it('states the upcoming release from its notice instant, which the readback checks', async () => {
 		const v2 = RELEASES[1];
 		expect(v2?.parameters).toBe(METHODOLOGY_V2);
-		expect(await methodologyAt('2026-11-28T23:59:59.999Z')).toMatchObject({ upcoming: null });
+		// Before publication the response is exactly the one production serves: no `upcoming` key.
+		expect(await methodologyAt('2026-11-28T23:59:59.999Z')).not.toHaveProperty('upcoming');
 		expect(await methodologyAt('2026-11-29T00:00:00Z')).toMatchObject({
 			version: '1.0.0',
 			upcoming: {
@@ -32,6 +33,6 @@ describe('/api/v1/methodology', () => {
 	});
 
 	it('states no upcoming release once its instant has passed', async () => {
-		expect(await methodologyAt('2027-01-01T00:00:00Z')).toMatchObject({ upcoming: null });
+		expect(await methodologyAt('2027-01-01T00:00:00Z')).not.toHaveProperty('upcoming');
 	});
 });

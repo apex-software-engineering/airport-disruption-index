@@ -1,7 +1,10 @@
 /** Read models for the public API, shaped for direct rendering. */
+import { CURRENT_ADAPTER } from '@/lib/index/adapters';
 import {
+	collectingRelease,
 	dayAt,
 	dayWindow,
+	effectiveAt,
 	elapsedSlots,
 	partitionsOf,
 	publishBy,
@@ -10,6 +13,7 @@ import {
 	slotIndexIn,
 	type DayWindow,
 	type SettlementDay,
+	upcomingRelease,
 } from '@/lib/index/calendar';
 import { aggregateDay, type SlotState } from '@/lib/index/day';
 import {
@@ -48,7 +52,7 @@ import {
 	readIndicativeDay,
 	readIndicativePrints,
 } from './indicative-archive';
-import { CACHE } from './http';
+import { CACHE, DEPLOYED_COMMIT } from './http';
 import type { ObjectStore } from './storage';
 
 export const API_BASE = '/api/v1';
@@ -397,4 +401,40 @@ export async function correctionsView(store: ObjectStore): Promise<CorrectionEnt
 /** A valid receipt is never replaced, so it caches forever; an invalid one never caches. */
 export function roundCache(receipt: RoundReceipt): string {
 	return receipt.observation.status === 'valid' ? CACHE.immutable : CACHE.none;
+}
+
+/**
+ * The methodology in effect at `now`, the source adapter collecting now, and during a notice
+ * period the upcoming release (design §5): the `upcoming` key is present only then, so outside
+ * one the response is exactly the one earlier releases served. An adapter fix can change the
+ * address fetched without a methodology release, so `parameters.source` is the source as of the
+ * release; each receipt records the address it fetched.
+ */
+export function methodologyView(now: Date) {
+	const { parameters, parameterHash } = collectingRelease(now);
+	const upcoming = upcomingRelease(now);
+	return {
+		version: parameters.version,
+		parameterHash,
+		parameterHashAlgorithm:
+			'sha256 of the canonical JSON (sorted keys, no whitespace) of parameters',
+		deployedCommit: DEPLOYED_COMMIT,
+		parameters,
+		activeAdapter: { version: CURRENT_ADAPTER.version, url: CURRENT_ADAPTER.url },
+		...(upcoming === null
+			? {}
+			: {
+					upcoming: {
+						version: upcoming.parameters.version,
+						parameterHash: upcoming.parameterHash,
+						effectiveFrom: upcoming.effectiveFrom,
+						effectiveAt: effectiveAt(upcoming).toISOString(),
+						announcedAt: upcoming.announcedAt,
+					},
+				}),
+		notes: {
+			'parameters.source':
+				'the source as of this release (hashed); the address fetched now is activeAdapter.url, and each receipt records its own sourceUrl and adapterVersion',
+		},
+	};
 }

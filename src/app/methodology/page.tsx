@@ -11,10 +11,10 @@ import type { MethodologyParameters } from '@/lib/index/methodology';
 export const metadata: Metadata = { title: 'Methodology' };
 
 /**
- * Re-rendered every minute, so the parameters shown follow a release's effective day and a
- * notice's passages appear with the rest of the notice (docs gateNotices).
+ * Rendered per request, as /incidents is: a cached render would show the page as it was, so a
+ * notice's passages, its banner and the parameters in force all follow the one render instant.
  */
-export const revalidate = 60;
+export const dynamic = 'force-dynamic';
 
 /** The prose is docs/methodology.md; the parameters block is the versioned module itself. */
 export default function MethodologyPage() {
@@ -24,7 +24,7 @@ export default function MethodologyPage() {
 	return (
 		<>
 			<UpcomingNotice now={now} />
-			<DocBody name='methodology' />
+			<DocBody name='methodology' now={now} />
 			<Section id='parameters' title='Parameters in force'>
 				<p className='text-ink-muted mb-4 text-sm'>
 					Read from the methodology module the calculation uses, and served as JSON at{' '}

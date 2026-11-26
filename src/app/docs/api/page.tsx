@@ -9,11 +9,10 @@ import {
 	type IndicativeHistory,
 } from '@/components/index-data';
 import { Mono, Notice, PageTitle, Section } from '@/components/ui';
-import { GET as getMethodology } from '@/app/api/v1/methodology/route';
 import { cloneCommand, site } from '@/lib/site';
 import { CACHE } from '@/server/http';
 import { storeFromEnv } from '@/server/storage';
-import { API_BASE, dayView } from '@/server/views';
+import { API_BASE, dayView, methodologyView } from '@/server/views';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,14 +44,16 @@ async function requestOrigin(): Promise<string> {
 
 export default async function ApiDocsPage() {
 	const origin = await requestOrigin();
-	const { current, history, recent, indicative } = await readSiteData(new Date());
+	// One render instant for every sample, so none is in another publication state.
+	const now = new Date();
+	const { current, history, recent, indicative } = await readSiteData(now);
 	const sampleDate = recent[0]?.date ?? history.to;
 	const [day, receipt] = await Promise.all([
 		dayView(storeFromEnv(), sampleDate),
 		readLastReceipt(current),
 	]);
-	// The route's own response, so the sample cannot drift from what the endpoint serves.
-	const methodology: unknown = await getMethodology().json();
+	// The route's own read model at the same instant, so the sample is what the endpoint serves.
+	const methodology = methodologyView(now);
 	const sampleRoundId = current.lastRound?.roundId ?? '{id}';
 	const roundPath = `${API_BASE}/rounds/${sampleRoundId}`;
 	// Only a valid receipt is immutable, so only its body hash is a stable example.
@@ -154,7 +155,7 @@ export default async function ApiDocsPage() {
 
 			<Endpoint
 				path={`${API_BASE}/methodology`}
-				cache={CACHE.daily}
+				cache={CACHE.live}
 				curl={`curl -s ${origin}${API_BASE}/methodology`}
 				sample={methodology}>
 				The methodology parameters in force, their version and the parameter hash every receipt and
