@@ -119,13 +119,16 @@ An external check runs outside Vercel every 5 minutes (a launchd job on a separa
 this repo) and alerts the operator on Discord:
 
 - Live index: `/api/v1/current` is not HTTP 200, or it returns 200 but `lastRound.fetchedAt` is
-  missing, null or unparseable, or that time is more than 15 minutes old. One alert per incident,
-  and one recovery message after an alert that was actually sent.
-- Daily print: the monitor polls `/api/v1/days/{yesterday UTC}` on its 5-minute run. 00:50Z and
-  01:40Z are thresholds checked on those polls, not scheduled jobs. Polling starts on the first run
-  at or after 00:50Z. If the print is still unavailable on a poll at or after 01:40Z, ten minutes
-  after the 01:30Z publication deadline, it sends one alert. A recovery message follows only an
-  alert that was actually sent.
+  missing or unparseable, or that time is more than 15 minutes old. A null `lastRound` (no round
+  ever stored, as on a fresh preview store) is reported as "no data yet", not as a stall. One alert
+  per incident, and one recovery message after an alert that was actually sent.
+- Daily print: on each 5-minute run the monitor polls `/api/v1/days/{date}` for UTC yesterday, ET
+  yesterday, and every day whose late alert is still open. An unsettled day answers 404 with its own
+  `publishBy`; if a poll at or after `publishBy` + 10 minutes still finds it unsettled, the monitor
+  sends one alert. The monitor computes no deadlines itself: UTC days (01:30Z), ET days (01:30 EDT
+  or EST) and DST nights all use the deadline the API states. A response naming
+  `misfiled.problem == "misfiled_print"` alerts at once, listing `misfiled.objects`. A recovery
+  message follows only an alert that was actually sent.
 - Quiet note: if the print the monitor sees when it marks the day done has a status other than
   `final` (`degraded` or `suspended`), it sends one quieter note. If that Discord post fails, the
   next poll retries and can see a newer revision. Once the day is marked done, later revisions are

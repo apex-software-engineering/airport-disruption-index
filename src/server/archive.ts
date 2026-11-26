@@ -248,14 +248,27 @@ function emptyDayIndex(date: UtcDate): DayIndex {
 	return { schema: 'adi.day-index/1', date, rounds: [] };
 }
 
-/** The day index: one summary per stored round, so the running value needs a single read. */
+/**
+ * The day index: one summary per stored round, so the running value needs a single read. One that
+ * does not decode is rebuilt from the partition's receipts, never thrown on: under v1 the next
+ * collect would rebuild it, but under v2 nothing rewrites a partition once its UTC day is over,
+ * while the ET day still reads it for five hours (#34). A rebuild that cannot read every receipt is
+ * served without the unreadable ones but never stored, so the next read rebuilds it again.
+ */
 export async function readDayIndex(store: ObjectStore, date: UtcDate): Promise<DayIndex> {
-	return (await readJson(store, dayIndexSchema, keys.dayIndex(date))) ?? emptyDayIndex(date);
+	const object = await store.read(keys.dayIndex(date));
+	if (object === null) return emptyDayIndex(date);
+	return tryDecode(dayIndexSchema, object) ?? syncDayIndex(store, date, { kind: 'repair' });
 }
 
-/** What brought the index up to date: a collect that just resolved `refresh`, or a settle. */
+/**
+ * What brings the index up to date: a collect that just resolved `refresh`, a settle, or a repair
+ * of an index that does not decode.
+ */
 type IndexSync =
-	{ kind: 'collect'; refresh: RoundId } | { kind: 'settle'; receipts: readonly RoundReceipt[] };
+	| { kind: 'collect'; refresh: RoundId }
+	| { kind: 'settle'; receipts: readonly RoundReceipt[] }
+	| { kind: 'repair' };
 
 /**
  * The one owner of the day index, which it keeps in line with the stored receipts.
@@ -266,17 +279,26 @@ type IndexSync =
  *   cannot be read is skipped and retried next time. An index that does not decode is rebuilt
  *   from every listed receipt plus the round just resolved.
  * - On settle: rebuilt from the receipts settle already read.
- * A rebuild ignores the old content and uses only its version.
+ * - On repair: unless another writer already fixed it, rebuilt from every listed receipt. If one
+ *   cannot be read, the rebuilt index is returned without it but not stored: a repaired partition
+ *   is one no collect rewrites any more, so a stored index missing a round would never regain it.
+ * A rebuild ignores the old content and uses only its version. Returns the index as stored.
  */
-async function syncDayIndex(store: ObjectStore, date: UtcDate, sync: IndexSync): Promise<void> {
+async function syncDayIndex(store: ObjectStore, date: UtcDate, sync: IndexSync): Promise<DayIndex> {
 	const key = keys.dayIndex(date);
-	const listed = sync.kind === 'collect' ? await listReceiptIds(store, date) : [];
+	const listed = sync.kind === 'settle' ? [] : await listReceiptIds(store, date);
 	for (let attempt = 0; attempt < MAX_CONDITIONAL_ATTEMPTS; attempt += 1) {
 		const object = await store.read(key);
 		const current = object === null ? emptyDayIndex(date) : tryDecode(dayIndexSchema, object);
 		let rounds: RoundSummary[];
+		let partial = false;
 		if (sync.kind === 'settle') {
 			rounds = sync.receipts.map(summarizeReceipt);
+		} else if (sync.kind === 'repair') {
+			if (current !== null) return current;
+			const receipts = await readReceipts(store, date, listed, 'skip');
+			rounds = receipts.map(summarizeReceipt);
+			partial = receipts.length < listed.length;
 		} else if (current === null) {
 			// The listing can lag the write that just happened, so the own round is always read.
 			const all = [sync.refresh, ...listed.filter((id) => id !== sync.refresh)];
@@ -296,14 +318,16 @@ async function syncDayIndex(store: ObjectStore, date: UtcDate, sync: IndexSync):
 			const reread = new Set(fresh.map((r) => r.roundId));
 			rounds = [...current.rounds.filter((r) => !reread.has(r.roundId)), ...fresh];
 		}
-		const next = encode({
+		const index: DayIndex = {
 			...emptyDayIndex(date),
 			rounds: rounds.sort((x, y) => x.roundId.localeCompare(y.roundId)),
-		});
-		if (object !== null && Buffer.from(next).equals(Buffer.from(object.body))) return;
+		};
+		if (partial) return index;
+		const next = encode(index);
+		if (object !== null && Buffer.from(next).equals(Buffer.from(object.body))) return index;
 		const condition: WriteCondition =
 			object === null ? { kind: 'if-absent' } : { kind: 'if-version', version: object.version };
-		if ((await store.write(key, next, JSON_TYPE, condition)) === 'written') return;
+		if ((await store.write(key, next, JSON_TYPE, condition)) === 'written') return index;
 	}
 	throw new Error(`${key}: gave up after ${MAX_CONDITIONAL_ATTEMPTS} conflicting writes`);
 }
