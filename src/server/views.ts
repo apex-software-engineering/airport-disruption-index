@@ -42,10 +42,9 @@ import {
 	readCorrectionPrints,
 	readDayIndex,
 	readHistory,
-	readIndicativePrint,
-	readIndicativePrints,
 	readPrints,
 } from './archive';
+import { readIndicativePrint, readIndicativePrints } from './indicative-archive';
 import { CACHE } from './http';
 import type { ObjectStore } from './storage';
 

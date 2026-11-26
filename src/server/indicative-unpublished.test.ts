@@ -17,7 +17,7 @@ import { indicativeSeriesPublished, indicativeSeriesPublishedIn } from '@/lib/in
 import { METHODOLOGY_V1, METHODOLOGY_V2, release } from '@/lib/index/releases';
 import { collectAt } from '@/test/collect';
 
-import { readIndicativePrints } from './archive';
+import { readIndicativePrints } from './indicative-archive';
 import { FileStore } from './storage';
 
 vi.mock('@/lib/index/releases', async (importOriginal) => {

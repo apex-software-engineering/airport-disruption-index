@@ -15,7 +15,7 @@ import { indicativeAdmissionFor } from '@/lib/index/indicative';
 import { buildIndicativePrint } from '@/lib/index/print';
 import { RELEASES } from '@/lib/index/releases';
 
-import { freezeIndicativeDay } from './archive';
+import { freezeIndicativeDay } from './indicative-archive';
 import { FileStore } from './storage';
 import { indicativeDayView } from './views';
 
