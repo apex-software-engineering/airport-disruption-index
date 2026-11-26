@@ -142,18 +142,20 @@ visible text. Locally:
 `announcedAt` to the record's `noticeAt` (N), `announcedProofHeight` and `announcedProofAt` to the
 proof's Bitcoin block and its time (B), all instants exactly as the record writes them
 (`2026-11-29T00:20:05.000Z`), and the previous release's `effectiveUntil`. CI runs
-`npm run verify-notice -- 2.0.0` on a push to main and on any PR that changes the registry, the
-record's format, the verifier, CI or the dependencies; it clones the attestations branch only once
-the release is announced, and fetches and runs once more before a could-not-verify counts. It passes
-while the release is not announced, and otherwise only when the record and its three bodies are as
-first committed and match their hashes; the record's clock readings run forward and its `Date`
-checks and N replay, with N at or after the notice instant; the saved pages show the notice as the
-readback required (the dated headline announcing an effective day no later than the registry's,
-which a postponement keeps, the hash, the rules heading and the `upcoming` block); the proof has an
-attestation in the pinned block, which exists with that time (mempool.space, else blockstream.info);
-and the release takes effect at least `max(N, B) + 30 days` after them (exit 1 mismatch, 2 could not
-verify, 4 proof still pending). With N set and the block not yet pinned, the mismatch names the
-block and time to pin.
+`npm run verify-notice -- 2.0.0` on a push to main, on any PR whose base is not main, and on a PR
+into main that changes `src/lib`, `scripts`, the TypeScript config, the Node version, the record and
+attest workflows, CI or the dependencies (a rename counts both paths); it clones the attestations
+branch only once the release is announced, and fetches and runs once more before a could-not-verify
+counts. It passes while the release is not announced, and otherwise only when the record and its
+three bodies are as first committed and match their hashes; the record's clock readings run forward
+and its `Date` checks and N replay, with N at or after the notice instant; the saved pages show the
+notice as the readback required (the dated headline announcing an effective day no later than the
+registry's, which a postponement keeps, the hash, the rules heading and the `upcoming` block); the
+proof first reached the pinned block (its earliest Bitcoin attestation, kept through later
+upgrades), which mempool.space and blockstream.info both report with that time; and the release
+takes effect at least `max(N, B) + 30 days` after them (exit 1 mismatch, 2 could not verify, 4 proof
+still pending). With N set and the block not yet pinned, the mismatch names the block and time to
+pin.
 
 ## Monitoring
 

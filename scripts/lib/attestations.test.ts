@@ -15,8 +15,14 @@ import { feedFixture, otsFixture } from '@/test/fixtures';
 import { syntheticProof } from '@/test/ots';
 import { collectedReceipt } from '@/test/receipts';
 
-import { fetchBlock, invalidProofs, readPins, verifyAttested } from './attestations';
-import { CannotVerify, getApi } from './public-api';
+import {
+	fetchBlock,
+	fetchBlockAgreed,
+	invalidProofs,
+	readPins,
+	verifyAttested,
+} from './attestations';
+import { CannotVerify, Mismatch, getApi } from './public-api';
 
 const receipt = collectedReceipt({
 	fetchedAt: new Date('2026-11-17T20:45:02.123Z'),
@@ -368,6 +374,49 @@ describe('the preview bypass secret', () => {
 			'blockstream.info',
 			'blockstream.info',
 		]);
+	});
+
+	describe('fetchBlockAgreed (Sol #43 r2, finding 2)', () => {
+		const answering =
+			(answers: Record<string, () => Response>) =>
+			(url: string): Response => {
+				const host = new URL(url).host;
+				if (url.includes('block-height')) return new Response('00ab');
+				return (answers[host] ?? (() => new Response('none', { status: 404 })))();
+			};
+		const block = (merkleRoot: string, timestamp: number) => () =>
+			Response.json({ height: 7, merkle_root: merkleRoot, timestamp });
+
+		it('returns the block both explorers report', async () => {
+			recordFetches(
+				answering({ 'mempool.space': block('cd', 1), 'blockstream.info': block('cd', 1) }),
+			);
+			expect(await fetchBlockAgreed(7)).toEqual({ merkleRoot: 'cd', time: new Date(1000) });
+		});
+
+		it('is a mismatch, naming both, when they disagree on the time', async () => {
+			recordFetches(
+				answering({ 'mempool.space': block('cd', 1), 'blockstream.info': block('cd', 2) }),
+			);
+			const fetched = fetchBlockAgreed(7);
+			await expect(fetched).rejects.toThrow(Mismatch);
+			await expect(fetched).rejects.toThrow(
+				/mempool\.space\/api reports block 7 with merkle root cd at 1970-01-01T00:00:01\.000Z; https:\/\/blockstream\.info\/api reports block 7 with merkle root cd at 1970-01-01T00:00:02\.000Z/,
+			);
+		});
+
+		it('cannot verify when one explorer still cannot answer after a retry', async () => {
+			const calls = recordFetches(
+				answering({
+					'mempool.space': block('cd', 1),
+					'blockstream.info': () => new Response('busy', { status: 503 }),
+				}),
+			);
+			await expect(fetchBlockAgreed(7)).rejects.toThrow(CannotVerify);
+			expect(calls.filter((call) => call.url.includes('blockstream.info/api/block/'))).toHaveLength(
+				2,
+			);
+		});
 	});
 
 	it('never goes to the block explorer', async () => {

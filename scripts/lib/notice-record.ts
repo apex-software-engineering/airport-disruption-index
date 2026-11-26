@@ -25,9 +25,9 @@ import {
 	readbackSchema,
 	type NoticeBodies,
 } from '@/lib/notice-readback';
-import { OtsFormatError, readOtsProof } from '@/lib/ots';
+import { OtsFormatError, readOtsProof, type OtsProof } from '@/lib/ots';
 
-import { firstCommittedFiles, type BranchCheckout } from './attestations';
+import { committedVersions, firstCommittedFiles, type BranchCheckout } from './attestations';
 
 export type NoticeVerdict =
 	/** Nothing to check: the release is not announced. */
@@ -140,23 +140,35 @@ export async function verifyNotice(
 			problems: [...problems, `${proofPath} is not a valid proof: ${error.message}`],
 		};
 	}
-	// B is the pinned block's time, so a later upgrade or re-stamp cannot move it. Until a height is
-	// pinned the proof's earliest block is used, and the problems name it.
-	const pinned =
-		announcedProofHeight === null
-			? proof
-			: {
-					...proof,
-					attestations: proof.attestations.filter(
-						(a) => a.kind === 'bitcoin' && a.height === announcedProofHeight,
-					),
-				};
-	if (announcedProofHeight !== null && pinned.attestations.length === 0) {
+	// B is the earliest Bitcoin block of the first committed version of the proof that reached one
+	// (design §2). A later upgrade may add an earlier block, or a higher one with an earlier header
+	// time; neither moves B, and the registry pins its height.
+	const reached = firstReachedBlock(committedVersions(checkout, `${recordName}.ots`), proof);
+	if (reached === null) {
+		const timestamp = await checkTimestamp(takesEffect, recordBytes, proof, blockAt);
+		if (timestamp.kind === 'invalid')
+			return { kind: 'invalid', problems: [...problems, `${proofPath}: ${timestamp.problem}`] };
+		if (problems.length > 0) return { kind: 'invalid', problems };
+		if (timestamp.kind === 'pending') return { kind: 'pending', calendars: timestamp.calendars };
+		throw new Error(`${proofPath} reaches a block that firstReachedBlock did not find`);
+	}
+	if (announcedProofHeight !== null && announcedProofHeight !== reached.height) {
+		problems.push(
+			`announcedProofHeight is ${announcedProofHeight}, but the proof first reached Bitcoin block ${reached.height} (commit ${reached.commit}): B is that block's time`,
+		);
+	}
+	const pinned = {
+		...proof,
+		attestations: proof.attestations.filter(
+			(a) => a.kind === 'bitcoin' && a.height === reached.height,
+		),
+	};
+	if (pinned.attestations.length === 0) {
 		return {
 			kind: 'invalid',
 			problems: [
 				...problems,
-				`${proofPath} has no attestation in Bitcoin block ${announcedProofHeight} (announcedProofHeight)`,
+				`${proofPath} no longer has its attestation in Bitcoin block ${reached.height}, which it first reached in commit ${reached.commit}`,
 			],
 		};
 	}
@@ -166,13 +178,9 @@ export async function verifyNotice(
 	if (timestamp.kind === 'invalid') {
 		return { kind: 'invalid', problems: [...problems, `${proofPath}: ${timestamp.problem}`] };
 	}
-	if (timestamp.kind === 'pending') {
-		return problems.length > 0
-			? { kind: 'invalid', problems }
-			: { kind: 'pending', calendars: timestamp.calendars };
-	}
+	if (timestamp.kind === 'pending') throw new Error('a proof filtered to one block is not pending');
 	const proofAt = timestamp.time.toISOString();
-	if (announcedProofHeight !== timestamp.height || announcedProofAt !== proofAt) {
+	if (announcedProofHeight === null || announcedProofAt !== proofAt) {
 		problems.push(
 			`announcedProofHeight and announcedProofAt are ${String(announcedProofHeight)} and ${String(announcedProofAt)}; they must be Bitcoin block ${timestamp.height} and its time ${proofAt} (${ISO_FORM})`,
 		);
@@ -191,4 +199,29 @@ export async function verifyNotice(
 		proofHeight: timestamp.height,
 		bound: bound.toISOString(),
 	};
+}
+
+/**
+ * The earliest Bitcoin block in the first committed version of a proof that reached one, and that
+ * commit; for a proof never committed with a block, the current file's earliest (a local
+ * checkout ahead of the branch). Null while the proof reaches no block.
+ */
+function firstReachedBlock(
+	versions: readonly { commit: string; bytes: Uint8Array }[],
+	current: OtsProof,
+): { height: number; commit: string } | null {
+	const earliest = (proof: OtsProof) =>
+		Math.min(...proof.attestations.flatMap((a) => (a.kind === 'bitcoin' ? [a.height] : [])));
+	for (const { commit, bytes } of versions) {
+		let height;
+		try {
+			height = earliest(readOtsProof(bytes));
+		} catch (error) {
+			if (!(error instanceof OtsFormatError)) throw error;
+			continue;
+		}
+		if (Number.isFinite(height)) return { height, commit };
+	}
+	const height = earliest(current);
+	return Number.isFinite(height) ? { height, commit: 'working tree' } : null;
 }

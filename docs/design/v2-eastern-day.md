@@ -128,6 +128,16 @@ deployment, after the first has been read back:
      again. B is then the new, later block time, which can only push E later.
    - The record is never rewritten.
 
+   **What the record proves, and what it does not.** The proof binds the record's bytes, and through
+   their hashes the three bodies, to time: they existed by B. Step-2 CI binds them to the registry
+   and to the readback's own checks: it replays the record's timing and the saved pages exactly as
+   the writer checked them. Nothing binds the bytes to what production actually served: the
+   attestations branch accepts a push from anyone with write access, and a GitHub run id can be
+   looked up but cannot vouch for bytes. An auditor corroborates that independently, by comparing
+   the saved bodies with the live site, an archive such as the Wayback Machine's copies of the three
+   URLs around N, and the repository's history of `docs/incidents.md` and the registry at the
+   deployed commit each response names (`X-Deployed-Commit`).
+
    **The notice bound is `max(N, B) + 30 × 24 h`.** N is when the notice was demonstrably public. B
    is when an independent timestamp proves the record existed. Using the later of the two needs no
    check that B ≥ N, and no clock can make the bound earlier.

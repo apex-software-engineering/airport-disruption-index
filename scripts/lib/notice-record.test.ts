@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 
+import { build } from 'esbuild';
+
 import { sha256Hex } from '@/lib/index/json';
 import { METHODOLOGY_V1, METHODOLOGY_V2, RELEASES, release } from '@/lib/index/releases';
 import { addDays } from '@/lib/index/time';
@@ -19,7 +21,7 @@ import {
 } from '@/lib/notice-readback';
 import type { Get } from '@/lib/reproduce';
 import { branchCheckout, type Files } from '@/test/branch-checkout';
-import { syntheticProof } from '@/test/ots';
+import { syntheticProof, syntheticProofs } from '@/test/ots';
 
 import { verifyNotice } from './notice-record';
 
@@ -407,7 +409,7 @@ describe('the saved pages must show the notice (Sol #43 r1, finding 1; Opus find
 });
 
 describe('B is the pinned block’s time (Opus #43 r1, finding 3)', () => {
-	it('refuses a proof with no attestation in the pinned block, and names the block to pin', async () => {
+	it('refuses a pin on another block, and names the block to pin', async () => {
 		const { branch, blockAt } = await readBackAndPublish(
 			'2026-11-29T00:20:05Z',
 			'2026-11-29T01:10:00Z',
@@ -418,7 +420,11 @@ describe('B is the pinned block’s time (Opus #43 r1, finding 3)', () => {
 		expect(await verify(branch, pinnedElsewhere, blockAt)).toEqual({
 			kind: 'invalid',
 			problems: [
-				`${branch.checkout.directory}/${RECORD}.ots has no attestation in Bitcoin block ${HEIGHT - 1} (announcedProofHeight)`,
+				expect.stringMatching(
+					new RegExp(
+						`^announcedProofHeight is ${HEIGHT - 1}, but the proof first reached Bitcoin block ${HEIGHT} `,
+					),
+				),
 			],
 		});
 		const unpinned = registry('2026-11-29T00:20:05.000Z', '2026-11-29T01:10:00.000Z', {
@@ -434,6 +440,73 @@ describe('B is the pinned block’s time (Opus #43 r1, finding 3)', () => {
 				),
 			],
 		});
+	});
+});
+
+describe('B is the block the proof first reached (Sol #43 r2, finding 4)', () => {
+	/** A record whose proof reaches block HEIGHT at 01:10Z and HEIGHT + 1 at the earlier 01:00Z. */
+	async function twoBlocks() {
+		const { files } = await readback('2026-11-29T00:20:05Z');
+		const bytes = new TextEncoder().encode(String(files[RECORD]));
+		const both = syntheticProofs(bytes, [
+			{ kind: 'bitcoin', height: HEIGHT },
+			{ kind: 'bitcoin', height: HEIGHT + 1 },
+		]);
+		const times = new Map([
+			[HEIGHT, '2026-11-29T01:10:00.000Z'],
+			[HEIGHT + 1, '2026-11-29T01:00:00.000Z'],
+		]);
+		const blockAt = async (height: number) => ({
+			merkleRoot: both.merkleRoot,
+			time: new Date(times.get(height) ?? ''),
+		});
+		return { files, bytes, both, blockAt };
+	}
+
+	it('refuses a pin on a later block whose header time is earlier', async () => {
+		const { files, both, blockAt } = await twoBlocks();
+		const branch = branchCheckout();
+		branch.commit({ ...files, [`${RECORD}.ots`]: both.proof });
+		const later = registry('2026-11-29T00:20:05.000Z', '2026-11-29T01:00:00.000Z', {
+			height: HEIGHT + 1,
+		});
+		expect(await verify(branch, later, blockAt)).toEqual({
+			kind: 'invalid',
+			problems: [
+				expect.stringMatching(
+					new RegExp(
+						`^announcedProofHeight is ${HEIGHT + 1}, but the proof first reached Bitcoin block ${HEIGHT} \\(commit [0-9a-f]{40}\\): B is that block's time$`,
+					),
+				),
+				expect.stringMatching(
+					new RegExp(
+						`^announcedProofHeight and announcedProofAt .* must be Bitcoin block ${HEIGHT} and its time 2026-11-29T01:10:00.000Z `,
+					),
+				),
+			],
+		});
+		expect(
+			await verify(
+				branch,
+				registry('2026-11-29T00:20:05.000Z', '2026-11-29T01:10:00.000Z'),
+				blockAt,
+			),
+		).toMatchObject({ kind: 'verified', proofHeight: HEIGHT });
+	});
+
+	it('keeps the pin when a later upgrade adds an earlier block', async () => {
+		const { files, bytes, both, blockAt } = await twoBlocks();
+		const branch = branchCheckout();
+		const first = syntheticProofs(bytes, [{ kind: 'bitcoin', height: HEIGHT + 1 }]);
+		branch.commit({ ...files, [`${RECORD}.ots`]: first.proof });
+		branch.commit({ [`${RECORD}.ots`]: both.proof });
+		expect(
+			await verify(
+				branch,
+				registry('2026-11-29T00:20:05.000Z', '2026-11-29T01:00:00.000Z', { height: HEIGHT + 1 }),
+				blockAt,
+			),
+		).toMatchObject({ kind: 'verified', proofHeight: HEIGHT + 1 });
 	});
 });
 
@@ -453,7 +526,7 @@ describe('the release is the registry’s own (Sol #43 r1, finding 4)', () => {
 	});
 });
 
-describe('the CI step (Opus #43 r1, finding 4)', () => {
+describe('the CI step (Opus #43 r1, finding 4; Sol r2, finding 1; Opus r2, finding 2)', () => {
 	const ci = readFileSync('.github/workflows/ci.yml', 'utf8');
 	const gate = new RegExp(/grep -qE '([^']+)'/.exec(ci)?.[1] ?? '^$');
 
@@ -463,23 +536,38 @@ describe('the CI step (Opus #43 r1, finding 4)', () => {
 		}
 	});
 
-	it('runs it for any change to the registry, the record format, the verifier or CI', () => {
+	it('runs it for any change to a file the verifier is built from, and the config around it', async () => {
+		const { metafile } = await build({
+			entryPoints: ['scripts/verify-notice.ts'],
+			bundle: true,
+			write: false,
+			metafile: true,
+			platform: 'node',
+			format: 'esm',
+			packages: 'external',
+			logLevel: 'silent',
+		});
+		const sources = Object.keys(metafile.inputs);
+		expect(sources).toContain('scripts/lib/notice-record.ts');
+		expect(sources).toContain('src/lib/index/releases.ts');
 		for (const path of [
-			'src/lib/index/releases.ts',
-			'src/lib/index/calendar.ts',
-			'src/lib/notice-readback.ts',
-			'src/lib/ots.ts',
-			'scripts/verify-notice.ts',
-			'scripts/lib/notice-record.ts',
-			'scripts/lib/attestations.ts',
-			'scripts/lib/public-api.ts',
+			...sources,
+			'tsconfig.json',
+			'.nvmrc',
 			'.github/workflows/ci.yml',
+			'.github/workflows/notice-readback.yml',
+			'.github/workflows/attest.yml',
 			'package.json',
 			'package-lock.json',
 		]) {
 			expect(gate.test(path), path).toBe(true);
 		}
 		expect(gate.test('docs/methodology.md')).toBe(false);
+	});
+
+	it('counts both paths of a rename, and skips only a PR into main', () => {
+		expect(ci).toContain('git diff --name-only --no-renames "$BASE" HEAD');
+		expect(ci).toContain('if [[ "$BASE_REF" == main ]]; then');
 	});
 });
 

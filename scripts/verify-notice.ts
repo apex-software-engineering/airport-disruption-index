@@ -2,7 +2,7 @@
  * The step-2 check (design §2): a release's `announcedAt` (N), `announcedProofAt` (B) and
  * `announcedProofHeight` are the ones its readback record on the attestations branch proves, the
  * record and its bodies are as first committed and replay, the proof reaches the pinned Bitcoin
- * block, and `effectiveAt ≥ max(N, B) + 30 days`. CI runs it on every change to the announcement,
+ * block (as mempool.space and blockstream.info both report it), and `effectiveAt ≥ max(N, B) + 30 days`. CI runs it on every change to the announcement,
  * the verifier or CI itself, so a registry change setting N or B merges only when it holds.
  *
  *   npm run verify-notice -- <version> [--dir attestations] [--branch attestations] [--clone-from URL]
@@ -22,14 +22,12 @@ import { RELEASES } from '@/lib/index/releases';
 import {
 	DEFAULT_BRANCH,
 	DEFAULT_DIRECTORY,
-	fetchBlock,
+	GIT_TIMEOUT_MS,
+	fetchBlockAgreed,
 	type BranchCheckout,
 } from './lib/attestations';
 import { verifyNotice } from './lib/notice-record';
 import { CannotVerify, Pending, runCheck } from './lib/public-api';
-
-/** The most a clone or fetch of the attestations branch may take. */
-const GIT_TIMEOUT_MS = 120_000;
 
 function git(args: string[]): void {
 	try {
@@ -59,7 +57,7 @@ runCheck(
 		const origin = options.get('clone-from');
 		const release = RELEASES.find((candidate) => candidate.parameters.version === version);
 		const announced = release !== undefined && release.announcedAt !== null;
-		const verify = () => verifyNotice(checkout, version, RELEASES, fetchBlock);
+		const verify = () => verifyNotice(checkout, version, RELEASES, fetchBlockAgreed);
 		let verdict;
 		if (origin === undefined || !announced) verdict = await verify();
 		else {
