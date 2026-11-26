@@ -123,9 +123,9 @@ writes nothing. N is the latest of the responses' `Date` headers, the run's star
 own clock once both responses are in; the record names the run and its attempt, and the commit links
 the run. Later runs upgrade the proof until it reaches a block (B). Nothing is ever rewritten; if
 the proof is ever lost, stamp the same bytes again. The CLI reads only the production site, and
-refuses a redirected response, a `Date` more than 5 minutes outside its own clock around the
-request, a response naming no deployed commit, and a headline that is not in the page's visible
-text. Locally:
+refuses a redirected response, a redirect (never followed), a `Date` that is not an HTTP-date or
+lies more than 5 minutes after or an hour before its own clock around the request, a response naming
+no deployed commit, and a headline or hash that is not in the page's visible text. Locally:
 `npm run notice-readback -- 2.0.0 --run-id <id> --run-attempt <n> --run-started-at <ISO> --dir <checkout>`
 (exit 3: not public yet).
 

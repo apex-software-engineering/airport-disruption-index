@@ -108,9 +108,17 @@ deployment, after the first has been read back:
    with its parameter hash.
    - **A failed run writes nothing.** The workflow is simply run again.
    - **The one successful run writes a single write-once record**, `notices/2.0.0.readback.json`, to
-     the attestations branch. It holds the run id, GitHub's `run_started_at`, each response's `Date`
-     header and `X-Deployed-Commit`, and the sha256 of each body.
-   - **N = max(the `Date` headers, `run_started_at`).**
+     the attestations branch, with the two response bodies beside it. It holds the run id and
+     attempt, GitHub's `run_started_at`, the runner's own clock once both responses are in
+     (`run.observedAt`), and per response its URL, the runner's clock just before and just after the
+     request (`requestedAt`, `receivedAt`), its `Date` header (an RFC 9110 IMF-fixdate in GMT,
+     refused unless at most 1 hour before (an edge cache's copy) or 5 minutes after those two), its
+     `X-Deployed-Commit`, and the sha256 of its body. The incidents response counts only as an HTML
+     page whose visible text (parsed, entities decoded, hidden elements and attributes ignored)
+     holds the entry's headline and the release's parameter hash; a redirect is refused, never
+     followed.
+   - **N = max(the `Date` headers, `run_started_at`, `run.observedAt`).** An auditor can replay the
+     `Date` check from the record alone.
    - The record is stamped with OpenTimestamps like a print. **B** is the header time of the
      earliest Bitcoin block its proof reaches. If a proof is ever lost, the same bytes are stamped
      again. B is then the new, later block time, which can only push E later.

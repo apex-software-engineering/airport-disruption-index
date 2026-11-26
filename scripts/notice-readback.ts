@@ -19,7 +19,7 @@ import { readBackNotice } from '@/lib/notice-readback';
 import { Mismatch } from '@/lib/reproduce';
 
 import { DEFAULT_DIRECTORY } from './lib/attestations';
-import { CannotVerify, describeError, getPublic, parseArgs } from './lib/public-api';
+import { CannotVerify, describeError, getPublicNoRedirect, parseArgs } from './lib/public-api';
 
 const USAGE =
 	'npm run notice-readback -- <version> --run-id <id> --run-attempt <n> --run-started-at <ISO> [--dir attestations]';
@@ -64,7 +64,7 @@ async function main(): Promise<number> {
 		release,
 		{ id, attempt, startedAt },
 		() => new Date(),
-		getPublic,
+		getPublicNoRedirect,
 	);
 	if (readback.kind === 'not_public') {
 		for (const reason of readback.reasons) console.log(`not public yet: ${reason}`);

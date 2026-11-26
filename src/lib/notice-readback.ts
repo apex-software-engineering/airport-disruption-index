@@ -11,6 +11,7 @@
  * record with OpenTimestamps covers them too; the step-2 registry change reads N and its proof's
  * block time B from it.
  */
+import { htmlToDOM, type Element } from 'html-react-parser';
 import { z } from 'zod';
 
 import { DEPLOYED_COMMIT_HEADER, parseDeployedCommit } from '@/lib/deployment';
@@ -22,6 +23,10 @@ import { CannotVerify, Mismatch, type Get } from '@/lib/reproduce';
 export const READBACK_SCHEMA = 'adi.notice-readback/1';
 
 const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
+
+/** An HTTP-date in RFC 9110's preferred IMF-fixdate form, always GMT: e.g. Sat, 28 Nov 2026 15:00:05 GMT. */
+const IMF_FIXDATE =
+	/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
 
 export const readbackSchema = z.object({
 	schema: z.literal(READBACK_SCHEMA),
@@ -41,8 +46,12 @@ export const readbackSchema = z.object({
 		.array(
 			z.object({
 				url: z.url(),
-				/** The response's `Date` header, verbatim. */
-				date: z.string(),
+				/** The runner's clock just before the request was sent. */
+				requestedAt: z.iso.datetime(),
+				/** The runner's clock just after the response arrived. */
+				receivedAt: z.iso.datetime(),
+				/** The response's `Date` header, verbatim: an IMF-fixdate within DATE_BEHIND_MS before and DATE_AHEAD_MS after the two. */
+				date: z.string().regex(IMF_FIXDATE),
 				/** The response's `X-Deployed-Commit`: a production deployment always names one. */
 				deployedCommit: commitShaSchema,
 				/** The file beside the record that holds the body, byte for byte. */
@@ -75,10 +84,13 @@ const upcomingSchema = z.object({
  * How far a response's `Date` may sit outside this run's own observation of the request (the
  * runner's clock just before and just after it), beyond the header's one-second resolution. A
  * `Date` outside it is refused before anything is written: the record is write-once, so a false N
- * could never be corrected. A backdated `Date` cannot move the cutover bound in any case: it uses
- * max(N, B), and B, the block time of the record's proof, always follows the observation.
+ * could never be corrected. Ahead of the observation only clock skew is allowed, since a later
+ * `Date` would move N later. Behind it an edge cache's copy is allowed (its `Date` is when the
+ * origin made it): an earlier `Date` can never move N earlier than the run's own observation,
+ * which N includes, nor the cutover bound, which uses max(N, B).
  */
-export const DATE_SKEW_MS = 5 * 60_000;
+export const DATE_AHEAD_MS = 5 * 60_000;
+export const DATE_BEHIND_MS = 60 * 60_000;
 
 /** A value from a response, quoted, so its text can never read as a log or workflow command. */
 function shown(value: string): string {
@@ -124,11 +136,21 @@ export async function readBackNotice(
 	const incidents = await fetchPublic(`${baseUrl}/incidents`, clock, get);
 	const methodology = await fetchPublic(`${baseUrl}/api/v1/methodology`, clock, get);
 	const reasons: string[] = [];
-	if (incidents.status !== 200) reasons.push(`${incidents.url} answered HTTP ${incidents.status}`);
-	else if (!visibleTextOf(incidents.body).includes(noticeHeadline(release)))
-		reasons.push(`${incidents.url} does not show "${noticeHeadline(release)}"`);
+	if (incidents.status !== 200) {
+		reasons.push(`${incidents.url} answered HTTP ${incidents.status}`);
+	} else if (incidents.contentType !== 'text/html') {
+		reasons.push(`${incidents.url} is ${shown(incidents.contentType)}, not an HTML page`);
+	} else {
+		// The rendered entry: its headline and the release's hash, both in the page's visible text.
+		const text = visibleTextOf(incidents.body);
+		for (const required of [noticeHeadline(release), release.parameterHash]) {
+			if (!text.includes(required)) reasons.push(`${incidents.url} does not show "${required}"`);
+		}
+	}
 	if (methodology.status !== 200) {
 		reasons.push(`${methodology.url} answered HTTP ${methodology.status}`);
+	} else if (methodology.contentType !== 'application/json') {
+		reasons.push(`${methodology.url} is ${shown(methodology.contentType)}, not JSON`);
 	} else {
 		const upcoming = upcomingSchema.safeParse(jsonOf(methodology.body));
 		const stated = upcoming.success ? upcoming.data.upcoming : null;
@@ -166,8 +188,10 @@ export async function readBackNotice(
 				startedAt: run.startedAt.toISOString(),
 				observedAt: observedAt.toISOString(),
 			},
-			responses: responses.map(({ url, date, deployedCommit, body, name }) => ({
+			responses: responses.map(({ url, sent, received, date, deployedCommit, body, name }) => ({
 				url,
+				requestedAt: new Date(sent).toISOString(),
+				receivedAt: new Date(received).toISOString(),
 				date,
 				deployedCommit,
 				body: name,
@@ -181,7 +205,12 @@ export async function readBackNotice(
 
 type Fetched = {
 	url: string;
+	/** The runner's clock just before the request and just after the response, in ms. */
+	sent: number;
+	received: number;
 	status: number;
+	/** The media type, without parameters, lower-cased. */
+	contentType: string;
 	date: string;
 	dateMs: number;
 	deployedCommit: string;
@@ -194,17 +223,22 @@ async function fetchPublic(url: string, clock: () => Date, get: Get): Promise<Fe
 		throw new CannotVerify(`GET ${url} failed: ${String(error)}`);
 	});
 	const received = clock().getTime();
+	if (response.status >= 300 && response.status < 400) {
+		throw new CannotVerify(
+			`${url} answered a redirect (HTTP ${response.status}) to ${shown(String(response.headers.get('Location')))}`,
+		);
+	}
 	if (response.redirected || (response.url !== '' && response.url !== url)) {
 		throw new CannotVerify(`${url} was redirected to ${shown(response.url)}`);
 	}
 	const date = response.headers.get('Date');
-	const dateMs = date === null ? Number.NaN : Date.parse(date);
-	if (date === null || Number.isNaN(dateMs))
-		throw new CannotVerify(`${url} has no valid Date header (${shown(String(date))})`);
+	if (date === null || !IMF_FIXDATE.test(date))
+		throw new CannotVerify(`${url} states Date ${shown(String(date))}, which is not an HTTP-date`);
+	const dateMs = Date.parse(date);
 	// The header has one-second resolution, so a response may state the second it began in.
-	if (dateMs < sent - DATE_SKEW_MS - 1000 || dateMs > received + DATE_SKEW_MS) {
+	if (dateMs < sent - DATE_BEHIND_MS - 1000 || dateMs > received + DATE_AHEAD_MS) {
 		throw new CannotVerify(
-			`${url} states Date ${shown(date)}, outside this run’s observation of it (${new Date(sent).toISOString()} to ${new Date(received).toISOString()}, ± ${DATE_SKEW_MS / 60_000} min)`,
+			`${url} states Date ${shown(date)}, outside this run’s observation of it (${new Date(sent).toISOString()} to ${new Date(received).toISOString()}, up to ${DATE_BEHIND_MS / 60_000} min before or ${DATE_AHEAD_MS / 60_000} min after)`,
 		);
 	}
 	const commit = response.headers.get(DEPLOYED_COMMIT_HEADER);
@@ -213,7 +247,11 @@ async function fetchPublic(url: string, clock: () => Date, get: Get): Promise<Fe
 		throw new CannotVerify(`${url} names no deployed commit (${shown(String(commit))})`);
 	return {
 		url,
+		sent,
+		received,
 		status: response.status,
+		contentType:
+			(response.headers.get('Content-Type') ?? '').split(';')[0]?.trim().toLowerCase() ?? '',
 		date,
 		dateMs,
 		deployedCommit,
@@ -239,16 +277,35 @@ function jsonOf(body: Uint8Array): unknown {
 	}
 }
 
+/** Elements whose content is never rendered as page text. */
+const UNRENDERED = new Set(['head', 'title', 'script', 'style', 'template', 'noscript', 'iframe']);
+
+/** Tailwind's hiding classes, which this site's pages use. */
+const HIDING_CLASSES = new Set(['hidden', 'invisible', 'sr-only']);
+
+/** Whether an element, and so all it holds, is hidden from a reader of the page. */
+function isHidden(element: Element): boolean {
+	if (UNRENDERED.has(element.name) || 'hidden' in element.attribs) return true;
+	const style = (element.attribs.style ?? '').replace(/\s+/g, '').toLowerCase();
+	if (/(^|;)(display:none|visibility:hidden|content-visibility:hidden)/.test(style)) return true;
+	return (element.attribs.class ?? '').split(/\s+/).some((name) => HIDING_CLASSES.has(name));
+}
+
 /**
- * A page's visible text: comments and the contents of script, style, template and noscript
- * elements dropped (a page's hydration data repeats its text in scripts), then tags removed and
- * whitespace collapsed, so markup never splits a phrase.
+ * A page's visible text, from its parsed HTML (html-react-parser's parser, which decodes
+ * entities): only text nodes outside hidden or unrendered elements, never comments or attribute
+ * values, whitespace collapsed so markup never splits a phrase. Nodes are told apart by DOM
+ * `nodeType` (1 element, 3 text), never `instanceof`: the package's two builds have separate
+ * node classes.
  */
 function visibleTextOf(html: Uint8Array): string {
-	return new TextDecoder()
-		.decode(html)
-		.replace(/<!--[\s\S]*?-->/g, '')
-		.replace(/<(script|style|template|noscript)\b[\s\S]*?<\/\1\s*>/gi, '')
-		.replace(/<[^>]*>/g, '')
-		.replace(/\s+/g, ' ');
+	const parts: string[] = [];
+	const walk = (nodes: Element['children']) => {
+		for (const node of nodes) {
+			if (node.nodeType === 3) parts.push(node.data);
+			else if (node.nodeType === 1 && 'attribs' in node && !isHidden(node)) walk(node.children);
+		}
+	};
+	walk(htmlToDOM(new TextDecoder().decode(html)));
+	return parts.join('').replace(/\s+/g, ' ');
 }

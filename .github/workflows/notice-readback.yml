@@ -49,11 +49,15 @@ jobs:
           git clone --quiet --depth 1 --single-branch --branch "$PUBLICATION_BRANCH" \
             "https://github.com/$GITHUB_REPOSITORY" attestations
           proof="attestations/notices/$VERSION.readback.json.ots"
-          # 0588960d73d71901 is the OpenTimestamps tag of a Bitcoin block header attestation.
-          if [[ -e "$proof" ]] && od -An -tx1 -v "$proof" | tr -d ' \n' | grep -q 0588960d73d71901; then
-            echo "::notice::$proof already reaches a Bitcoin block; nothing to do"
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          if [[ -e "$proof" ]]; then
+            # Parsed by the OpenTimestamps client, never matched as bytes: a complete proof has a
+            # Bitcoin block header attestation.
+            pipx install opentimestamps-client==0.8.0 > /dev/null
+            if ots info "$proof" | grep -qE '^[[:space:]]*verify BitcoinBlockHeaderAttestation\('; then
+              echo "::notice::$proof already reaches a Bitcoin block; nothing to do"
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
           echo "run=true" >> "$GITHUB_OUTPUT"
 
@@ -122,9 +126,14 @@ jobs:
             echo "::error::readback did not succeed (exit $status); nothing was written"
             exit 1
           fi
-          if [[ $existed == true ]]; then
+          if [[ $existed == true && -e "$record.ots" ]]; then
             ots upgrade "$record.ots" || echo "$record.ots: not complete yet (pending or unreachable calendar)"
             rm -f "$record.ots.bak"
+          elif [[ $existed == true ]]; then
+            # The record's proof is missing: stamp the same bytes again (B is then the new block).
+            echo "::warning::$record has no proof beside it; stamping it again"
+            ots stamp --timeout 30 "$record"
+            ots info "$record.ots"
           else
             ots stamp --timeout 30 "$record"
             ots info "$record.ots"

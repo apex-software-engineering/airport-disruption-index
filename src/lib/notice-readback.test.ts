@@ -16,9 +16,13 @@ const SITE = 'https://site.test';
 /** The runner's own clock while it reads: just after the run starts. */
 const CLOCK = () => new Date('2026-11-28T15:00:05Z');
 
-/** The incidents page as the site renders it: the headline split across markup. */
-const SHOWN = `<li><strong>2026-11-28: methodology v2.0.0 announced,
-	effective ET day <time>2027-01-01</time>.</strong></li>`;
+/** The incidents entry as the site renders it: headline split across markup, then the hash. */
+const entry = (headline: string, hash: string) =>
+	`<li><strong>${headline}</strong> The parameter hash changes to <code>${hash}</code>.</li>`;
+const SHOWN = entry(
+	`2026-11-28: methodology v2.0.0 announced,\n\teffective ET day <time>2027-01-01</time>.`,
+	V2.parameterHash,
+);
 
 function site(pages: {
 	incidents?: string;
@@ -26,6 +30,8 @@ function site(pages: {
 	dates?: [string, string];
 	commit?: string | null;
 	redirectedTo?: string;
+	incidentsType?: string;
+	redirectStatus?: number;
 }): Get {
 	const [incidentsDate, methodologyDate] = pages.dates ?? [
 		'Sat, 28 Nov 2026 15:00:05 GMT',
@@ -35,8 +41,18 @@ function site(pages: {
 		const commit = pages.commit === undefined ? COMMIT : pages.commit;
 		const headers: Record<string, string> = commit === null ? {} : { 'X-Deployed-Commit': commit };
 		if (url === `${SITE}/incidents`) {
+			if (pages.redirectStatus !== undefined) {
+				return new Response(null, {
+					status: pages.redirectStatus,
+					headers: { Date: incidentsDate, Location: 'https://elsewhere.test/incidents' },
+				});
+			}
 			const response = new Response(pages.incidents ?? '<p>no notice</p>', {
-				headers: { ...headers, Date: incidentsDate },
+				headers: {
+					...headers,
+					Date: incidentsDate,
+					'Content-Type': pages.incidentsType ?? 'text/html; charset=utf-8',
+				},
 			});
 			if (pages.redirectedTo !== undefined) {
 				Object.defineProperty(response, 'redirected', { value: true });
@@ -66,7 +82,10 @@ describe('the notice readback', () => {
 	it('writes nothing until both the incidents entry and the upcoming block show it', async () => {
 		expect(await readBackNotice(SITE, V2, RUN, CLOCK, site({ upcoming }))).toEqual({
 			kind: 'not_public',
-			reasons: [`${SITE}/incidents does not show "${noticeHeadline(V2)}"`],
+			reasons: [
+				`${SITE}/incidents does not show "${noticeHeadline(V2)}"`,
+				`${SITE}/incidents does not show "${V2.parameterHash}"`,
+			],
 		});
 		expect(await readBackNotice(SITE, V2, RUN, CLOCK, site({ incidents: SHOWN }))).toEqual({
 			kind: 'not_public',
@@ -141,6 +160,7 @@ describe('the notice readback', () => {
 			for (const dates of [
 				['Thu, 01 Jan 2099 00:00:00 GMT', 'Sat, 28 Nov 2026 15:00:06 GMT'],
 				['Sat, 28 Nov 2026 14:00:00 GMT', 'Sat, 28 Nov 2026 15:00:06 GMT'],
+				['Sat, 28 Nov 2026 15:06:06 GMT', 'Sat, 28 Nov 2026 15:00:06 GMT'],
 			] as [string, string][]) {
 				await expect(
 					readBackNotice(SITE, V2, RUN, CLOCK, site({ incidents: SHOWN, upcoming, dates })),
@@ -199,5 +219,93 @@ describe('the notice readback', () => {
 		const notified = RELEASES.find((candidate) => candidate.parameters.version === version);
 		expect(notified).toBeDefined();
 		expect(noticeAt).toBe(notified?.noticePublishedAt ?? '');
+	});
+
+	describe('(Sol #37 r2)', () => {
+		const headline = noticeHeadline(V2);
+		const recorded = async (incidents: string, incidentsType?: string) =>
+			(await readBackNotice(SITE, V2, RUN, CLOCK, site({ incidents, upcoming, incidentsType })))
+				.kind;
+
+		it('reads the rendered page: entities decoded, the headline and the hash both visible (finding 1)', async () => {
+			expect(
+				await recorded(entry(headline.replace('v2.0.0', '&#118;2.0.0'), V2.parameterHash)),
+			).toBe('recorded');
+			expect(await recorded(`<li><strong>${headline}</strong></li>`)).toBe('not_public');
+		});
+
+		it('never counts hidden elements, attributes, or a page that is not HTML (finding 1)', async () => {
+			for (const hidden of [
+				`<div hidden>${entry(headline, V2.parameterHash)}</div>`,
+				`<div style="display: none">${entry(headline, V2.parameterHash)}</div>`,
+				`<div style="visibility:hidden">${entry(headline, V2.parameterHash)}</div>`,
+				`<div class="sr-only">${entry(headline, V2.parameterHash)}</div>`,
+				`<p title="${headline} ${V2.parameterHash}">no notice</p>`,
+				`<input type="hidden" value="${headline} ${V2.parameterHash}">`,
+			]) {
+				expect(await recorded(hidden), hidden).toBe('not_public');
+			}
+			for (const type of ['application/json', 'text/x-component']) {
+				expect(await recorded(SHOWN, type), type).toBe('not_public');
+			}
+		});
+
+		it('keeps each request’s own timing and refuses a Date that is not an HTTP-date (finding 2)', async () => {
+			const readback = await readBackNotice(
+				SITE,
+				V2,
+				RUN,
+				CLOCK,
+				site({ incidents: SHOWN, upcoming }),
+			);
+			if (readback.kind !== 'recorded') throw new Error('expected a record');
+			expect(readback.record.responses[0]).toMatchObject({
+				requestedAt: '2026-11-28T15:00:05.000Z',
+				receivedAt: '2026-11-28T15:00:05.000Z',
+			});
+			await expect(
+				readBackNotice(
+					SITE,
+					V2,
+					RUN,
+					CLOCK,
+					site({
+						incidents: SHOWN,
+						upcoming,
+						dates: ['2026-11-28 15:00:05', 'Sat, 28 Nov 2026 15:00:06 GMT'],
+					}),
+				),
+			).rejects.toThrow('is not an HTTP-date');
+		});
+
+		it('accepts an edge cache’s older Date, which never moves N before the run saw it', async () => {
+			const cached = await readBackNotice(
+				SITE,
+				V2,
+				RUN,
+				CLOCK,
+				site({
+					incidents: SHOWN,
+					upcoming,
+					dates: ['Sat, 28 Nov 2026 15:00:05 GMT', 'Sat, 28 Nov 2026 14:20:00 GMT'],
+				}),
+			);
+			expect(cached).toMatchObject({
+				kind: 'recorded',
+				record: { noticeAt: '2026-11-28T15:00:05.000Z' },
+			});
+		});
+
+		it('refuses a redirect response itself, without following it (finding 5)', async () => {
+			await expect(
+				readBackNotice(
+					SITE,
+					V2,
+					RUN,
+					CLOCK,
+					site({ incidents: SHOWN, upcoming, redirectStatus: 307 }),
+				),
+			).rejects.toThrow('answered a redirect (HTTP 307)');
+		});
 	});
 });
