@@ -84,6 +84,16 @@ export type Methodology = {
 	readonly effectiveUntil: DayLabel | null;
 	/** N: when its announcement was first publicly read back. Null until recorded. */
 	readonly announcedAt: string | null;
+	/**
+	 * B: the header time of the earliest Bitcoin block the readback record's proof reaches, set with
+	 * `announcedAt` (cutover step 2). The notice bound is max(N, B) + 30 days.
+	 */
+	readonly announcedProofAt: string | null;
+	/**
+	 * The height of the Bitcoin block whose time is B, pinned with it: a later `ots upgrade` may add
+	 * an earlier block to the proof, or a re-stamp a later one, but B stays this block's time.
+	 */
+	readonly announcedProofHeight: number | null;
 	/** Set only by a withdrawal notice. A withdrawn release is never in effect. */
 	readonly withdrawn: boolean;
 	/**

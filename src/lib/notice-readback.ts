@@ -30,6 +30,12 @@ const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
 const IMF_FIXDATE =
 	/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
 
+/**
+ * An instant as `toISOString` writes it, UTC with exactly milliseconds (2026-11-29T00:20:05.000Z),
+ * so it parses to itself: no finer digits for JavaScript to truncate at a bound.
+ */
+const instant = z.iso.datetime({ precision: 3 });
+
 export const readbackSchema = z.object({
 	schema: z.literal(READBACK_SCHEMA),
 	methodologyVersion: z.string(),
@@ -39,9 +45,9 @@ export const readbackSchema = z.object({
 		id: z.number().int().positive(),
 		attempt: z.number().int().positive(),
 		/** GitHub's `run_started_at`. */
-		startedAt: z.iso.datetime(),
+		startedAt: instant,
 		/** The runner's own clock once all three responses were in. */
-		observedAt: z.iso.datetime(),
+		observedAt: instant,
 	}),
 	/** The incidents page, the methodology page, then `/api/v1/methodology`, as received. */
 	responses: z
@@ -49,9 +55,9 @@ export const readbackSchema = z.object({
 			z.object({
 				url: z.url(),
 				/** The runner's clock just before the request was sent. */
-				requestedAt: z.iso.datetime(),
+				requestedAt: instant,
 				/** The runner's clock just after the response arrived. */
-				receivedAt: z.iso.datetime(),
+				receivedAt: instant,
 				/** The response's `Date` header, verbatim: an IMF-fixdate within DATE_BEHIND_MS before and DATE_AHEAD_MS after the two. */
 				date: z.string().regex(IMF_FIXDATE),
 				/** The response's `X-Deployed-Commit`: a production deployment always names one. */
@@ -63,7 +69,7 @@ export const readbackSchema = z.object({
 		)
 		.length(3),
 	/** N: the latest of the `Date` headers, the run's start and the run's observation. */
-	noticeAt: z.iso.datetime(),
+	noticeAt: instant,
 });
 export type NoticeReadback = z.infer<typeof readbackSchema>;
 
@@ -112,6 +118,23 @@ const upcomingSchema = z.object({
 export const DATE_AHEAD_MS = 5 * 60_000;
 export const DATE_BEHIND_MS = 60 * 60_000;
 
+/**
+ * Whether a `Date` header (in ms) lies inside a run's observation of its request, from `sentMs`
+ * to `receivedMs`: the readback refuses a response outside it, and the step-2 check replays it from
+ * the record. The header has one-second resolution, so a response may state the second it began in.
+ */
+export function dateWithinObservation(dateMs: number, sentMs: number, receivedMs: number): boolean {
+	return dateMs >= sentMs - DATE_BEHIND_MS - 1000 && dateMs <= receivedMs + DATE_AHEAD_MS;
+}
+
+/** The only site a readback record is ever for: N is when the production notice was public. */
+export const READBACK_ORIGIN = 'https://airports.apexsofteng.com';
+
+/** The three pages a readback reads, in the record's order. */
+function readbackUrls(baseUrl: string): [incidents: string, rules: string, methodology: string] {
+	return [`${baseUrl}/incidents`, `${baseUrl}/methodology`, `${baseUrl}/api/v1/methodology`];
+}
+
 /** A value from a response, quoted, so its text can never read as a log or workflow command. */
 function shown(value: string): string {
 	return JSON.stringify(value);
@@ -119,6 +142,11 @@ function shown(value: string): string {
 
 /** The run doing the readback: its id, its attempt and GitHub's `run_started_at`. */
 export type ReadbackRun = { id: number; attempt: number; startedAt: Date };
+
+/** Where a release's readback record sits on the attestations branch. */
+export function readbackRecordName(version: string): string {
+	return `notices/${version}.readback.json`;
+}
 
 /** The files beside `notices/{version}.readback.json` holding the three response bodies. */
 export function readbackBodyNames(version: string): {
@@ -158,27 +186,34 @@ export async function readBackNotice(
 	get: Get,
 ): Promise<Readback> {
 	const { version } = release.parameters;
-	const incidents = await fetchPublic(`${baseUrl}/incidents`, clock, get);
-	const rules = await fetchPublic(`${baseUrl}/methodology`, clock, get);
-	const methodology = await fetchPublic(`${baseUrl}/api/v1/methodology`, clock, get);
+	const [incidentsUrl, rulesUrl, methodologyUrl] = readbackUrls(baseUrl);
+	const incidents = await fetchPublic(incidentsUrl, clock, get);
+	const rules = await fetchPublic(rulesUrl, clock, get);
+	const methodology = await fetchPublic(methodologyUrl, clock, get);
+	// Each page counts only as the right kind of answer, and then only if its body shows the notice:
+	// the same body checks step 2 replays on the bodies kept beside the record.
 	const reasons: string[] = [];
-	// The rendered entry (its dated headline and the release's hash), and the rules it publishes.
-	reasons.push(...pageShows(incidents, [noticeHeadline(release), release.parameterHash]));
-	reasons.push(...pageShows(rules, [rulesHeading(release)]));
-	if (methodology.status !== 200) {
-		reasons.push(`${methodology.url} answered HTTP ${methodology.status}`);
-	} else if (methodology.contentType !== 'application/json') {
-		reasons.push(`${methodology.url} is ${shown(methodology.contentType)}, not JSON`);
-	} else {
-		const upcoming = upcomingSchema.safeParse(jsonOf(methodology.body));
-		const stated = upcoming.success ? upcoming.data.upcoming : null;
-		if (stated === null || stated === undefined || stated.version !== version) {
-			reasons.push(`${methodology.url} has no upcoming block for ${version}`);
-		} else if (stated.parameterHash !== release.parameterHash) {
-			throw new Mismatch([
-				`${methodology.url} states ${version} with parameter hash ${shown(stated.parameterHash)}, not ${release.parameterHash}`,
-			]);
-		}
+	const incidentsAnswer = answerProblems(incidents, 'text/html');
+	reasons.push(
+		...(incidentsAnswer.length > 0
+			? incidentsAnswer
+			: incidentsProblems(
+					release,
+					incidents.url,
+					incidents.body,
+					(day) => day === release.effectiveFrom,
+				)),
+	);
+	const rulesAnswer = answerProblems(rules, 'text/html');
+	reasons.push(
+		...(rulesAnswer.length > 0 ? rulesAnswer : rulesProblems(release, rules.url, rules.body)),
+	);
+	const methodologyAnswer = answerProblems(methodology, 'application/json');
+	if (methodologyAnswer.length > 0) reasons.push(...methodologyAnswer);
+	else {
+		const upcoming = upcomingProblems(release, methodology.url, methodology.body);
+		if (upcoming.contradicted.length > 0) throw new Mismatch(upcoming.contradicted);
+		reasons.push(...upcoming.notShown);
 	}
 	if (reasons.length > 0) return { kind: 'not_public', reasons };
 	const observedAt = clock();
@@ -188,49 +223,221 @@ export async function readBackNotice(
 		{ ...rules, name: names.rules },
 		{ ...methodology, name: names.methodology },
 	];
-	const noticeAt = new Date(
-		Math.max(
-			run.startedAt.getTime(),
-			observedAt.getTime(),
-			...responses.map((response) => response.dateMs),
-		),
+	const noticeAt = noticeAtOf(
+		run.startedAt,
+		observedAt,
+		responses.map((response) => response.dateMs),
 	);
+	const record = readbackSchema.parse({
+		schema: READBACK_SCHEMA,
+		methodologyVersion: version,
+		parameterHash: release.parameterHash,
+		run: {
+			id: run.id,
+			attempt: run.attempt,
+			startedAt: run.startedAt.toISOString(),
+			observedAt: observedAt.toISOString(),
+		},
+		responses: responses.map(({ url, sent, received, date, deployedCommit, body, name }) => ({
+			url,
+			requestedAt: new Date(sent).toISOString(),
+			receivedAt: new Date(received).toISOString(),
+			date,
+			deployedCommit,
+			body: name,
+			bodySha256: sha256Hex(body),
+		})),
+		noticeAt: noticeAt.toISOString(),
+	});
+	// Never write a record step 2 would refuse: it is write-once.
+	const problems = readbackRecordProblems(record, release, baseUrl);
+	if (problems.length > 0)
+		throw new CannotVerify(`the record would not replay: ${problems.join('; ')}`);
 	return {
 		kind: 'recorded',
-		record: readbackSchema.parse({
-			schema: READBACK_SCHEMA,
-			methodologyVersion: version,
-			parameterHash: release.parameterHash,
-			run: {
-				id: run.id,
-				attempt: run.attempt,
-				startedAt: run.startedAt.toISOString(),
-				observedAt: observedAt.toISOString(),
-			},
-			responses: responses.map(({ url, sent, received, date, deployedCommit, body, name }) => ({
-				url,
-				requestedAt: new Date(sent).toISOString(),
-				receivedAt: new Date(received).toISOString(),
-				date,
-				deployedCommit,
-				body: name,
-				bodySha256: sha256Hex(body),
-			})),
-			noticeAt: noticeAt.toISOString(),
-		}),
+		record,
 		bodies: responses.map(({ name, body }) => ({ name, bytes: body })),
 	};
 }
 
-/** Why `page` is not an HTML page whose visible text holds every `required` phrase; none if it is. */
-function pageShows(page: Fetched, required: readonly string[]): string[] {
+/** N: the latest of the run's start, its observation and the responses' `Date` headers. */
+function noticeAtOf(startedAt: Date, observedAt: Date, datesMs: readonly number[]): Date {
+	return new Date(Math.max(startedAt.getTime(), observedAt.getTime(), ...datesMs));
+}
+
+/**
+ * What is wrong with a readback record for `release`, replayed from the record alone (design §2):
+ * it names the release; it read `origin`'s three pages in order and kept each body under its name;
+ * its clock readings run forward (each request sent, then answered, before the next is sent, and
+ * all answered before the observation, which follows the run's start); each `Date` lies inside the
+ * run's observation of its request; and its N is the latest of those dates, the run's start and
+ * its observation, at or after the release's notice instant. None when it is sound. The bodies
+ * and the proof are checked against the files beside it, by the step-2 verifier.
+ */
+export function readbackRecordProblems(
+	record: NoticeReadback,
+	release: Methodology,
+	origin: string,
+): string[] {
+	const { version } = release.parameters;
+	const problems: string[] = [];
+	if (record.methodologyVersion !== version || record.parameterHash !== release.parameterHash) {
+		problems.push(
+			`the record is for ${shown(record.methodologyVersion)} with parameter hash ${shown(record.parameterHash)}, not ${version} with ${release.parameterHash}`,
+		);
+	}
+	const urls = readbackUrls(origin);
+	const names = readbackBodyNames(version);
+	const bodies = [names.incidents, names.rules, names.methodology];
+	const startedAt = Date.parse(record.run.startedAt);
+	const observedAt = Date.parse(record.run.observedAt);
+	if (observedAt < startedAt) {
+		problems.push(
+			`the run observed (${record.run.observedAt}) before it started (${record.run.startedAt})`,
+		);
+	}
+	let previous: { at: number; what: string } | null = null;
+	record.responses.forEach((response, index) => {
+		const where = `response ${index + 1}`;
+		if (response.url !== urls[index])
+			problems.push(`${where} is from ${shown(response.url)}, not ${urls[index]}`);
+		if (response.body !== bodies[index])
+			problems.push(`${where} keeps its body in ${shown(response.body)}, not ${bodies[index]}`);
+		const sent = Date.parse(response.requestedAt);
+		const received = Date.parse(response.receivedAt);
+		if (previous !== null && sent < previous.at)
+			problems.push(`${where} was requested (${response.requestedAt}) before ${previous.what}`);
+		if (received < sent)
+			problems.push(`${where} was received (${response.receivedAt}) before it was requested`);
+		if (received > observedAt) {
+			problems.push(
+				`${where} was received (${response.receivedAt}) after the run's observation (${record.run.observedAt})`,
+			);
+		}
+		previous = {
+			at: received,
+			what: `response ${index + 1} was received (${response.receivedAt})`,
+		};
+		if (!dateWithinObservation(Date.parse(response.date), sent, received)) {
+			problems.push(
+				`${where} states Date ${shown(response.date)}, outside the run's observation of it (${response.requestedAt} to ${response.receivedAt})`,
+			);
+		}
+	});
+	const noticeAt = noticeAtOf(
+		new Date(record.run.startedAt),
+		new Date(record.run.observedAt),
+		record.responses.map((response) => Date.parse(response.date)),
+	);
+	if (record.noticeAt !== noticeAt.toISOString()) {
+		problems.push(
+			`the record states N ${record.noticeAt}, but its dates, start and observation give ${noticeAt.toISOString()}`,
+		);
+	}
+	if (release.noticePublishedAt === null) {
+		problems.push(`${version} has no notice instant, so no readback can be of its notice`);
+	} else if (noticeAt.getTime() < Date.parse(release.noticePublishedAt)) {
+		problems.push(
+			`N ${noticeAt.toISOString()} is before the notice instant ${release.noticePublishedAt}`,
+		);
+	}
+	return problems;
+}
+
+/** The three bodies of a readback, by page. */
+export type NoticeBodies = { incidents: Uint8Array; rules: Uint8Array; methodology: Uint8Array };
+
+/**
+ * What the three bodies a readback of `origin` kept fail to show of `release`'s notice: the same
+ * body checks the readback made before writing them, replayed. `accepts` is which effective day
+ * the incidents headline may state: the readback requires the registry's own, and step 2 any day
+ * up to it, since a postponement (design §7) only ever moves the day later and keeps the record.
+ */
+export function noticeBodyProblems(
+	release: Methodology,
+	origin: string,
+	bodies: NoticeBodies,
+	accepts: (day: string) => boolean,
+): string[] {
+	const [incidentsUrl, rulesUrl, methodologyUrl] = readbackUrls(origin);
+	const upcoming = upcomingProblems(release, methodologyUrl, bodies.methodology);
+	return [
+		...incidentsProblems(release, incidentsUrl, bodies.incidents, accepts),
+		...rulesProblems(release, rulesUrl, bodies.rules),
+		...upcoming.contradicted,
+		...upcoming.notShown,
+	];
+}
+
+/** Why an incidents page does not show the dated headline (with an accepted day) and the hash. */
+function incidentsProblems(
+	release: Methodology,
+	url: string,
+	body: Uint8Array,
+	accepts: (day: string) => boolean,
+): string[] {
+	const text = visibleTextOf(body);
+	const problems: string[] = [];
+	const day = announcedDayIn(text, release);
+	if (day === null) problems.push(`${url} does not show "${noticeHeadline(release)}"`);
+	else if (!accepts(day)) {
+		problems.push(
+			`${url} does not show "${noticeHeadline(release)}": it states effective ET day ${day}`,
+		);
+	}
+	if (!text.includes(release.parameterHash))
+		problems.push(`${url} does not show "${release.parameterHash}"`);
+	return problems;
+}
+
+/** The effective ET day the first headline for `release`'s notice in `text` states, if any. */
+function announcedDayIn(text: string, release: Methodology): string | null {
+	const headline = noticeHeadline(release);
+	const prefix = headline.slice(0, headline.length - release.effectiveFrom.length);
+	const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	return new RegExp(`${escaped}(\\d{4}-\\d{2}-\\d{2})`).exec(text)?.[1] ?? null;
+}
+
+/** Why a methodology page does not show the release's rules heading. */
+function rulesProblems(release: Methodology, url: string, body: Uint8Array): string[] {
+	const heading = rulesHeading(release);
+	return visibleTextOf(body).includes(heading) ? [] : [`${url} does not show "${heading}"`];
+}
+
+/**
+ * Why `/api/v1/methodology`'s body does not state the release as upcoming: missing (`notShown`),
+ * or stated under another parameter hash (`contradicted`: the notice is wrong, not late).
+ */
+function upcomingProblems(
+	release: Methodology,
+	url: string,
+	body: Uint8Array,
+): { notShown: string[]; contradicted: string[] } {
+	const { version } = release.parameters;
+	const upcoming = upcomingSchema.safeParse(jsonOf(body));
+	const stated = upcoming.success ? upcoming.data.upcoming : null;
+	if (stated === null || stated === undefined || stated.version !== version)
+		return { notShown: [`${url} has no upcoming block for ${version}`], contradicted: [] };
+	if (stated.parameterHash !== release.parameterHash) {
+		return {
+			notShown: [],
+			contradicted: [
+				`${url} states ${version} with parameter hash ${shown(stated.parameterHash)}, not ${release.parameterHash}`,
+			],
+		};
+	}
+	return { notShown: [], contradicted: [] };
+}
+
+/** Why `page` is not a 200 answer of `type`; none if it is. */
+function answerProblems(page: Fetched, type: 'text/html' | 'application/json'): string[] {
 	if (page.status !== 200) return [`${page.url} answered HTTP ${page.status}`];
-	if (page.contentType !== 'text/html')
-		return [`${page.url} is ${shown(page.contentType)}, not an HTML page`];
-	const text = visibleTextOf(page.body);
-	return required
-		.filter((phrase) => !text.includes(phrase))
-		.map((phrase) => `${page.url} does not show "${phrase}"`);
+	if (page.contentType !== type) {
+		return [
+			`${page.url} is ${shown(page.contentType)}, not ${type === 'text/html' ? 'an HTML page' : 'JSON'}`,
+		];
+	}
+	return [];
 }
 
 type Fetched = {
@@ -265,8 +472,7 @@ async function fetchPublic(url: string, clock: () => Date, get: Get): Promise<Fe
 	if (date === null || !IMF_FIXDATE.test(date))
 		throw new CannotVerify(`${url} states Date ${shown(String(date))}, which is not an HTTP-date`);
 	const dateMs = Date.parse(date);
-	// The header has one-second resolution, so a response may state the second it began in.
-	if (dateMs < sent - DATE_BEHIND_MS - 1000 || dateMs > received + DATE_AHEAD_MS) {
+	if (!dateWithinObservation(dateMs, sent, received)) {
 		throw new CannotVerify(
 			`${url} states Date ${shown(date)}, outside this run’s observation of it (${new Date(sent).toISOString()} to ${new Date(received).toISOString()}, up to ${DATE_BEHIND_MS / 60_000} min before or ${DATE_AHEAD_MS / 60_000} min after)`,
 		);
@@ -298,8 +504,8 @@ function parseCommit(value: string): string | null {
 	}
 }
 
-/** A response body as JSON, or null when it is not JSON. */
-function jsonOf(body: Uint8Array): unknown {
+/** Bytes as JSON, or null when they are not JSON. */
+export function jsonOf(body: Uint8Array): unknown {
 	try {
 		return JSON.parse(new TextDecoder().decode(body));
 	} catch {

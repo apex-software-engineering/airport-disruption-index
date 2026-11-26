@@ -35,6 +35,31 @@ export function syntheticProof(
 	return { proof, merkleRoot: Buffer.from(digest).reverse().toString('hex') };
 }
 
+/**
+ * A proof with several attestations, each directly on the file's sha256, as forks: what a proof
+ * upgraded from several calendars looks like. Every Bitcoin attestation's block needs the same
+ * merkle root, the digest byte-reversed.
+ */
+export function syntheticProofs(
+	file: Uint8Array,
+	attestations: readonly (
+		{ kind: 'bitcoin'; height: number } | { kind: 'pending'; calendarUrl: string }
+	)[],
+): { proof: Uint8Array; merkleRoot: string } {
+	const digest = createHash('sha256').update(file).digest();
+	const branches = attestations.map((attestation, index) => {
+		const fields =
+			attestation.kind === 'bitcoin'
+				? varuint(attestation.height)
+				: varbytes(Buffer.from(attestation.calendarUrl));
+		const tag = attestation.kind === 'bitcoin' ? BITCOIN_TAG : PENDING_TAG;
+		const fork = index < attestations.length - 1 ? [0xff] : [];
+		return [...fork, 0x00, ...Buffer.from(tag, 'hex'), ...varbytes(new Uint8Array(fields))];
+	});
+	const proof = new Uint8Array([...HEADER, 0x08, ...digest, ...branches.flat()]);
+	return { proof, merkleRoot: Buffer.from(digest).reverse().toString('hex') };
+}
+
 function varuint(value: number): number[] {
 	const bytes: number[] = [];
 	let rest = value;

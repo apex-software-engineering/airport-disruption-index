@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { settlementDay } from '@/lib/index/calendar';
@@ -11,18 +10,19 @@ import { CURRENT_ADAPTER } from '@/lib/index/adapters';
 import { buildPrint } from '@/lib/index/print';
 import { summarizeReceipt } from '@/lib/index/round';
 import type { DailyPrint } from '@/lib/index/schemas';
+import { branchCheckout, temporaryDirectory } from '@/test/branch-checkout';
 import { feedFixture, otsFixture } from '@/test/fixtures';
 import { syntheticProof } from '@/test/ots';
 import { collectedReceipt } from '@/test/receipts';
 
 import {
 	fetchBlock,
+	fetchBlockAgreed,
 	invalidProofs,
 	readPins,
 	verifyAttested,
-	type BranchCheckout,
 } from './attestations';
-import { CannotVerify, getApi } from './public-api';
+import { CannotVerify, Mismatch, getApi } from './public-api';
 
 const receipt = collectedReceipt({
 	fetchedAt: new Date('2026-11-17T20:45:02.123Z'),
@@ -41,71 +41,11 @@ const r2 = buildPrint(settlementDay('2026-11-17'), [], {
 });
 const pin1 = serializeAttestation(buildAttestation(r1, null));
 
-const directories: string[] = [];
 afterEach(() => {
-	for (const directory of directories.splice(0))
-		rmSync(directory, { recursive: true, force: true });
 	vi.unstubAllGlobals();
 	vi.unstubAllEnvs();
 	vi.restoreAllMocks();
 });
-
-type Files = Record<string, string | Uint8Array | null>;
-
-/**
- * A git repo standing in for a checkout of the attestations branch. Each commit also moves
- * origin/attestations to it, as a fetch would.
- */
-function branchCheckout() {
-	const directory = mkdtempSync(path.join(tmpdir(), 'adi-attestations-'));
-	directories.push(directory);
-	const checkout: BranchCheckout = { directory, branch: 'attestations' };
-	const git = (...args: string[]) =>
-		execFileSync(
-			'git',
-			[
-				'-C',
-				directory,
-				'-c',
-				'user.name=t',
-				'-c',
-				'user.email=t@t',
-				'-c',
-				'commit.gpgsign=false',
-				...args,
-			],
-			{ stdio: 'ignore' },
-		);
-	const apply = (files: Files) => {
-		for (const [name, content] of Object.entries(files)) {
-			if (content === null) git('rm', '--quiet', name);
-			else writeFileSync(path.join(directory, name), content);
-		}
-		git('add', '--all');
-	};
-	const publish = () => git('update-ref', 'refs/remotes/origin/attestations', 'HEAD');
-	git('init', '--quiet', '--initial-branch=work');
-	return {
-		checkout,
-		git,
-		commit(files: Files) {
-			apply(files);
-			git('commit', '--quiet', '-m', 'commit');
-			publish();
-		},
-		/** A merge whose own commit also applies `inMerge`, which a plain log would not show. */
-		evilMerge(files: Files) {
-			git('switch', '--quiet', '-c', 'side');
-			apply({ 'side.txt': 'side' });
-			git('commit', '--quiet', '-m', 'side');
-			git('switch', '--quiet', 'work');
-			git('merge', '--quiet', '--no-ff', '--no-commit', 'side');
-			apply(files);
-			git('commit', '--quiet', '-m', 'merge');
-			publish();
-		},
-	};
-}
 
 describe('readPins', () => {
 	it('finds nothing on a branch with no commits yet', () => {
@@ -188,8 +128,7 @@ describe('readPins', () => {
 		const branch = branchCheckout();
 		branch.commit({ '2026-11-17.r1.json': pin1 });
 		branch.commit({ '2026-11-17.r1.json': rewritten });
-		const shallow = mkdtempSync(path.join(tmpdir(), 'adi-shallow-'));
-		directories.push(shallow);
+		const shallow = temporaryDirectory('adi-shallow-');
 		execFileSync('git', [
 			'clone',
 			'--quiet',
@@ -205,8 +144,7 @@ describe('readPins', () => {
 
 	/** A bare repo standing in for GitHub, holding the branch as published. */
 	function withRemote(branch: ReturnType<typeof branchCheckout>) {
-		const remote = mkdtempSync(path.join(tmpdir(), 'adi-remote-'));
-		directories.push(remote);
+		const remote = temporaryDirectory('adi-remote-');
 		execFileSync('git', ['init', '--quiet', '--bare', remote]);
 		branch.git('remote', 'add', 'origin', remote);
 		branch.git('push', '--quiet', 'origin', 'HEAD:refs/heads/attestations');
@@ -226,8 +164,7 @@ describe('readPins', () => {
 		const branch = branchCheckout();
 		branch.commit({ '2026-11-17.r1.json': pin1 });
 		const remote = withRemote(branch);
-		const other = mkdtempSync(path.join(tmpdir(), 'adi-other-'));
-		directories.push(other);
+		const other = temporaryDirectory('adi-other-');
 		execFileSync('git', ['clone', '--quiet', '--branch', 'attestations', remote, other]);
 		writeFileSync(path.join(other, 'later.txt'), 'x');
 		const git = (...args: string[]) =>
@@ -250,8 +187,7 @@ describe('readPins', () => {
 	});
 
 	it('treats an empty checkout as unpublished when the remote has no such branch', () => {
-		const remote = mkdtempSync(path.join(tmpdir(), 'adi-remote-'));
-		directories.push(remote);
+		const remote = temporaryDirectory('adi-remote-');
 		execFileSync('git', ['init', '--quiet', '--bare', remote]);
 		const empty = branchCheckout();
 		empty.git('remote', 'add', 'origin', remote);
@@ -423,6 +359,64 @@ describe('the preview bypass secret', () => {
 		} finally {
 			server.close();
 		}
+	});
+
+	it('asks the second block explorer when the first cannot answer (Sol #43 r1, finding 3)', async () => {
+		const calls = recordFetches((url) => {
+			if (url.startsWith('https://mempool.space/')) return new Response('busy', { status: 503 });
+			return url.includes('block-height')
+				? new Response('00ab')
+				: Response.json({ height: 7, merkle_root: 'cd', timestamp: 1 });
+		});
+		expect(await fetchBlock(7)).toEqual({ merkleRoot: 'cd', time: new Date(1000) });
+		expect(calls.map((call) => new URL(call.url).host)).toEqual([
+			'mempool.space',
+			'blockstream.info',
+			'blockstream.info',
+		]);
+	});
+
+	describe('fetchBlockAgreed (Sol #43 r2, finding 2)', () => {
+		const answering =
+			(answers: Record<string, () => Response>) =>
+			(url: string): Response => {
+				const host = new URL(url).host;
+				if (url.includes('block-height')) return new Response('00ab');
+				return (answers[host] ?? (() => new Response('none', { status: 404 })))();
+			};
+		const block = (merkleRoot: string, timestamp: number) => () =>
+			Response.json({ height: 7, merkle_root: merkleRoot, timestamp });
+
+		it('returns the block both explorers report', async () => {
+			recordFetches(
+				answering({ 'mempool.space': block('cd', 1), 'blockstream.info': block('cd', 1) }),
+			);
+			expect(await fetchBlockAgreed(7)).toEqual({ merkleRoot: 'cd', time: new Date(1000) });
+		});
+
+		it('is a mismatch, naming both, when they disagree on the time', async () => {
+			recordFetches(
+				answering({ 'mempool.space': block('cd', 1), 'blockstream.info': block('cd', 2) }),
+			);
+			const fetched = fetchBlockAgreed(7);
+			await expect(fetched).rejects.toThrow(Mismatch);
+			await expect(fetched).rejects.toThrow(
+				/mempool\.space\/api reports block 7 with merkle root cd at 1970-01-01T00:00:01\.000Z; https:\/\/blockstream\.info\/api reports block 7 with merkle root cd at 1970-01-01T00:00:02\.000Z/,
+			);
+		});
+
+		it('cannot verify when one explorer still cannot answer after a retry', async () => {
+			const calls = recordFetches(
+				answering({
+					'mempool.space': block('cd', 1),
+					'blockstream.info': () => new Response('busy', { status: 503 }),
+				}),
+			);
+			await expect(fetchBlockAgreed(7)).rejects.toThrow(CannotVerify);
+			expect(calls.filter((call) => call.url.includes('blockstream.info/api/block/'))).toHaveLength(
+				2,
+			);
+		});
 	});
 
 	it('never goes to the block explorer', async () => {

@@ -41,6 +41,33 @@ jobs:
       - name: Test
         run: npm test
 
+      # Cutover step 2 (docs/design/v2-eastern-day.md, section 2): once the registry announces v2,
+      # its N, B and B's block must be the ones the readback record on the attestations branch
+      # proves, with the 30-day notice. It runs fail-closed, with the network (the git remote and
+      # both block explorers), on a push to main, on any PR whose base is not main (a stacked PR's
+      # base may already set N and B), and on a PR into main that changes anything it depends on:
+      # src/lib and scripts (a test checks the verifier's whole import graph is inside), the
+      # TypeScript config, the Node version, the workflows that write the record and the
+      # attestations, CI and the dependencies. Renames count both paths. Any other PR cannot move
+      # N or B, and the registry test holds the bound offline. The branch is cloned only once v2
+      # is announced.
+      - name: Verify the v2.0.0 notice readback
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [[ "$BASE_REF" == main ]]; then
+            git fetch --quiet --depth=1 origin "$BASE"
+            # Captured first: grep -q stopping early must not fail the pipeline under pipefail.
+            changed="$(git diff --name-only --no-renames "$BASE" HEAD)"
+            if ! grep -qE '^(src/lib/|scripts/|tsconfig\.json$|\.nvmrc$|\.github/workflows/(ci|notice-readback|attest)\.yml$|package(-lock)?\.json$)' <<< "$changed"; then
+              echo "::notice::this PR into main changes nothing the step-2 check depends on; the registry test holds the bound"
+              exit 0
+            fi
+          fi
+          npm run -s verify-notice -- 2.0.0 --dir attestations \
+            --clone-from "https://github.com/$GITHUB_REPOSITORY"
+
       - name: Build
         run: npm run build
 
