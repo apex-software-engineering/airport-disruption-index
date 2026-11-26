@@ -489,9 +489,26 @@ and timestamped in a Bitcoin block before that revision's cutoff. A revision tha
 pending or late is not a reference, and both UTC days are always checked. Exit codes: 0 `MATCH`; 1
 `MISMATCH` (the sets differ, revisions of one v1 day list different receipts or do not chain, an
 attestation conflicts with the API, or the indicative day is misfiled or still not served when due);
-2 could not verify; 4 `PENDING` (a UTC day has no verified revision yet). A mismatch on either UTC
-day wins over the other's pending or could-not-verify. The attest workflow runs it for every
-indicative day in its 7-day window and fails on a `MISMATCH`.
+2 could not verify; 4 `PENDING` (a UTC day has no verified revision yet); 5 `PARTIAL` (below). A
+mismatch on either UTC day wins over the other's pending or could-not-verify. The attest workflow
+runs it for every indicative day in its 7-day window and fails on a `MISMATCH`; `PENDING` and
+`PARTIAL` are reported, not failed.
+
+The last indicative day, 2026-12-31, has one v1 reference: its window
+`[2026-12-31T05:00Z, 2027-01-01T05:00Z)` ends in the 60 slots from 2027-01-01T00:00Z to 05:00Z,
+which no settlement print covers. Its check runs in this order and stops at the first outcome: the
+print is rebuilt (a difference is `MISMATCH`); UTC day 2026-12-31 must verify (else `PENDING`); its
+228 slots are compared both ways (a difference is `MISMATCH`, whatever the pin); then the gap pin,
+`transition/2027-01-01.json` on the `attestations` branch, is read as first committed. With no pin
+the result is `PARTIAL`, and the 60 slots' receipts are listed as unpinned. A pin that was
+rewritten, pins another window, or whose proof is invalid or first reaches a Bitcoin block at or
+after its cutoff, 2027-01-02T05:00Z, is a `MISMATCH`; one whose proof has no block yet is `PENDING`.
+A verified pin must list exactly the receipts the print lists in those 60 slots, giving `MATCH`. The
+attest workflow writes the pin once, at its first run after 2027-01-01T05:30Z, from the receipts of
+a `PARTIAL` check, and stamps it like an attestation. If the pin misses its cutoff, 2026-12-31 is a
+`MISMATCH` in every attest run until it leaves the 7-day window (the runs of 2027-01-01 to
+2027-01-07); nothing is rewritten to make them pass. The pin's name and window follow the cutover:
+if it is postponed, they move with it.
 
 An indicative day is due 2 hours after its freeze time. A day that froze before its release's notice
 instant is due 12 hours after that instant instead: the settle runs look back only a few days, so

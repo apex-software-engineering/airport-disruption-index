@@ -6,12 +6,14 @@
  *   npm run reproduce -- --indicative <YYYY-MM-DD> [--dir attestations]
  *       an indicative ET day (never a settlement value): the print rebuilt from its rounds, then
  *       its receipts compared both ways with the verified v1 attestations of its UTC days, read
- *       from a checkout of the attestations branch (design §4)
+ *       from a checkout of the attestations branch (design §4); for the last day before a
+ *       cutover, the slots in its transition interval against the gap pin instead
  *   options: --base-url https://airports.apexsofteng.com
  *
- * Prints MATCH, MISMATCH or PENDING. Exit codes: 0 match, 1 mismatch, 2 could not verify
+ * Prints MATCH, MISMATCH, PENDING or PARTIAL. Exit codes: 0 match, 1 mismatch, 2 could not verify
  * (unreachable, not found, or published under a methodology or feed adapter this checkout does not
- * include), 4 pending (an indicative day whose v1 references are not verified yet).
+ * include), 4 pending (an indicative day whose v1 references, or gap pin, are not verified yet),
+ * 5 partial (the last day before a cutover, whose gap pin is absent).
  */
 import { indicativeSeriesPublished } from '@/lib/index/indicative';
 import { reproduce } from '@/lib/reproduce';
@@ -87,6 +89,11 @@ async function run(args: Args): Promise<number> {
 		case 'pending':
 			console.log(`PENDING: ${proof.reason}`);
 			return 4;
+		case 'partial':
+			console.log(
+				`PARTIAL: the covered slots are equal both ways, and the gap pin is absent; ${proof.unpinned.length} gap receipts are unpinned`,
+			);
+			return 5;
 		case 'cannot_verify':
 			console.error(`cannot verify: ${proof.reason}`);
 			return 2;

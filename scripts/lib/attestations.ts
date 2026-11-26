@@ -394,31 +394,46 @@ async function proveRevision(
 			path: attestationPath(directory, served.date, revision),
 		};
 	}
-	const proofPath = `${directory}/${pin.name}.ots`;
-	if (!existsSync(proofPath)) {
-		return { revision, kind: 'invalid', pin, detail: `${proofPath} does not exist` };
-	}
+	const proof = await proveFile(
+		`${directory}/${pin.name}.ots`,
+		pin.bytes,
+		publicationCutoff(served),
+	);
+	return { revision, pin, ...proof };
+}
+
+/** What a committed file's proof, read from the working tree at `proofPath`, shows. */
+export type FileProof =
+	| { kind: 'proven'; height: number; time: Date; cutoff: Date }
+	/** The proof has not reached a Bitcoin block yet. */
+	| { kind: 'pending'; detail: string }
+	/** The proof is missing, malformed, wrong, or timestamped at or after the cutoff. */
+	| { kind: 'invalid'; detail: string };
+
+/** Checks the proof at `proofPath` commits to `bytes` in a Bitcoin block before `cutoff`. */
+export async function proveFile(
+	proofPath: string,
+	bytes: Uint8Array,
+	cutoff: Date,
+): Promise<FileProof> {
+	if (!existsSync(proofPath)) return { kind: 'invalid', detail: `${proofPath} does not exist` };
 	let proof;
 	try {
 		proof = readOtsProof(new Uint8Array(await readFile(proofPath)));
 	} catch (error) {
 		if (!(error instanceof OtsFormatError)) throw error;
+		return { kind: 'invalid', detail: `${proofPath} is not a valid proof: ${error.message}` };
+	}
+	const verdict = await checkTimestamp(cutoff, bytes, proof, fetchBlock);
+	if (verdict.kind === 'invalid')
+		return { kind: 'invalid', detail: `${proofPath}: ${verdict.problem}` };
+	if (verdict.kind === 'pending') {
 		return {
-			revision,
-			kind: 'invalid',
-			pin,
-			detail: `${proofPath} is not a valid proof: ${error.message}`,
+			kind: 'pending',
+			detail: `${proofPath} is pending at ${verdict.calendars.join(', ')}`,
 		};
 	}
-	const verdict = await checkTimestamp(publicationCutoff(served), pin.bytes, proof, fetchBlock);
-	if (verdict.kind === 'invalid') {
-		return { revision, kind: 'invalid', pin, detail: `${proofPath}: ${verdict.problem}` };
-	}
-	if (verdict.kind === 'pending') {
-		const detail = `${proofPath} is pending at ${verdict.calendars.join(', ')}`;
-		return { revision, kind: 'pending', pin, detail };
-	}
-	return { revision, pin, ...verdict };
+	return verdict;
 }
 
 /**

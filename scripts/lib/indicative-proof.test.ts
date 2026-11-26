@@ -449,6 +449,22 @@ describe('the both-ways indicative proof', () => {
 	});
 });
 
+describe('E−1 before the cutover is activated (design §4, D8)', () => {
+	it('cannot be verified, and gives the attest run no gap pin to write', async () => {
+		const last = '2026-12-31';
+		await freezeIndicativeDay(store, last, new Date('2027-01-01T05:30:00Z'));
+		git('commit', '--quiet', '--allow-empty', '-m', 'empty');
+		git('update-ref', 'refs/remotes/origin/attestations', 'HEAD');
+		const clock = () => new Date('2027-01-01T12:00:00Z');
+		expect(await proveIndicativeDay(last, SITE, checkout, routeGet, clock)).toMatchObject({
+			kind: 'cannot_verify',
+			reason: expect.stringContaining('whose cutover is not activated'),
+		});
+		const run = await proveIndicativeDays([last], SITE, checkout, routeGet, clock);
+		expect([run.failures, run.partial]).toEqual([0, []]);
+	});
+});
+
 describe('the attest run’s indicative check (Sol #41 r1, finding 2; Opus findings 1 and 7)', () => {
 	it('fails only the day whose proof throws, and still proves the rest', async () => {
 		await collect();

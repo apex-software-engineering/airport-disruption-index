@@ -15,6 +15,10 @@
  * fails the run, including a day misfiled or still unserved 2 hours after its freeze time; PENDING
  * (a v1 reference not verified yet) and a day not frozen yet are reported, never failed. Each day
  * is proved on its own, so an error in one never skips the rest. No indicative file is ever written.
+ * The one exception is E−1's gap pin (design §4, D8): when E−1 is PARTIAL (its covered slots
+ * proved, no pin yet), its gap receipts are written to `{dir}/transition/{effectiveFrom}.json`,
+ * once, between the end of the transition interval and the pin's cutoff. PARTIAL only exists once
+ * the cutover is activated, so no pin is ever written before.
  *
  * Then every proof in the directory, of any date, is checked offline: invalid proofs are reported
  * apart from pending ones. Exit 0 when every day in the window is attested and matches (a pending
@@ -36,6 +40,7 @@ import {
 	type BranchCheckout,
 } from './lib/attestations';
 import { proveIndicativeDays } from './lib/indicative-proof';
+import { writeTransitionPin } from './lib/transition-pin';
 import {
 	CannotVerify,
 	Mismatch,
@@ -127,6 +132,16 @@ async function main(): Promise<number> {
 		);
 		for (const line of indicative.lines) console.log(line);
 		indicativeFailures = indicative.failures;
+		for (const { cutover, unpinned } of indicative.partial) {
+			try {
+				const path = await writeTransitionPin(checkout.directory, cutover, unpinned, new Date());
+				console.log(
+					`${cutover.previous.date}: wrote gap pin ${path} (${unpinned.length} receipts)`,
+				);
+			} catch (error) {
+				console.log(`${cutover.previous.date}: gap pin not written: ${describeError(error)}`);
+			}
+		}
 	}
 	// Every earlier proof too, reported apart from the days: written files are not stamped yet.
 	const earlier = (await attestationNames(checkout.directory)).filter(
