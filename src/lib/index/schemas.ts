@@ -247,26 +247,72 @@ export const correctionSchema = z.object({
 export type Correction = z.infer<typeof correctionSchema>;
 
 /**
- * An `adi.daily-print/1` print is a UTC day: its recorded release must use the UTC day boundary,
- * and its `settlesAt` must be that day's cutoff. Returns the cutoff, which every deadline is
- * computed from, so a print can never move its own corrections window by stating another time.
+ * A settlement print states exactly its release's day. `adi.daily-print/1` holds UTC days and
+ * `adi.daily-print/2` zoned ones (which also state their window). In both, `settlesAt` must be the
+ * day's cutoff. Returns the cutoff, which every deadline is computed from, so a print can never
+ * move its own corrections window by stating another time.
  */
-function checkUtcDay(
-	print: { date: string; settlesAt: string },
+function checkSettlementDay(
+	print: {
+		schema: string;
+		date: string;
+		settlesAt: string;
+		day?: string;
+		window?: { start: string; end: string };
+		coverage: { slotsPerDay: number };
+	},
 	release: Methodology,
 	ctx: z.RefinementCtx,
 ): Date | null {
-	if (release.parameters.day !== 'utc') {
+	const { day } = release.parameters;
+	if (print.schema === 'adi.daily-print/1' && day !== 'utc') {
 		ctx.addIssue({
 			code: 'custom',
-			message: `adi.daily-print/1 holds UTC days only; ${release.parameters.version} uses ${release.parameters.day.timeZone} days`,
+			message: `adi.daily-print/1 holds UTC days only; ${release.parameters.version} uses ${day.timeZone} days`,
 			path: ['methodologyVersion'],
+		});
+		return null;
+	}
+	if (print.schema === 'adi.daily-print/2' && day === 'utc') {
+		ctx.addIssue({
+			code: 'custom',
+			message: `adi.daily-print/2 holds zoned days; ${release.parameters.version} uses UTC days`,
+			path: ['methodologyVersion'],
+		});
+		return null;
+	}
+	if (print.day !== undefined && day !== 'utc' && print.day !== day.timeZone) {
+		ctx.addIssue({
+			code: 'custom',
+			message: `day is ${print.day}, but ${release.parameters.version} uses ${day.timeZone} days`,
+			path: ['day'],
 		});
 		return null;
 	}
 	// An impossible date is reported by the date refinement; there is no cutoff to compare.
 	if (parseUtcDate(print.date) === null) return null;
-	const cutoff = settlesAt(dayWindow(release, print.date));
+	const window = dayWindow(release, print.date);
+	if (
+		print.window !== undefined &&
+		(print.window.start !== window.start.toISOString() ||
+			print.window.end !== window.end.toISOString())
+	) {
+		ctx.addIssue({
+			code: 'custom',
+			message: `window is not the one ${release.parameters.version} gives ${print.date}`,
+			path: ['window'],
+		});
+		return null;
+	}
+	if (print.coverage.slotsPerDay !== window.slots) {
+		ctx.addIssue({
+			code: 'custom',
+			message: `coverage.slotsPerDay is ${print.coverage.slotsPerDay}, but ${print.date} has ${window.slots} slots`,
+			path: ['coverage', 'slotsPerDay'],
+		});
+		return null;
+	}
+	const cutoff = settlesAt(window);
 	if (print.settlesAt !== cutoff.toISOString()) {
 		ctx.addIssue({
 			code: 'custom',
@@ -325,34 +371,69 @@ const printRoundsSchema = z.array(
 	}),
 );
 
-export const printSchema = z
-	.object({
-		schema: z.literal('adi.daily-print/1'),
-		date: utcDateSchema,
-		revision: z.number().int().min(1),
-		/** null on revision 1, which settlement issues; every later revision is a correction. */
-		correction: correctionSchema.nullable(),
-		methodologyVersion: z.string(),
-		parameterHash: hex64,
-		settlesAt: instant,
-		coverage: coverageSchema,
-		result: dayResultSchema,
-		rounds: printRoundsSchema,
-		printHash: hex64,
-	})
-	.refine((print) => (print.revision === 1) === (print.correction === null), {
-		message: 'revision 1 has no correction; every later revision is a correction',
-	})
-	.superRefine((print, ctx) => {
-		const release = checkRecordedMethodology(
-			print,
-			print.result.status === 'suspended' ? null : print.result.airports,
-			ctx,
-		);
-		if (release === null) return;
-		const cutoff = checkUtcDay(print, release, ctx);
-		if (cutoff !== null) checkCorrectionTiming(print, cutoff, ctx);
-	});
+/** Revision 1 has no correction; every later revision is a correction. */
+const revisionHasCorrection = (print: { revision: number; correction: Correction | null }) =>
+	(print.revision === 1) === (print.correction === null);
+const REVISION_MESSAGE = 'revision 1 has no correction; every later revision is a correction';
+
+/** The checks every settlement print shares, whatever its day boundary. */
+function checkSettlementPrint(
+	print: z.infer<typeof utcPrintObject> | z.infer<typeof zonedPrintObject>,
+	ctx: z.RefinementCtx,
+): void {
+	const release = checkRecordedMethodology(
+		print,
+		print.result.status === 'suspended' ? null : print.result.airports,
+		ctx,
+	);
+	if (release === null) return;
+	const cutoff = checkSettlementDay(print, release, ctx);
+	if (cutoff !== null) checkCorrectionTiming(print, cutoff, ctx);
+}
+
+const settlementFields = {
+	revision: z.number().int().min(1),
+	/** null on revision 1, which settlement issues; every later revision is a correction. */
+	correction: correctionSchema.nullable(),
+	methodologyVersion: z.string(),
+	parameterHash: hex64,
+	settlesAt: instant,
+	coverage: coverageSchema,
+	result: dayResultSchema,
+	rounds: printRoundsSchema,
+	printHash: hex64,
+};
+
+/** v1: a UTC day. Frozen: its bytes, and so its hash, never change shape. */
+const utcPrintObject = z.object({
+	schema: z.literal('adi.daily-print/1'),
+	date: utcDateSchema,
+	...settlementFields,
+});
+
+/** A zoned settlement day (v2): its standing and window are hashed with it. */
+const zonedPrintObject = z.object({
+	schema: z.literal('adi.daily-print/2'),
+	date: z.string().refine((d) => parseUtcDate(d) !== null, 'invalid date'),
+	standing: z.literal('settlement'),
+	/** The zone the date is read in. */
+	day: z.literal('America/New_York'),
+	window: z.object({ start: instant, end: instant }),
+	...settlementFields,
+});
+
+/**
+ * A settlement print, of either day boundary. An indicative print, whose standing is never
+ * `settlement`, is refused here.
+ */
+export const printSchema = z.discriminatedUnion('schema', [
+	utcPrintObject
+		.refine(revisionHasCorrection, { message: REVISION_MESSAGE })
+		.superRefine(checkSettlementPrint),
+	zonedPrintObject
+		.refine(revisionHasCorrection, { message: REVISION_MESSAGE })
+		.superRefine(checkSettlementPrint),
+]);
 export type DailyPrint = z.infer<typeof printSchema>;
 
 export const identitySchema = z.object({ methodologyVersion: z.string(), parameterHash: hex64 });
@@ -399,7 +480,7 @@ export type IndicativePrint = z.infer<typeof indicativePrintSchema>;
  * reader never needs tz data to trust what a print covers.
  */
 function checkIndicativeDay(
-	print: Pick<IndicativePrint, 'date' | 'day' | 'window' | 'freezesAt' | 'admission'>,
+	print: Pick<IndicativePrint, 'date' | 'day' | 'window' | 'freezesAt' | 'admission' | 'coverage'>,
 	release: Methodology,
 	ctx: z.RefinementCtx,
 ): void {
@@ -428,6 +509,13 @@ function checkIndicativeDay(
 		freezesAt: settlesAt(window).toISOString(),
 		admission,
 	};
+	if (print.coverage.slotsPerDay !== window.slots) {
+		ctx.addIssue({
+			code: 'custom',
+			message: `coverage.slotsPerDay is ${print.coverage.slotsPerDay}, but ${print.date} has ${window.slots} slots`,
+			path: ['coverage', 'slotsPerDay'],
+		});
+	}
 	for (const field of ['day', 'window', 'freezesAt', 'admission'] as const) {
 		if (canonicalJson(print[field]) !== canonicalJson(expected[field])) {
 			ctx.addIssue({

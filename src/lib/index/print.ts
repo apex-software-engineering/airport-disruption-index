@@ -21,13 +21,17 @@ import {
 } from './schemas';
 
 export const PRINT_SCHEMA = 'adi.daily-print/1' as const;
-export const INDICATIVE_PRINT_SCHEMA = 'adi.daily-print/2' as const;
+/** Zoned days, settlement and indicative alike, use the second print schema. */
+export const ZONED_PRINT_SCHEMA = 'adi.daily-print/2' as const;
 
 /** Revision 1 is the settlement. Any later revision is a correction and must say why. */
 export type PrintRevision = { revision: 1 } | { revision: number; correction: Correction };
 
+/** `Omit` applied to each member of a union, so each print schema keeps its own fields. */
+type OmitEach<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
 /** Everything a print states except its revision: the day computed from its rounds. */
-export type PrintBody = Omit<DailyPrint, 'revision' | 'correction' | 'printHash'>;
+export type PrintBody = OmitEach<DailyPrint, 'revision' | 'correction' | 'printHash'>;
 
 export function buildPrint(
 	settlementDay: SettlementDay,
@@ -45,8 +49,7 @@ export function printBody(
 	const { release, window } = settlementDay;
 	// Settlement admits exactly the day's own release (settlement rule 4).
 	const computed = computeDay(settlementDay, rounds, [identityOf(release)]);
-	return {
-		schema: PRINT_SCHEMA,
+	const stated = {
 		date: window.date,
 		methodologyVersion: computed.methodologyVersion,
 		parameterHash: computed.parameterHash,
@@ -55,6 +58,16 @@ export function printBody(
 		result: computed.result,
 		rounds: computed.rounds,
 	};
+	// A UTC day keeps v1's frozen shape; a zoned day also states its standing and window.
+	return release.parameters.day === 'utc'
+		? { schema: PRINT_SCHEMA, ...stated }
+		: {
+				schema: ZONED_PRINT_SCHEMA,
+				standing: 'settlement',
+				day: release.parameters.day.timeZone,
+				window: { start: window.start.toISOString(), end: window.end.toISOString() },
+				...stated,
+			};
 }
 
 /**
@@ -71,7 +84,7 @@ export function buildIndicativePrint(
 		throw new Error(`${release.parameters.version} has UTC days, so no indicative series`);
 	}
 	const unsigned: Omit<IndicativePrint, 'printHash'> = {
-		schema: INDICATIVE_PRINT_SCHEMA,
+		schema: ZONED_PRINT_SCHEMA,
 		date: window.date,
 		standing: 'indicative',
 		day: release.parameters.day.timeZone,
@@ -123,13 +136,10 @@ function computeDay(
 
 /** Adds the revision to a computed body, hashes it and validates it against the print schema. */
 export function finalizePrint(body: PrintBody, revision: PrintRevision): DailyPrint {
-	const { schema, date, ...rest } = body;
-	const unsigned: Omit<DailyPrint, 'printHash'> = {
-		schema,
-		date,
+	const unsigned = {
+		...body,
 		revision: revision.revision,
 		correction: 'correction' in revision ? revision.correction : null,
-		...rest,
 	};
 	// The schema owns the print's invariants (revision 1 ⇔ no correction, a stated reason, timing).
 	return printSchema.parse({ ...unsigned, printHash: hashJson(unsigned) });

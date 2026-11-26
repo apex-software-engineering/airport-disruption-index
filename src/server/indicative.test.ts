@@ -22,12 +22,12 @@ import { hashJson } from '@/lib/index/json';
 import { receiptSchema } from '@/lib/index/schemas';
 import type { Get } from '@/lib/reproduce';
 
+import { readReceipt } from './archive';
 import {
 	freezeIndicativeDay,
 	readIndicativePrint,
 	readIndicativePrints,
-	readReceipt,
-} from './archive';
+} from './indicative-archive';
 import { FileStore } from './storage';
 import { indicativeDayView } from './views';
 

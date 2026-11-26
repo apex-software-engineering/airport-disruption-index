@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 
 import { DocBody } from '@/components/doc-body';
-import { Facts, Instant, Mono, Notice, Section, UtcDay } from '@/components/ui';
+import { DayLabel, Facts, Instant, Mono, Notice, Section } from '@/components/ui';
 import { site } from '@/lib/site';
 import { storeFromEnv } from '@/server/storage';
 import { correctionsView, type CorrectionEntry } from '@/server/views';
@@ -47,7 +47,10 @@ function CorrectionFacts({ entry }: { entry: CorrectionEntry }) {
 	return (
 		<Facts
 			rows={[
-				{ term: 'Day (UTC)', detail: <UtcDay date={entry.date} /> },
+				{
+					term: 'Day',
+					detail: <DayLabel date={entry.date} day={entry.day} window={entry.window} />,
+				},
 				{ term: 'Revision', detail: String(entry.revision) },
 				{ term: 'Issued', detail: <Instant at={entry.issuedAt} /> },
 				{ term: 'Reason', detail: entry.reason },

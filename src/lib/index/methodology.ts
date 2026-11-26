@@ -120,6 +120,21 @@ export function governs(release: Methodology, label: DayLabel): boolean {
 	);
 }
 
+/** The first day any release governs: the first release's first day. */
+export function firstSettlementDay(): DayLabel {
+	const [first] = RELEASES;
+	if (first === undefined) throw new Error('the registry lists no release');
+	return first.effectiveFrom;
+}
+
+/** Whether `release` governs any day in [from, to]. */
+export function governsAnyOf(release: Methodology, from: DayLabel, to: DayLabel): boolean {
+	return (
+		release.effectiveFrom <= to &&
+		(release.effectiveUntil === null || release.effectiveUntil >= from)
+	);
+}
+
 /** The active release that owns `label` as a settlement day, or null when none does. */
 export function settlementReleaseOrNull(label: DayLabel): Methodology | null {
 	return activeReleases().find((release) => governs(release, label)) ?? null;

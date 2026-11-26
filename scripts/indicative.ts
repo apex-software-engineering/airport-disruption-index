@@ -12,7 +12,7 @@ import { parseArgs } from 'node:util';
 
 import { indicativeReleaseFor, indicativeSeriesPublished } from '@/lib/index/indicative';
 import { addDays, parseUtcDate, utcDateOf } from '@/lib/index/time';
-import { freezeIndicativeDay } from '@/server/archive';
+import { freezeIndicativeDay } from '@/server/indicative-archive';
 import { openStore, storeTarget, type ObjectStore } from '@/server/storage';
 
 import { indicativeWriteRefusal } from './lib/indicative-target';

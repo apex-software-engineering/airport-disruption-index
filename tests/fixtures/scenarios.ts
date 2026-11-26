@@ -1,7 +1,8 @@
 /**
  * The fixture stores the home chart is checked against: filesystem stores (ADI_DATA_DIR) holding
- * only a history index, dated relative to the day the suite runs. With no rounds stored, today
- * has no running value, so each scenario is exactly its prints.
+ * only a history index, dated relative to `FIXTURE_NOW`, the instant the fixture servers' clock
+ * starts at (fixture-clock.mjs). With no rounds stored, today has no running value, so each
+ * scenario is exactly its prints.
  */
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -33,7 +34,14 @@ function entry(date: UtcDate, status: SettledStatus, value: number | null): Hist
 	};
 }
 
-export const yesterday = (): UtcDate => addDays(utcDateOf(new Date()), -1);
+/**
+ * Where the fixture servers' clock starts: late enough that all `LONG_HISTORY_DAYS` days ending
+ * the day before are days a release governs (v1 from 2026-11-17), and midday, so a suite run never
+ * crosses a UTC day.
+ */
+export const FIXTURE_NOW = '2028-01-15T12:00:00.000Z';
+
+export const yesterday = (): UtcDate => addDays(utcDateOf(new Date(FIXTURE_NOW)), -1);
 
 /** Two suspended days ending yesterday: no day has a value. */
 export function suspendedOnlyPrints(): HistoryEntry[] {

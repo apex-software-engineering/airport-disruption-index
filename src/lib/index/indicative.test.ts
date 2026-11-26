@@ -176,6 +176,9 @@ describe('the indicative print', () => {
 		).toEqual(['adi.daily-print/2 holds zoned days; 1.0.0 uses UTC days']);
 		expect(issues({ ...print, standing: 'settlement' })).toHaveLength(1);
 		expect(issues({ ...print, day: 'UTC' })).toHaveLength(1);
+		expect(issues({ ...print, coverage: { ...print.coverage, slotsPerDay: 276 } })).toEqual([
+			'coverage.slotsPerDay is 276, but 2026-11-20 has 288 slots',
+		]);
 		const { day: zone, ...undated } = print;
 		expect(indicativePrintSchema.safeParse(undated).success).toBe(false);
 		// An impossible date is a validation failure, never a throw.

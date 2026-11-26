@@ -1,4 +1,6 @@
+import { GET as getCurrent } from '@/app/api/v1/current/route';
 import { GET as getDay } from '@/app/api/v1/days/[date]/route';
+import { GET as getHistory } from '@/app/api/v1/history/route';
 import { GET as getIndicativeDay } from '@/app/api/v1/indicative/days/[date]/route';
 import { GET as getIndicativeRound } from '@/app/api/v1/indicative/days/[date]/rounds/[id]/route';
 import { GET as getRaw } from '@/app/api/v1/rounds/[id]/raw/route';
@@ -17,6 +19,8 @@ export const routeGet: Get = async (url) => {
 	const indicative = /^\/api\/v1\/indicative\/days\/([^/]+)$/.exec(pathname);
 	if (indicative?.[1] !== undefined)
 		return getIndicativeDay(request, { params: Promise.resolve({ date: indicative[1] }) });
+	if (pathname === '/api/v1/current') return getCurrent();
+	if (pathname === '/api/v1/history') return getHistory(request);
 	const day = /^\/api\/v1\/days\/([^/]+)$/.exec(pathname);
 	if (day?.[1] !== undefined) return getDay(request, { params: Promise.resolve({ date: day[1] }) });
 	const raw = /^\/api\/v1\/rounds\/([^/]+)\/raw$/.exec(pathname);

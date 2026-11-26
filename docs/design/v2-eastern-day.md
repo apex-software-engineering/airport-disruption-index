@@ -274,13 +274,24 @@ tested:
    can never occupy, block or overwrite the v2 print's key, and v2 code never serves it.
 2. **Misfiled-print detection.** v2 code treats any object at `prints/{date}/…` with `date ≥ E` (E
    read from the registry) as a misfiled stale write. The day view and the settle run report it as a
-   `misfiled_print` problem, and the monitor alerts on that. The real print is unaffected.
+   `misfiled_print` problem, and the monitor alerts on that. The real print is unaffected. The
+   shape, on `/api/v1/days/{date}` and in the settle response, is
+   `"misfiled": { "problem": "misfiled_print", "objects": ["<key>", …] }`. It lists print objects
+   under another root, objects at the date's own root that are not its prints (malformed JSON, an
+   indicative print, or a print failing the key contract: date, revision, owning release), and any
+   history object that is malformed or lists the date under another root; the field is absent when
+   there are none. One classifier (`classifyPrintObject`) decides this for every reader and never
+   throws on stored content: a day serves its last valid revision, and settle answers 409
+   `{"status": "blocked", "date", "misfiled"}` without reading receipts or writing anything when
+   r1's key holds something else.
 3. **Isolated history.** v2 days' history is its own object, `prints/et/history.json`, which only v2
    code writes. `prints/history.json` stays v1's and is the only one a stale deployment can touch.
    **Reads filter by canonical key, so nothing waits for repair:** `/api/v1/history` takes labels ≤
-   E−1 only from the v1 object and labels ≥ E only from the v2 object, and drops any entry outside
-   its object's range. A stale entry for label ≥ E in the v1 object is never served, even before the
-   next settle runs.
+   E−1 only from the v1 object and labels ≥ E only from the v2 object, reads only the objects whose
+   root owns a date in the requested range, and drops any entry outside its object's range. A stale
+   entry for label ≥ E in the v1 object is never served, even before the next settle runs. A
+   malformed history in the range is reported as `misfiled` on `/api/v1/history`, and the next
+   settle rebuilds it from its root's prints.
 4. **Canonical correction reads.** `readCorrectionPrints` accepts `prints/{date}/r{n}` only for
    `date ≤ E−1` and `prints/et/{date}/r{n}` only for `date ≥ E`. Anything else is reported as
    `misfiled_print` and never listed on `/incidents`.
@@ -380,8 +391,8 @@ Clock maths leaves the shell. Every 5-minute tick:
 - **Daily prints:** the candidate dates are {UTC yesterday, ET yesterday} **∪ every date with an
   open late alert**, kept even after it leaves the window. For each, GET `/api/v1/days/{date}`:
   `200 settled` gives a recovery or non-final notice, as today. `404 unsettled` alerts once
-  `now ≥ publishBy + 10 min`, with `publishBy` taken from the response body. A `misfiled_print`
-  problem alerts immediately.
+  `now ≥ publishBy + 10 min`, with `publishBy` taken from the response body. A response with
+  `misfiled.problem == "misfiled_print"` alerts immediately, naming `misfiled.objects`.
 - It ships as its own PR in `lexabu/personal-configs` and is live **before** the v2 deployment.
   Dry-run tests are in section 8, item 10.
 

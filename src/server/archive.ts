@@ -1,50 +1,37 @@
 /**
  * The archive: where receipts, raw bodies, day indexes and prints live in the object store, and
- * the rules for writing them. Everything read back is schema-validated; a stored object that
- * fails validation is corruption and throws rather than being skipped.
+ * the rules for writing them. Everything read back is schema-validated. A print or history object
+ * is classified by `classifyPrintObject`, never thrown on: one that is not what its key promises
+ * is `misfiled`, kept as stored, never served and reported. A receipt counts only at its own key
+ * in its own partition; an unreadable one stops settlement rather than silently dropping a round.
  */
 import type { z } from 'zod';
 
-import {
-	dayWindow,
-	partitionsOf,
-	settlementDay,
-	slotIndexIn,
-	type DayWindow,
-} from '@/lib/index/calendar';
-import {
-	type IndicativeAdmission,
-	indicativeAdmissionFor,
-	indicativeFreezesAt,
-	indicativeReleaseFor,
-} from '@/lib/index/indicative';
+import { partitionsOf, settlementDay, slotIndexIn, type DayWindow } from '@/lib/index/calendar';
 import { sha256Hex } from '@/lib/index/json';
 import {
-	admits,
+	activeReleases,
+	governsAnyOf,
 	isUnder,
 	methodologyOf,
+	settlementReleaseOrNull,
 	SLOT_MINUTES,
+	type DayLabel,
+	type DayTimeZone,
 	type Methodology,
 } from '@/lib/index/methodology';
-import {
-	buildIndicativePrint,
-	buildPrint,
-	finalizePrint,
-	historyEntryOf,
-	printBody,
-} from '@/lib/index/print';
+import { RELEASES } from '@/lib/index/releases';
+import { buildPrint, finalizePrint, historyEntryOf, printBody } from '@/lib/index/print';
 import { receiptHashMatches, summarizeReceipt } from '@/lib/index/round';
 import {
 	dayIndexSchema,
 	historyIndexSchema,
-	indicativePrintSchema,
 	printSchema,
 	receiptSchema,
-	receiptShapeSchema,
 	type DailyPrint,
 	type DayIndex,
+	type HistoryEntry,
 	type HistoryIndex,
-	type IndicativePrint,
 	type RoundReceipt,
 	type RoundSummary,
 } from '@/lib/index/schemas';
@@ -56,54 +43,72 @@ import {
 	type RoundId,
 	type UtcDate,
 } from '@/lib/index/time';
-import { verifyRound } from '@/lib/index/verify';
 
 import type { ObjectStore, StoredObject, WriteCondition } from './storage';
 
-const JSON_TYPE = 'application/json';
-const MAX_CONDITIONAL_ATTEMPTS = 5;
+export const JSON_TYPE = 'application/json';
+export const MAX_CONDITIONAL_ATTEMPTS = 5;
 const READ_CONCURRENCY = 16;
 
-const keys = {
+export const keys = {
 	receipt: (date: UtcDate, id: RoundId) => `rounds/${date}/${id}.json`,
 	/** Content-addressed, so a superseding round can never overwrite another round's body. */
 	raw: (date: UtcDate, id: RoundId, sha256: string) => `rounds/${date}/${id}.${sha256}.raw`,
 	roundsOf: (date: UtcDate) => `rounds/${date}/`,
 	dayIndex: (date: UtcDate) => `days/${date}.json`,
-	print: (date: UtcDate, revision: number) => `prints/${date}/r${revision}.json`,
-	history: () => 'prints/history.json',
+	/** Under the release's print root (`printRoot`): v1's UTC days and zoned days never share a key. */
+	print: (root: PrintRoot, date: string, revision: number) => `${root}${date}/r${revision}.json`,
+	history: (root: PrintRoot) => `${root}history.json`,
 	/** Frozen, never revised: one object per indicative day, under the release it is computed in. */
 	indicative: (version: string, date: string) => `indicative/${version}/${date}.json`,
 	indicativeRoot: () => 'indicative/',
 };
 
+/**
+ * Where a release's settlement prints and history live. v1's UTC days keep `prints/`; a zoned
+ * release's days live under their zone (`prints/et/`), so a stale deployment settling a v2 label
+ * as a UTC day can never occupy, block or overwrite a v2 print's key (design §2).
+ */
+type PrintRoot = 'prints/' | 'prints/et/';
+const ZONE_ROOT: Record<DayTimeZone, PrintRoot> = { 'America/New_York': 'prints/et/' };
+
+function printRoot(release: Methodology): PrintRoot {
+	const { day } = release.parameters;
+	return day === 'utc' ? 'prints/' : ZONE_ROOT[day.timeZone];
+}
+
+/** Every print root a registered release uses, so stale writes under any of them can be found. */
+const PRINT_ROOTS: readonly PrintRoot[] = [...new Set(RELEASES.map(printRoot))];
+
+/** The print root that owns `date` as a settlement day, or null when no release does. */
+function canonicalRoot(date: string): PrintRoot | null {
+	const release = settlementReleaseOrNull(date);
+	return release === null ? null : printRoot(release);
+}
+
 /** The UTC storage partition a round lives in. */
-function dateOf(id: RoundId): UtcDate {
+export function dateOf(id: RoundId): UtcDate {
 	const parsed = parseRoundId(id);
 	if (parsed === null) throw new Error(`invalid round id ${id}`);
 	return parsed.partition;
 }
 
 /**
- * The one storage partition holding every slot of a settlement day. Settlement here reads, and
- * re-indexes, a single partition, which is exactly a v1 UTC day. A day in a zoned release spans
- * two partitions and is refused until settlement reads windows across partitions.
+ * The storage partition a settlement day is exactly, or null when the day spans partitions (a
+ * zoned day). Only such a day is re-indexed by settlement; a partition's index stays owned by
+ * collect otherwise (design §5).
  */
-function partitionOfDay(window: DayWindow): UtcDate {
+function utcPartitionOf(window: DayWindow): UtcDate | null {
 	const partitions = partitionsOf(window);
 	const [partition] = partitions;
-	if (
-		partitions.length !== 1 ||
-		partition === undefined ||
-		dayStartMs(partition) !== window.start.getTime()
-	)
-		throw new Error(
-			`${window.date} spans storage partitions ${partitions.join(', ')}; only a UTC day can be settled here`,
-		);
-	return partition;
+	return partitions.length === 1 &&
+		partition !== undefined &&
+		dayStartMs(partition) === window.start.getTime()
+		? partition
+		: null;
 }
 
-function encode(value: unknown): Uint8Array {
+export function encode(value: unknown): Uint8Array {
 	return new TextEncoder().encode(JSON.stringify(value));
 }
 
@@ -114,7 +119,7 @@ function decode<T>(schema: z.ZodType<T>, key: string, object: StoredObject): T {
 	return parsed.data;
 }
 
-async function readJson<T>(
+export async function readJson<T>(
 	store: ObjectStore,
 	schema: z.ZodType<T>,
 	key: string,
@@ -138,49 +143,10 @@ export async function readReceipt(store: ObjectStore, id: RoundId): Promise<Roun
 	if (!parsed.success) {
 		throw new UnrecognizedReceipt(`stored object ${key} fails its schema: ${parsed.error.message}`);
 	}
-	return parsed.data;
-}
-
-/**
- * A round a frozen indicative print lists, as evidence for that print only: null unless the day
- * is frozen and lists `id`, and refused unless its hash is the one the print lists. A receipt from
- * a release this code does not know is returned by its shape (it was foreign in the print).
- */
-export async function readIndicativeRound(
-	store: ObjectStore,
-	label: string,
-	id: RoundId,
-): Promise<RoundReceipt | null> {
-	const listed = (await readIndicativePrint(store, label))?.rounds.find((r) => r.roundId === id);
-	if (listed === undefined) return null;
-	const key = keys.receipt(dateOf(id), id);
-	const object = await store.read(key);
-	if (object === null)
-		throw new Error(`${key} is listed by the indicative print of ${label} but missing`);
-	const receipt = decodeReceipt(key, object);
-	if (receipt.receiptHash !== listed.receiptHash || !receiptHashMatches(receipt)) {
-		throw new Error(`${key} is not the receipt the indicative print of ${label} lists`);
+	if (parsed.data.roundId !== id) {
+		throw new UnrecognizedReceipt(`${key} holds round ${parsed.data.roundId}`);
 	}
-	return receipt;
-}
-
-/**
- * A stored receipt, for the indicative series only. One that records a release this code does not
- * know cannot pass `receiptSchema`; it is returned by its shape alone, once its hash matches, so
- * it can be listed and served as a foreign round. It never counts: no day admits a release this
- * code does not know.
- */
-function decodeReceipt(key: string, object: StoredObject): RoundReceipt {
-	const body: unknown = JSON.parse(new TextDecoder().decode(object.body));
-	const full = receiptSchema.safeParse(body);
-	if (full.success) return full.data;
-	const shape = receiptShapeSchema.safeParse(body);
-	const unknown =
-		shape.success &&
-		methodologyOf(shape.data.methodologyVersion, shape.data.parameterHash) === null &&
-		receiptHashMatches(shape.data);
-	if (unknown) return shape.data;
-	throw new Error(`stored object ${key} fails its schema: ${full.error.message}`);
+	return parsed.data;
 }
 
 /** The archived body a receipt cites, or null when the receipt has none. */
@@ -370,31 +336,13 @@ function tryDecode<T>(schema: z.ZodType<T>, object: StoredObject): T | null {
 	}
 }
 
-/** Read-modify-write with optimistic concurrency on the object's version. */
-async function updateJson<T>(
-	store: ObjectStore,
-	schema: z.ZodType<T>,
-	key: string,
-	empty: T,
-	change: (current: T) => T | Promise<T>,
-): Promise<void> {
-	for (let attempt = 0; attempt < MAX_CONDITIONAL_ATTEMPTS; attempt += 1) {
-		const object = await store.read(key);
-		const current = object === null ? empty : decode(schema, key, object);
-		const next = encode(await change(current));
-		if (object !== null && Buffer.from(next).equals(Buffer.from(object.body))) return;
-		const condition: WriteCondition =
-			object === null ? { kind: 'if-absent' } : { kind: 'if-version', version: object.version };
-		if ((await store.write(key, next, JSON_TYPE, condition)) === 'written') return;
-	}
-	throw new Error(`${key}: gave up after ${MAX_CONDITIONAL_ATTEMPTS} conflicting writes`);
-}
-
+/** The round ids stored under partition `date`. An id from another partition is not its receipt. */
 async function listReceiptIds(store: ObjectStore, date: UtcDate): Promise<RoundId[]> {
 	const prefix = keys.roundsOf(date);
 	return (await store.list(prefix))
 		.filter((key) => key.endsWith('.json'))
-		.map((key) => key.slice(prefix.length, -'.json'.length));
+		.map((key) => key.slice(prefix.length, -'.json'.length))
+		.filter((id) => parseRoundId(id)?.partition === date);
 }
 
 /**
@@ -403,7 +351,7 @@ async function listReceiptIds(store: ObjectStore, date: UtcDate): Promise<RoundI
  * fails on it.
  */
 /** `read` applied to every item, READ_CONCURRENCY at a time, results in item order. */
-async function readInBatches<T, R>(
+export async function readInBatches<T, R>(
 	items: readonly T[],
 	read: (item: T) => Promise<R>,
 ): Promise<R[]> {
@@ -425,6 +373,7 @@ async function readReceipts(
 		try {
 			const receipt = await readJson(store, receiptSchema, key);
 			if (receipt === null) throw new Error(`receipt ${key} is listed but could not be read`);
+			if (receipt.roundId !== id) throw new Error(`${key} holds round ${receipt.roundId}`);
 			if (!receiptHashMatches(receipt))
 				throw new Error(`receipt ${key} does not match its receiptHash`);
 			return receipt;
@@ -441,70 +390,282 @@ export async function readDayReceipts(store: ObjectStore, date: UtcDate): Promis
 	return readReceipts(store, date, await listReceiptIds(store, date), 'throw');
 }
 
-/** All revisions of a day's print, oldest first. Empty when the day has not settled. */
-export async function readPrints(store: ObjectStore, date: UtcDate): Promise<DailyPrint[]> {
+/**
+ * The stored receipt ids whose slot is in `window`, with the UTC partition each is stored in.
+ * Filtered by id before anything is read, so a receipt outside the window is never read and can
+ * never stop a run.
+ */
+export async function listWindowReceipts(
+	store: ObjectStore,
+	window: DayWindow,
+): Promise<{ partition: UtcDate; id: RoundId }[]> {
+	const inWindow = (id: RoundId) => {
+		const parsed = parseRoundId(id);
+		return parsed !== null && slotIndexIn(window, parsed.slotStart) !== null;
+	};
+	const listed = await Promise.all(
+		partitionsOf(window).map(async (partition) =>
+			(await listReceiptIds(store, partition)).filter(inWindow).map((id) => ({ partition, id })),
+		),
+	);
+	return listed.flat();
+}
+
+/** Every stored receipt whose slot is in `window`, across its partitions, each verified. */
+async function readWindowReceipts(store: ObjectStore, window: DayWindow): Promise<RoundReceipt[]> {
+	const listed = await listWindowReceipts(store, window);
+	const partitions = [...new Set(listed.map((entry) => entry.partition))];
+	const read = await Promise.all(
+		partitions.map((partition) =>
+			readReceipts(
+				store,
+				partition,
+				listed.filter((entry) => entry.partition === partition).map((entry) => entry.id),
+				'throw',
+			),
+		),
+	);
+	return read.flat();
+}
+
+/**
+ * Why `print`, stored at `key`, is not a print this archive serves, or null when it is: it must be
+ * revision `print.revision` of `print.date`, under the release that owns that date, at that
+ * release's root.
+ */
+function printKeyProblem(key: string, print: DailyPrint): string | null {
+	const release = settlementReleaseOrNull(print.date);
+	if (release === null) return `${key} holds a print of ${print.date}, which no release owns`;
+	const expected = keys.print(printRoot(release), print.date, print.revision);
+	if (key !== expected) return `${key} holds the print for ${expected}`;
+	if (!isUnder(release, print)) {
+		return `${key} records ${print.methodologyVersion}, not the release that owns ${print.date}`;
+	}
+	return null;
+}
+
+/** What an object under a print root is. Anything this archive does not serve is `misfiled`. */
+type PrintObject =
+	| { kind: 'print'; print: DailyPrint }
+	/** `foreignDates`: entries for dates another root owns (a stale deployment's), never served. */
+	| { kind: 'history'; days: HistoryEntry[]; foreignDates: string[] }
+	| { kind: 'misfiled'; reason: string };
+
+/**
+ * The one classifier of stored print and history objects, used by every reader of them (day,
+ * corrections, history, misfiled, settle). It never throws on stored content. A history key must
+ * hold a history index; any other key must hold a print that passes `printKeyProblem`.
+ */
+function classifyPrintObject(key: string, bytes: Uint8Array): PrintObject {
+	let body: unknown;
+	try {
+		body = JSON.parse(new TextDecoder().decode(bytes));
+	} catch {
+		return { kind: 'misfiled', reason: `${key} is not JSON` };
+	}
+	const historyRoot = PRINT_ROOTS.find((root) => key === keys.history(root));
+	if (historyRoot !== undefined) {
+		const history = historyIndexSchema.safeParse(body);
+		if (!history.success) return { kind: 'misfiled', reason: `${key} is not a history index` };
+		const owned = (day: HistoryEntry) => canonicalRoot(day.date) === historyRoot;
+		return {
+			kind: 'history',
+			days: history.data.days.filter(owned),
+			foreignDates: history.data.days.filter((day) => !owned(day)).map((day) => day.date),
+		};
+	}
+	const print = printSchema.safeParse(body);
+	if (!print.success) return { kind: 'misfiled', reason: `${key} is not a settlement print` };
+	const problem = printKeyProblem(key, print.data);
+	return problem === null
+		? { kind: 'print', print: print.data }
+		: { kind: 'misfiled', reason: problem };
+}
+
+/** A print key whose object is not that print: the revisions of its day stop before it. */
+type BlockedKey = { key: string; reason: string };
+
+/**
+ * A day's revisions, oldest first, from the print root of the release that owns the day, up to
+ * the first key that is empty or holds something else (`blocked`). None when no release owns it.
+ */
+async function readRevisions(
+	store: ObjectStore,
+	date: string,
+): Promise<{ prints: DailyPrint[]; blocked: BlockedKey | null }> {
+	const release = settlementReleaseOrNull(date);
 	const prints: DailyPrint[] = [];
+	if (release === null) return { prints, blocked: null };
 	for (let revision = 1; ; revision += 1) {
-		const print = await readJson(store, printSchema, keys.print(date, revision));
-		if (print === null) return prints;
-		prints.push(print);
+		const key = keys.print(printRoot(release), date, revision);
+		const object = await store.read(key);
+		if (object === null) return { prints, blocked: null };
+		const classified = classifyPrintObject(key, object.body);
+		if (classified.kind !== 'print') {
+			const reason = classified.kind === 'misfiled' ? classified.reason : `${key} is a history`;
+			return { prints, blocked: { key, reason } };
+		}
+		prints.push(classified.print);
 	}
 }
 
-const PRINT_KEY = /^prints\/(\d{4}-\d{2}-\d{2})\/r(\d+)\.json$/;
+/**
+ * All revisions of a day's print, oldest first: the last valid revision is the one served, and
+ * an object past it that is not the next revision is reported by `misfiledPrints`.
+ */
+export async function readPrints(store: ObjectStore, date: string): Promise<DailyPrint[]> {
+	return (await readRevisions(store, date)).prints;
+}
+
+/** Objects for a date that no reader serves, reported under the design's problem code. */
+export type MisfiledPrints = { problem: 'misfiled_print'; objects: string[] };
+
+/** Whether `object` is misfiled for `date`: not what its key promises, or a history listing it. */
+function misfiledFor(object: PrintObject, date: string): boolean {
+	return (
+		object.kind === 'misfiled' || (object.kind === 'history' && object.foreignDates.includes(date))
+	);
+}
 
 /**
- * Every stored correction print (revision 2 or later), found by listing the print keys. It does
- * not rely on the history index, which can lag a correction whose history update failed.
+ * What no reader serves for `date`: print objects under a root other than the one its release
+ * owns, objects under that root that do not classify as its prints, and any history that is not
+ * one or lists the date under a root that does not own it. Reported so the monitor can alert;
+ * null when there are none.
+ */
+export async function misfiledPrints(
+	store: ObjectStore,
+	date: string,
+): Promise<MisfiledPrints | null> {
+	const canonical = canonicalRoot(date);
+	const found = await Promise.all(
+		PRINT_ROOTS.map(async (root) => {
+			const listed = await store.list(`${root}${date}/`);
+			const historyKey = keys.history(root);
+			const classified = await readInBatches(
+				root === canonical ? [...listed, historyKey] : [historyKey],
+				async (key) => {
+					const object = await store.read(key);
+					return object !== null && misfiledFor(classifyPrintObject(key, object.body), date)
+						? [key]
+						: [];
+				},
+			);
+			return root === canonical ? classified.flat() : [...listed, ...classified.flat()];
+		}),
+	);
+	const objects = found.flat();
+	return objects.length === 0 ? null : { problem: 'misfiled_print', objects };
+}
+
+const PRINT_KEY = /^(prints\/(?:[a-z]+\/)?)(\d{4}-\d{2}-\d{2})\/r(\d+)\.json$/;
+
+/**
+ * The dates with a print key of at least `minRevision` under `prefix`, counting only keys under
+ * the root that owns their date: an object under another root is never read.
+ */
+async function canonicalPrintDates(
+	store: ObjectStore,
+	prefix: string,
+	minRevision: number,
+): Promise<string[]> {
+	const dates = (await store.list(prefix)).flatMap((key) => {
+		const [, root, date, revision] = PRINT_KEY.exec(key) ?? [];
+		return date !== undefined && Number(revision) >= minRevision && root === canonicalRoot(date)
+			? [date]
+			: [];
+	});
+	return [...new Set(dates)];
+}
+
+/**
+ * Every served correction print (revision 2 or later), found by listing the print keys rather
+ * than the history index, which can lag a correction whose history update failed. Each day is
+ * read through `readPrints`, so a correction is listed exactly when its day serves it.
  */
 export async function readCorrectionPrints(store: ObjectStore): Promise<DailyPrint[]> {
-	const listed = (await store.list('prints/')).filter(
-		(key) => Number(PRINT_KEY.exec(key)?.[2]) > 1,
+	const days = await readInBatches(await canonicalPrintDates(store, 'prints/', 2), (date) =>
+		readPrints(store, date),
 	);
-	return readInBatches(listed, async (key) => {
-		const print = await readJson(store, printSchema, key);
-		if (print === null) throw new Error(`${key} is listed but could not be read`);
-		const expected = keys.print(print.date, print.revision);
-		if (key !== expected) throw new Error(`${key} holds the print for ${expected}`);
-		return print;
-	});
+	return days.flat().filter((print) => print.revision > 1);
+}
+
+/**
+ * A settlement day's receipts, each verified. A UTC day is one whole partition, read as v1
+ * always has and re-indexed from what was read; a zoned day spans two partitions, read through
+ * its window, and leaves their indexes to collect.
+ */
+async function readSettlementReceipts(
+	store: ObjectStore,
+	window: DayWindow,
+): Promise<RoundReceipt[]> {
+	const partition = utcPartitionOf(window);
+	if (partition === null) return readWindowReceipts(store, window);
+	const receipts = await readDayReceipts(store, partition);
+	await syncDayIndex(store, partition, { kind: 'settle', receipts });
+	return receipts;
 }
 
 export type SettleOutcome = { status: 'settled' | 'already_settled'; print: DailyPrint };
 
 /**
- * Builds and stores revision 1 of a day's print from its receipts, and rebuilds the day index
- * from those same receipts. Never overwrites a print. Every path ends by pointing the history
- * index at the day's latest revision.
+ * Builds and stores revision 1 of a day's print from its receipts. A UTC day also rebuilds its
+ * partition's day index from those same receipts; a zoned day leaves both partitions' indexes to
+ * collect. Never overwrites a print. Every path ends by pointing the history index at the day's
+ * latest revision.
  */
-export async function settleDay(store: ObjectStore, date: UtcDate): Promise<SettleOutcome> {
-	// Resolved first, so a day this build cannot settle never reaches the history index either.
+export async function settleDay(store: ObjectStore, date: DayLabel): Promise<SettleOutcome> {
 	const day = settlementDay(date);
-	const partition = partitionOfDay(day.window);
-	const settled = (await readPrints(store, date)).at(-1);
+	const { prints, blocked } = await readRevisions(store, date);
+	const settled = prints.at(-1);
 	if (settled !== undefined) {
 		await updateHistory(store, settled);
 		return { status: 'already_settled', print: settled };
 	}
-	const receipts = await readDayReceipts(store, partition);
-	await syncDayIndex(store, partition, { kind: 'settle', receipts });
+	// r1's key holds something that is not this day's print: nothing else is read or written.
+	if (blocked !== null) throw await settlementBlocked(store, date, blocked);
+	const receipts = await readSettlementReceipts(store, day.window);
 	const print = buildPrint(day, receipts.map(summarizeReceipt), { revision: 1 });
-	const written = await store.write(keys.print(date, 1), encode(print), JSON_TYPE, {
+	const key = keys.print(printRoot(day.release), date, 1);
+	const written = await store.write(key, encode(print), JSON_TYPE, {
 		kind: 'if-absent',
 	});
 	if (written === 'conflict') {
 		// Another settle won. Its print may not be readable yet; give it a few reads, then fail loudly.
 		for (let attempt = 0; attempt < MAX_CONDITIONAL_ATTEMPTS; attempt += 1) {
-			const winner = (await readPrints(store, date)).at(-1);
+			const raced = await readRevisions(store, date);
+			const winner = raced.prints.at(-1);
 			if (winner !== undefined) {
 				await updateHistory(store, winner);
 				return { status: 'already_settled', print: winner };
 			}
+			if (raced.blocked !== null) throw await settlementBlocked(store, date, raced.blocked);
 		}
 		throw new Error(`print ${date} r1 exists but could not be read`);
 	}
 	await updateHistory(store, print);
 	return { status: 'settled', print };
+}
+
+/** The report for a day whose r1 key is `blocked`, with everything else misfiled for it. */
+async function settlementBlocked(
+	store: ObjectStore,
+	date: string,
+	blocked: BlockedKey,
+): Promise<SettlementBlocked> {
+	const others = (await misfiledPrints(store, date))?.objects ?? [];
+	const objects = others.includes(blocked.key) ? others : [blocked.key, ...others];
+	return new SettlementBlocked(date, { problem: 'misfiled_print', objects });
+}
+
+/** A day whose revision-1 key is held by an object that is not its print, so it cannot settle. */
+export class SettlementBlocked extends Error {
+	constructor(
+		readonly date: string,
+		readonly misfiled: MisfiledPrints,
+	) {
+		super(`${date} cannot settle: its print key is held by ${misfiled.objects.join(', ')}`);
+	}
 }
 
 /** What the operator states when issuing a correction (scripts/correct.ts). */
@@ -526,14 +687,17 @@ export type CorrectionRequest = {
  */
 export async function correctDay(
 	store: ObjectStore,
-	date: UtcDate,
+	date: DayLabel,
 	request: CorrectionRequest,
 	clock: () => Date,
 ): Promise<DailyPrint> {
-	const revisions = await readPrints(store, date);
+	const { prints: revisions, blocked } = await readRevisions(store, date);
 	const latest = revisions.at(-1);
 	if (latest === undefined)
 		throw new Error(`${date} has not settled, so it has nothing to correct`);
+	if (blocked !== null) {
+		throw new Error(`${blocked.reason}, so ${date} cannot take a correction; nothing was changed`);
+	}
 	if (latest.printHash !== request.supersedesPrintHash) {
 		const superseded = revisions.find((p) => p.printHash === request.supersedesPrintHash);
 		throw new Error(
@@ -548,9 +712,7 @@ export async function correctDay(
 			`r${latest.revision} records methodology ${latest.methodologyVersion} (${latest.parameterHash}), not the one in effect on ${date}; a correction never changes a day's methodology`,
 		);
 	}
-	const partition = partitionOfDay(day.window);
-	const receipts = await readDayReceipts(store, partition);
-	await syncDayIndex(store, partition, { kind: 'settle', receipts });
+	const receipts = await readSettlementReceipts(store, day.window);
 	const revision = latest.revision + 1;
 	const body = printBody(day, receipts.map(summarizeReceipt));
 	// Finalizing checks issuedAt against the window, so the clock is read after aggregation,
@@ -559,7 +721,8 @@ export async function correctDay(
 		revision,
 		correction: { ...request, issuedAt: clock().toISOString() },
 	});
-	const written = await store.write(keys.print(date, revision), encode(print), JSON_TYPE, {
+	const key = keys.print(printRoot(day.release), date, revision);
+	const written = await store.write(key, encode(print), JSON_TYPE, {
 		kind: 'if-absent',
 	});
 	if (written === 'conflict')
@@ -575,151 +738,82 @@ export async function correctDay(
 
 const EMPTY_HISTORY: HistoryIndex = { schema: 'adi.history/1', days: [] };
 
-export async function readHistory(store: ObjectStore): Promise<HistoryIndex> {
-	return (await readJson(store, historyIndexSchema, keys.history())) ?? EMPTY_HISTORY;
+/** Settled days in a range, and any history object in it that could not be read. */
+export type HistoryRead = { days: HistoryEntry[]; misfiled: MisfiledPrints | null };
+
+/**
+ * The settled days in [from, to], read only from the histories of the roots that own a date in
+ * the range, and only for the days each root owns: an entry a stale deployment wrote under the
+ * wrong root is never served. A history that does not classify is reported, never thrown on.
+ */
+export async function readHistory(
+	store: ObjectStore,
+	from: DayLabel,
+	to: DayLabel,
+): Promise<HistoryRead> {
+	const owning = activeReleases().filter((release) => governsAnyOf(release, from, to));
+	const read = await Promise.all(
+		[...new Set(owning.map(printRoot))].map(async (root) => {
+			const key = keys.history(root);
+			const object = await store.read(key);
+			const classified = object === null ? null : classifyPrintObject(key, object.body);
+			if (classified === null) return { days: [], misfiled: [] };
+			if (classified.kind === 'history') return { days: classified.days, misfiled: [] };
+			return { days: [], misfiled: [key] };
+		}),
+	);
+	const misfiled = read.flatMap((root) => root.misfiled);
+	return {
+		days: read
+			.flatMap((root) => root.days)
+			.filter((day) => day.date >= from && day.date <= to)
+			.sort((x, y) => x.date.localeCompare(y.date)),
+		misfiled: misfiled.length === 0 ? null : { problem: 'misfiled_print', objects: misfiled },
+	};
 }
 
+/**
+ * Points a root's history at `print`, never regressing a day's revision. The history is only an
+ * index of the root's prints, so one that does not classify is rebuilt from them; entries for
+ * dates the root does not own are dropped.
+ */
 async function updateHistory(store: ObjectStore, print: DailyPrint): Promise<void> {
 	const entry = historyEntryOf(print);
-	await updateJson(store, historyIndexSchema, keys.history(), EMPTY_HISTORY, (history) => {
-		const listed = history.days.find((d) => d.date === entry.date);
-		if (listed !== undefined && listed.revision > entry.revision) return history; // never regress
-		return {
-			...history,
-			days: [...history.days.filter((d) => d.date !== entry.date), entry].sort((x, y) =>
-				x.date.localeCompare(y.date),
-			),
-		};
-	});
-}
-
-export type FreezeOutcome = { status: 'frozen' | 'already_frozen'; print: IndicativePrint };
-
-/**
- * Builds and stores the indicative print of ET day `label` (design §4), once its admission has
- * closed and admitted writes have drained: at or after the day's end plus the settlement cutoff.
- * Written once and never revised; a second run returns the stored print.
- */
-export async function freezeIndicativeDay(
-	store: ObjectStore,
-	label: string,
-	now: Date,
-): Promise<FreezeOutcome> {
-	const release = indicativeReleaseFor(label);
-	const admission = release === null ? null : indicativeAdmissionFor(release);
-	if (release === null || admission === null) throw new Error(`${label} has no indicative day`);
-	const window = dayWindow(release, label);
-	const freezesAt = indicativeFreezesAt(release, label);
-	if (now < freezesAt) {
-		throw new Error(`${label} (ET, indicative) freezes at ${freezesAt.toISOString()}`);
-	}
-	const key = keys.indicative(release.parameters.version, label);
-	const stored = await readIndicativeAt(store, key, release, label);
-	if (stored !== null) return { status: 'already_frozen', print: stored };
-	const rounds = await readIndicativeRounds(store, window, admission);
-	const print = buildIndicativePrint({ release, window }, rounds, admission);
-	if ((await store.write(key, encode(print), JSON_TYPE, { kind: 'if-absent' })) === 'written') {
-		return { status: 'frozen', print };
-	}
-	// Another run froze it first. Its print may not be readable yet; give it a few reads.
+	const release = methodologyOf(print.methodologyVersion, print.parameterHash);
+	if (release === null) throw new Error(`${print.date} records an unknown methodology`);
+	const root = printRoot(release);
+	const key = keys.history(root);
 	for (let attempt = 0; attempt < MAX_CONDITIONAL_ATTEMPTS; attempt += 1) {
-		const winner = await readIndicativeAt(store, key, release, label);
-		if (winner !== null) return { status: 'already_frozen', print: winner };
-	}
-	throw new Error(`indicative print ${label} exists but could not be read`);
-}
-
-/** The indicative print of ET day `label`, or null when it has none or it is not frozen yet. */
-export async function readIndicativePrint(
-	store: ObjectStore,
-	label: string,
-): Promise<IndicativePrint | null> {
-	const release = indicativeReleaseFor(label, { includeWithdrawn: true });
-	if (release === null) return null;
-	return readIndicativeAt(
-		store,
-		keys.indicative(release.parameters.version, label),
-		release,
-		label,
-	);
-}
-
-/**
- * The indicative print stored at `key`, which must be the print of `label` under `release`: an
- * object for another date or release at this key is corruption, never served.
- */
-async function readIndicativeAt(
-	store: ObjectStore,
-	key: string,
-	release: Methodology,
-	label: string,
-): Promise<IndicativePrint | null> {
-	const print = await readJson(store, indicativePrintSchema, key);
-	if (print === null) return null;
-	if (print.date !== label || !isUnder(release, print)) {
-		throw new Error(
-			`${key} holds the indicative print of ${print.date} under ${print.methodologyVersion}`,
-		);
-	}
-	return print;
-}
-
-/**
- * The rounds of an indicative day's window, read across its UTC partitions with ids filtered to
- * the window first. A receipt recording an identity the admission policy does not accept, known
- * to this code or not, is kept as a foreign round: it takes no slot and suspends the day. An
- * admitted receipt counts only after it rebuilds, from its archived body, under the release and
- * adapter it records, so a receipt claiming a valid observation it cannot back never counts.
- * Anything unreadable, failing its hash, or not rebuilding stops the run.
- */
-async function readIndicativeRounds(
-	store: ObjectStore,
-	window: DayWindow,
-	admission: IndicativeAdmission,
-): Promise<RoundSummary[]> {
-	const inWindow = (id: RoundId) => {
-		const parsed = parseRoundId(id);
-		return parsed !== null && slotIndexIn(window, parsed.slotStart) !== null;
-	};
-	const listed = await Promise.all(
-		partitionsOf(window).map(async (partition) =>
-			(await listReceiptIds(store, partition))
-				.filter(inWindow)
-				.map((id) => keys.receipt(partition, id)),
-		),
-	);
-	return readInBatches(listed.flat(), async (key) => {
 		const object = await store.read(key);
-		if (object === null) throw new Error(`receipt ${key} is listed but could not be read`);
-		const receipt = decodeReceipt(key, object);
-		if (!receiptHashMatches(receipt))
-			throw new Error(`receipt ${key} does not match its receiptHash`);
-		if (!admits(admission.accepts, receipt)) return summarizeReceipt(receipt);
-		const problems = verifyRound(receipt, await readRaw(store, receipt));
-		if (problems.length > 0)
-			throw new Error(`receipt ${key} does not rebuild: ${problems.join('; ')}`);
-		return summarizeReceipt(receipt);
-	});
+		const classified = object === null ? null : classifyPrintObject(key, object.body);
+		const days =
+			classified === null
+				? []
+				: classified.kind === 'history'
+					? classified.days
+					: await rebuiltHistory(store, root);
+		const listed = days.find((d) => d.date === entry.date);
+		const next =
+			listed !== undefined && listed.revision > entry.revision
+				? days
+				: [...days.filter((d) => d.date !== entry.date), entry];
+		const body = encode({
+			...EMPTY_HISTORY,
+			days: next.sort((x, y) => x.date.localeCompare(y.date)),
+		});
+		if (object !== null && Buffer.from(body).equals(Buffer.from(object.body))) return;
+		const condition: WriteCondition =
+			object === null ? { kind: 'if-absent' } : { kind: 'if-version', version: object.version };
+		if ((await store.write(key, body, JSON_TYPE, condition)) === 'written') return;
+	}
+	throw new Error(`${key}: gave up after ${MAX_CONDITIONAL_ATTEMPTS} conflicting writes`);
 }
 
-const INDICATIVE_KEY = /^indicative\/([^/]+)\/(\d{4}-\d{2}-\d{2})\.json$/;
-
-/** Every frozen indicative print with a date in [from, to], oldest first. */
-export async function readIndicativePrints(
-	store: ObjectStore,
-	from: string,
-	to: string,
-): Promise<IndicativePrint[]> {
-	const listed = (await store.list(keys.indicativeRoot())).filter((key) => {
-		const date = INDICATIVE_KEY.exec(key)?.[2];
-		return date !== undefined && date >= from && date <= to;
-	});
-	const prints = await readInBatches(listed, async (key) => {
-		const print = await readJson(store, indicativePrintSchema, key);
-		if (print === null) throw new Error(`${key} is listed but could not be read`);
-		if (key !== keys.indicative(print.methodologyVersion, print.date))
-			throw new Error(`${key} holds the indicative print for ${print.date}`);
-		return print;
-	});
-	return prints.sort((x, y) => x.date.localeCompare(y.date));
+/** A root's history rebuilt from its prints: one entry per day, at its served revision. */
+async function rebuiltHistory(store: ObjectStore, root: PrintRoot): Promise<HistoryEntry[]> {
+	const dates = (await canonicalPrintDates(store, root, 1)).filter(
+		(date) => canonicalRoot(date) === root,
+	);
+	const latest = await readInBatches(dates, async (date) => (await readPrints(store, date)).at(-1));
+	return latest.flatMap((print) => (print === undefined ? [] : [historyEntryOf(print)]));
 }

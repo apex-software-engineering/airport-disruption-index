@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import { correctionOf, DAY, invalidRound, validRange, validRound } from '@/test/rounds';
 
-import { settlementDay } from './calendar';
+import { dayWindow, settlementDay } from './calendar';
 import { hashJson } from './json';
 import { buildPrint, historyEntryOf, printHashMatches } from './print';
-import { METHODOLOGY_V2 } from './releases';
+import { METHODOLOGY_V2, RELEASES } from './releases';
 import { printSchema, type Correction } from './schemas';
 
 const issuesOf = (value: unknown) =>
@@ -146,6 +146,59 @@ describe('buildPrint', () => {
 		expect(issuesOf(zoned)).toEqual([
 			'adi.daily-print/1 holds UTC days only; 2.0.0 uses America/New_York days',
 		]);
+	});
+
+	it('holds a zoned settlement day as /2, stating and checking its standing, zone and window', () => {
+		const v2 = RELEASES[1];
+		if (v2 === undefined) throw new Error('the registry lists v2');
+		const day = { release: v2, window: dayWindow(v2, '2027-01-05') };
+		const print = buildPrint(day, [], { revision: 1 });
+		if (print.schema !== 'adi.daily-print/2') throw new Error('a zoned day is a /2 print');
+		expect(print).toMatchObject({
+			schema: 'adi.daily-print/2',
+			standing: 'settlement',
+			day: 'America/New_York',
+			window: { start: '2027-01-05T05:00:00.000Z', end: '2027-01-06T05:00:00.000Z' },
+			settlesAt: '2027-01-06T05:30:00.000Z',
+		});
+		expect(
+			issuesOf({ ...print, window: { ...print.window, start: '2027-01-05T00:00:00.000Z' } }),
+		).toEqual(['window is not the one 2.0.0 gives 2027-01-05']);
+		expect(issuesOf({ ...print, settlesAt: '2027-01-06T00:30:00.000Z' })).toEqual([
+			'settlesAt is 2027-01-06T00:30:00.000Z, but 2027-01-05 settles at 2027-01-06T05:30:00.000Z',
+		]);
+		// An indicative print, or a /2 print recording v1, is never a settlement print.
+		expect(printSchema.safeParse({ ...print, standing: 'indicative' }).success).toBe(false);
+		const v1 = settlementDay(DAY).release;
+		expect(
+			issuesOf({ ...print, methodologyVersion: '1.0.0', parameterHash: v1.parameterHash }),
+		).toEqual(['adi.daily-print/2 holds zoned days; 1.0.0 uses UTC days']);
+	});
+
+	it('binds a /1 print’s slot count to its UTC day, even when rehashed', () => {
+		const print = buildPrint(settlementDay(DAY), rounds, { revision: 1 });
+		const { printHash, ...unsigned } = {
+			...print,
+			coverage: { ...print.coverage, slotsPerDay: 287 },
+		};
+		expect(issuesOf({ ...unsigned, printHash: hashJson(unsigned) })).toEqual([
+			'coverage.slotsPerDay is 287, but 2026-11-17 has 288 slots',
+		]);
+	});
+
+	it('binds a zoned print’s slot count to its window, even when rehashed', () => {
+		const v2 = RELEASES[1];
+		if (v2 === undefined) throw new Error('the registry lists v2');
+		const spring = buildPrint({ release: v2, window: dayWindow(v2, '2027-03-14') }, [], {
+			revision: 1,
+		});
+		expect(spring.coverage.slotsPerDay).toBe(276);
+		const { printHash, ...unsigned } = {
+			...spring,
+			coverage: { ...spring.coverage, slotsPerDay: 288 },
+		};
+		const forged = { ...unsigned, printHash: hashJson(unsigned) };
+		expect(issuesOf(forged)).toEqual(['coverage.slotsPerDay is 288, but 2027-03-14 has 276 slots']);
 	});
 
 	it('detects a tampered print', () => {

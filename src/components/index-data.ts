@@ -4,6 +4,7 @@
  */
 import type { RoundReceipt, SettledStatus } from '@/lib/index/schemas';
 import { FIRST_INDICATIVE_DAY, indicativeSeriesPublished } from '@/lib/index/indicative';
+import { firstSettlementDay } from '@/lib/index/methodology';
 import { addDays, utcDateOf } from '@/lib/index/time';
 import { readHistory, readReceipt } from '@/server/archive';
 import { storeFromEnv } from '@/server/storage';
@@ -49,7 +50,7 @@ export async function readSiteData(now: Date): Promise<{
 	const yesterday = addDays(today, -1);
 	const [current, historyIndex, indicative] = await Promise.all([
 		currentView(store, now),
-		readHistory(store),
+		readHistory(store, firstSettlementDay(), yesterday),
 		indicativeSeriesPublished()
 			? indicativeHistoryView(
 					store,

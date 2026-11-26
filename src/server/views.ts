@@ -22,12 +22,12 @@ import {
 	identityOf,
 	methodologyOf,
 	settlementReleaseOrNull,
+	type DayTimeZone,
 	type Methodology,
 } from '@/lib/index/methodology';
 import type {
 	Correction,
 	DailyPrint,
-	HistoryIndex,
 	IndicativePrint,
 	RoundReceipt,
 	RoundSummary,
@@ -36,13 +36,15 @@ import type {
 import { addDays, parseRoundId, utcDateOf, type RoundId, type UtcDate } from '@/lib/index/time';
 
 import {
+	misfiledPrints,
+	type HistoryRead,
+	type MisfiledPrints,
 	readCorrectionPrints,
 	readDayIndex,
 	readHistory,
-	readIndicativePrint,
-	readIndicativePrints,
 	readPrints,
 } from './archive';
+import { readIndicativePrint, readIndicativePrints } from './indicative-archive';
 import { CACHE } from './http';
 import type { ObjectStore } from './storage';
 
@@ -97,6 +99,7 @@ async function provisionalView(store: ObjectStore, today: SettlementDay, now: Da
 		date: deadlines.date,
 		asOf: now.toISOString(),
 		status: 'provisional' as const,
+		...settlementEnvelope(today),
 		settlesAt: deadlines.settlesAt,
 		publishBy: deadlines.publishBy,
 		methodologyVersion: day.methodology.parameters.version,
@@ -125,13 +128,16 @@ function deadlinesOf(window: DayWindow) {
 
 /** The summaries of every stored round whose slot is in `window`, across its partitions. */
 async function readWindowRounds(store: ObjectStore, window: DayWindow): Promise<RoundSummary[]> {
-	const indexes = await Promise.all(partitionsOf(window).map((date) => readDayIndex(store, date)));
-	return indexes
-		.flatMap((index) => index.rounds)
-		.filter((round) => {
+	const read = await Promise.all(
+		partitionsOf(window).map(async (date) => ({ date, index: await readDayIndex(store, date) })),
+	);
+	// A summary counts only in its own partition's index, so a copied one is never a second round.
+	return read.flatMap(({ date, index }) =>
+		index.rounds.filter((round) => {
 			const id = parseRoundId(round.roundId);
-			return id !== null && slotIndexIn(window, id.slotStart) !== null;
-		});
+			return id !== null && id.partition === date && slotIndexIn(window, id.slotStart) !== null;
+		}),
+	);
 }
 
 /** The most recently fetched of `rounds`, as the heartbeat reports it. */
@@ -173,40 +179,86 @@ function unrecognizedListsOf(rounds: readonly RoundSummary[]): UnrecognizedSight
 	return [...sightings.values()];
 }
 
-export type DayView =
-	| { date: UtcDate; status: 'settled'; print: DailyPrint; revisions: DailyPrint[] }
-	| { date: UtcDate; status: 'unsettled'; settlesAt: string; publishBy: string };
+/** The zone a settlement day is read in: `UTC` for v1, the IANA zone for a zoned release. */
+function dayZoneOf(release: Methodology): 'UTC' | DayTimeZone {
+	const { day } = release.parameters;
+	return day === 'utc' ? 'UTC' : day.timeZone;
+}
+
+/**
+ * What every settlement response states beside the data, outside any hashed print (design §5):
+ * its standing, the zone its date is read in and the exact window, so a v1 `/1` print, which
+ * states neither, keeps its bytes while every client still sees both.
+ */
+function settlementEnvelope({ release, window }: SettlementDay) {
+	return {
+		standing: 'settlement' as const,
+		methodologyVersion: release.parameters.version,
+		day: dayZoneOf(release),
+		window: windowOf(window),
+	};
+}
+
+type SettlementEnvelope = ReturnType<typeof settlementEnvelope>;
+
+export type DayView = SettlementEnvelope & {
+	date: string;
+	/** Objects for this date no reader serves (a stale write), under `misfiled_print`. */
+	misfiled?: MisfiledPrints;
+} & (
+		| { status: 'settled'; print: DailyPrint; revisions: DailyPrint[] }
+		| { status: 'unsettled'; settlesAt: string; publishBy: string }
+	);
 
 /** A day's current print (latest revision) with every revision kept visible. */
-export async function dayView(store: ObjectStore, date: UtcDate): Promise<DayView> {
-	const revisions = await readPrints(store, date);
+export async function dayView(store: ObjectStore, date: string): Promise<DayView> {
+	const day = settlementDay(date);
+	const [revisions, misfiled] = await Promise.all([
+		readPrints(store, date),
+		misfiledPrints(store, date),
+	]);
+	const stated = {
+		date,
+		...settlementEnvelope(day),
+		...(misfiled === null ? {} : { misfiled }),
+	};
 	const print = revisions.at(-1);
 	if (print === undefined) {
-		const deadlines = deadlinesOf(settlementDay(date).window);
+		const deadlines = deadlinesOf(day.window);
 		return {
-			date,
+			...stated,
 			status: 'unsettled',
 			settlesAt: deadlines.settlesAt,
 			publishBy: deadlines.publishBy,
 		};
 	}
-	return { date, status: 'settled', print, revisions };
+	return { ...stated, status: 'settled', print, revisions };
 }
 
 export async function historyView(store: ObjectStore, from: UtcDate, to: UtcDate) {
-	return historyWindow(await readHistory(store), from, to);
+	return historyWindow(await readHistory(store, from, to), from, to);
 }
 
-/** The history view of [from, to] from an index already read, so one read serves every window. */
-export function historyWindow({ days }: HistoryIndex, from: UtcDate, to: UtcDate) {
+/** The history view of [from, to] from a history already read over a span that covers it. */
+export function historyWindow({ days, misfiled }: HistoryRead, from: UtcDate, to: UtcDate) {
 	return {
 		from,
 		to,
 		/** In effect on `to` (null before the first release); each print records its own. */
 		methodologyVersion: settlementReleaseOrNull(to)?.parameters.version ?? null,
+		/** A history object in the range that could not be read: its days are missing here. */
+		...(misfiled === null ? {} : { misfiled }),
 		days: days
 			.filter((day) => day.date >= from && day.date <= to)
-			.map((day) => ({ ...day, url: `${API_BASE}/days/${day.date}` })),
+			.map((day) => {
+				// History lists only days whose release owns them (archive.readHistory).
+				const settled = settlementDay(day.date);
+				return {
+					...day,
+					...settlementEnvelope(settled),
+					url: `${API_BASE}/days/${day.date}`,
+				};
+			}),
 	};
 }
 
@@ -300,12 +352,13 @@ export async function indicativeHistoryView(store: ObjectStore, from: string, to
 	};
 }
 
-export type CorrectionEntry = Correction & {
-	date: UtcDate;
-	revision: number;
-	printHash: string;
-	url: string;
-};
+export type CorrectionEntry = Correction &
+	SettlementEnvelope & {
+		date: string;
+		revision: number;
+		printHash: string;
+		url: string;
+	};
 
 /** Every stored correction print (revision 2 or later), most recently issued first. */
 export async function correctionsView(store: ObjectStore): Promise<CorrectionEntry[]> {
@@ -313,7 +366,16 @@ export async function correctionsView(store: ObjectStore): Promise<CorrectionEnt
 		.flatMap(({ date, revision, printHash, correction }) =>
 			correction === null
 				? []
-				: [{ date, revision, printHash, ...correction, url: `${API_BASE}/days/${date}` }],
+				: [
+						{
+							date,
+							...settlementEnvelope(settlementDay(date)),
+							revision,
+							printHash,
+							...correction,
+							url: `${API_BASE}/days/${date}`,
+						},
+					],
 		)
 		.sort((x, y) => y.issuedAt.localeCompare(x.issuedAt));
 }

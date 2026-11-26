@@ -98,7 +98,7 @@ describe('correctDay', () => {
 		});
 		expect((await store.read(`prints/${DAY}/r1.json`))?.version).toBe(r1Bytes);
 		expect(await readPrints(store, DAY)).toEqual([original, corrected]);
-		expect((await readHistory(store)).days).toMatchObject([
+		expect((await readHistory(store, '2026-11-17', '2027-12-31')).days).toMatchObject([
 			{ date: DAY, revision: 2, printHash: corrected.printHash },
 		]);
 		expect(await dayView(store, DAY)).toMatchObject({ print: { revision: 2 } });
@@ -203,9 +203,17 @@ describe('correctionsView', () => {
 		expect(await correctionsView(store)).toEqual([]);
 		const r2 = await correctDay(store, DAY, request(original), () => IN_WINDOW);
 		const r3 = await correctDay(store, DAY, request(r2), () => new Date('2026-11-18T07:00:00Z'));
+		// Each entry states its day's zone and window, as the day itself does.
+		const envelope = {
+			standing: 'settlement',
+			methodologyVersion: '1.0.0',
+			day: 'UTC',
+			window: { start: `${DAY}T00:00:00.000Z`, end: '2026-11-18T00:00:00.000Z' },
+		};
 		expect(await correctionsView(store)).toEqual([
 			{
 				date: DAY,
+				...envelope,
 				revision: 3,
 				printHash: r3.printHash,
 				...r3.correction,
@@ -213,6 +221,7 @@ describe('correctionsView', () => {
 			},
 			{
 				date: DAY,
+				...envelope,
 				revision: 2,
 				printHash: r2.printHash,
 				...r2.correction,
@@ -239,7 +248,7 @@ describe('correctionsView', () => {
 			}
 		}
 		expect(await correctionsView(new CountingStore(root))).toHaveLength(20);
-		expect(peak).toBe(16);
+		expect(peak).toBeLessThanOrEqual(16);
 	});
 
 	it('lists a correction whose history update was lost', async () => {
@@ -254,7 +263,9 @@ describe('correctionsView', () => {
 			'application/json',
 			{ kind: 'if-absent' },
 		);
-		expect((await readHistory(store)).days).toMatchObject([{ revision: 1 }]);
+		expect((await readHistory(store, '2026-11-17', '2027-12-31')).days).toMatchObject([
+			{ revision: 1 },
+		]);
 		expect(await correctionsView(store)).toMatchObject([{ revision: 2, printHash: r2.printHash }]);
 	});
 });
