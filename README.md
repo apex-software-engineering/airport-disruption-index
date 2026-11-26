@@ -121,10 +121,10 @@ next 00:00Z first; the docs test fails until the dated text moves with it. The n
 `before-notice` passages), and a later cleanup PR removes them.
 
 **Notice readback.** After a methodology notice deploys, run the notice-readback workflow
-(`.github/workflows/notice-readback.yml`) by hand; it also runs every 15 minutes, and its first job
-stops at once before the notice instant or once the record's proof reaches a Bitcoin block. A run
-that sees the notice on `/incidents` (the dated entry and the hash), `/methodology` (the release's
-rules) and `/api/v1/methodology` (`upcoming`) writes the single record
+(`.github/workflows/notice-readback.yml`) by hand (its 15-minute schedule ran until step 2 removed
+it); its first job stops at once before the notice instant or once the record's proof reaches a
+Bitcoin block. A run that sees the notice on `/incidents` (the dated entry and the hash),
+`/methodology` (the release's rules) and `/api/v1/methodology` (`upcoming`) writes the single record
 `notices/{version}.readback.json` and, beside it, the three response bodies it hashes
 (`.incidents.html`, `.methodology.html`, `.methodology.json`), stamps the record and publishes them;
 a run that does not writes nothing. N is the latest of the responses' `Date` headers, the run's
