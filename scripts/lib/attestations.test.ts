@@ -22,7 +22,7 @@ import {
 	readPins,
 	verifyAttested,
 } from './attestations';
-import { CannotVerify, Mismatch, getApi } from './public-api';
+import { CannotVerify, Mismatch, Unattested, getApi } from './public-api';
 
 const receipt = collectedReceipt({
 	fetchedAt: new Date('2026-11-17T20:45:02.123Z'),
@@ -241,6 +241,36 @@ describe('verifyAttested', () => {
 		await expect(
 			verifyAttested('https://example.test', branch.checkout, '2026-11-17'),
 		).rejects.toThrow(/is revision 2; .*2026-11-17\.r2\.json is not on the branch/);
+	});
+});
+
+describe('an unattested live print (Sol #41 r2, finding 2; Opus finding 2)', () => {
+	it('is UNATTESTED before any proof is read, so an explorer outage cannot stop attesting it', async () => {
+		const branch = branchCheckout();
+		const { proof } = syntheticProof(new TextEncoder().encode(pin1), {
+			kind: 'bitcoin',
+			height: 100,
+		});
+		branch.commit({ '2026-11-17.r1.json': pin1, '2026-11-17.r1.json.ots': proof });
+		const explorer: string[] = [];
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string) => {
+				if (url.endsWith('/api/v1/days/2026-11-17'))
+					return Response.json({
+						date: '2026-11-17',
+						status: 'settled',
+						print: r2,
+						revisions: [r1, r2],
+					});
+				explorer.push(url);
+				return new Response('unavailable', { status: 503 });
+			}),
+		);
+		await expect(
+			verifyAttested('https://example.test', branch.checkout, '2026-11-17'),
+		).rejects.toThrow(Unattested);
+		expect(explorer).toEqual([]);
 	});
 });
 

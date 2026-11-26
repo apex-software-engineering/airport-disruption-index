@@ -131,6 +131,7 @@ describe('dayResponseProblems', () => {
 		const conflicting = buildPrint(settlementDay('2026-11-17'), [], { revision: 1 });
 		expect(dayResponseProblems('2026-11-17', conflicting, [first, conflicting])).toEqual([
 			'revisions[1] is revision 1, expected 2',
+			`revisions[1] supersedes nothing, not revisions[0]'s printHash ${first.printHash}`,
 		]);
 	});
 

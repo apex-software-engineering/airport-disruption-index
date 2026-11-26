@@ -477,6 +477,30 @@ that day and compares; a `suspended` mixed-methodology day reproduces like any o
 (unreachable, not found, or published under a methodology version or feed adapter this checkout does
 not include; check out a later commit, or the tag for that version, e.g. `git checkout v1.0.0`).
 
+<!-- notice 2.0.0 -->
+
+An indicative ET day, once its series is published, is proved both ways against the v1 attestations
+(with the `attestations` branch checked out as in [Attestations](#attestations)):
+`npm run reproduce -- --indicative <date> --dir attestations`. It rebuilds the frozen print from its
+rounds, then requires the `(roundId, receiptHash)` pairs it lists to equal exactly those the
+reference v1 prints of its UTC days list inside its window, invalid receipts included. Each UTC
+day's reference is its latest revision that verifies on its own: attested, matching its attestation,
+and timestamped in a Bitcoin block before that revision's cutoff. A revision that is unattested,
+pending or late is not a reference, and both UTC days are always checked. Exit codes: 0 `MATCH`; 1
+`MISMATCH` (the sets differ, revisions of one v1 day list different receipts or do not chain, an
+attestation conflicts with the API, or the indicative day is misfiled or still not served when due);
+2 could not verify; 4 `PENDING` (a UTC day has no verified revision yet). A mismatch on either UTC
+day wins over the other's pending or could-not-verify. The attest workflow runs it for every
+indicative day in its 7-day window and fails on a `MISMATCH`.
+
+An indicative day is due 2 hours after its freeze time. A day that froze before its release's notice
+instant is due 12 hours after that instant instead: the settle runs look back only a few days, so
+the operator backfills the earlier ones right after the instant, with
+`npm run indicative -- --from <first indicative day>` (it refuses production before the instant),
+within those 12 hours. A later or postponed notice moves the allowance with its instant.
+
+<!-- /notice -->
+
 ### Attestations
 
 Receipts and prints live in the operator's storage, so on their own the hashes prove only that the
