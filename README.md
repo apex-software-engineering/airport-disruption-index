@@ -113,6 +113,16 @@ it with a new commit: `git worktree add /tmp/adi-attestations origin/attestation
 it. Never edit or remove a `{date}.r{revision}.json` file: `verify-attestation` treats any change to
 one after its first commit as a failure. A proof (`.ots`) may change only by `ots upgrade`.
 
+**Notice readback.** After a methodology notice deploys, run the notice-readback workflow
+(`.github/workflows/notice-readback.yml`) by hand; it also runs every 15 minutes. A run that sees
+the notice on both `/incidents` and `/api/v1/methodology` (`upcoming`) writes the single record
+`notices/{version}.readback.json` (N = the latest of the responses' `Date` headers and the run's
+start), stamps it, and publishes both; a run that does not writes nothing. Later runs upgrade the
+proof until it reaches a Bitcoin block (B). The record is never rewritten; if its proof is ever
+lost, stamp the same bytes again. Locally:
+`npm run notice-readback -- 2.0.0 --run-id <id> --run-started-at <ISO> --dir <checkout>` (exit 3:
+not public yet).
+
 ## Monitoring
 
 An external check runs outside Vercel every 5 minutes (a launchd job on a separate host, not part of

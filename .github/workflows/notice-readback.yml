@@ -1,0 +1,166 @@
+name: Notice readback
+
+# Records N, the instant a methodology notice is first shown to be public (design
+# docs/design/v2-eastern-day.md, section 2). Run by hand after the step-1 notice deploys, and every
+# 15 minutes until it succeeds. A run that cannot see the notice on both /incidents and
+# /api/v1/methodology writes nothing. The one successful run writes the write-once record
+# notices/{version}.readback.json, stamps it with OpenTimestamps, and appends both to the
+# attestations branch. Later runs only upgrade the record's proof until it reaches a Bitcoin block
+# (whose time is B). Neither job holds a storage or deployment secret.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: notice-readback
+  cancel-in-progress: false
+
+env:
+  NEXT_TELEMETRY_DISABLED: '1'
+  BASE_URL: https://airports.apexsofteng.com
+  PUBLICATION_BRANCH: attestations
+  VERSION: '2.0.0'
+
+jobs:
+  readback:
+    name: Read the notice back and stamp the record
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Reads the run's start time, which N may not precede.
+      actions: read
+    outputs:
+      changed: ${{ steps.changes.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install the OpenTimestamps client
+        run: pipx install opentimestamps-client==0.8.0
+
+      # The branch must exist: the attest workflow creates it with the first attestation.
+      - name: Check out the publication branch
+        run: |
+          git clone --quiet --single-branch --branch "$PUBLICATION_BRANCH" \
+            "https://github.com/$GITHUB_REPOSITORY" attestations
+
+      - name: Read back, or upgrade the proof of the record already written
+        id: readback
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          record="attestations/notices/$VERSION.readback.json"
+          if [[ -e "$record" ]]; then
+            ots upgrade "$record.ots" || echo "$record.ots: not complete yet (pending or unreachable calendar)"
+            rm -f "$record.ots.bak"
+            exit 0
+          fi
+          started="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .run_started_at)"
+          status=0
+          npm run -s notice-readback -- "$VERSION" --run-id "$GITHUB_RUN_ID" \
+            --run-started-at "$started" --dir attestations --base-url "$BASE_URL" || status=$?
+          if [[ $status == 3 && "$EVENT" == schedule ]]; then
+            echo "::notice::the $VERSION notice is not public yet; the next scheduled run tries again"
+            exit 0
+          fi
+          if [[ $status != 0 ]]; then
+            echo "::error::readback did not succeed (exit $status); nothing was written"
+            exit 1
+          fi
+          ots stamp --timeout 30 "$record"
+          ots info "$record.ots"
+
+      # Only the record and its proof go out, and only once the proof commits to the record.
+      - name: Collect and check changes
+        id: changes
+        run: |
+          name="notices/$VERSION.readback.json"
+          mkdir -p outgoing/notices
+          changed=()
+          while IFS= read -r line; do
+            path="${line:3}"
+            if [[ "$path" == "$name" || "$path" == "$name.ots" ]]; then
+              changed+=("$path")
+            else
+              echo "::error::this run produced $path, which it does not publish"
+              exit 1
+            fi
+          done < <(git -C attestations status --porcelain --untracked-files=all)
+          if (( ${#changed[@]} == 0 )); then
+            echo "Nothing new to publish"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          npm run -s check-proofs -- attestations "$name" | tee proofs.log
+          grep -qxF "OK $name" proofs.log || { echo "::error::$name: proof did not pass its check"; exit 1; }
+          cp "attestations/$name" "attestations/$name.ots" outgoing/notices/
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.changes.outputs.changed == 'true'
+        with:
+          name: notice-readback
+          path: outgoing/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish to the attestations branch
+    needs: readback
+    if: ${{ needs.readback.result == 'success' && needs.readback.outputs.changed == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Pushes only to the publication branch, which its ruleset keeps append-only.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: notice-readback
+          path: incoming
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.PUBLICATION_BRANCH }}
+          path: publication
+
+      # Append-only: the record is added once, with its proof, and is never rewritten; a proof may
+      # only be added or upgraded beside it.
+      - name: Publish
+        run: |
+          cd publication
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          name="notices/$VERSION.readback.json"
+          mkdir -p notices
+          if [[ -e "$name" ]]; then
+            cmp -s "../incoming/$name" "$name" || { echo "::error::$name would be rewritten"; exit 1; }
+            message="Upgrade the $VERSION notice readback proof"
+          else
+            cp "../incoming/$name" "$name"
+            message="Record the $VERSION notice readback"
+          fi
+          cp "../incoming/$name.ots" "$name.ots"
+          git add --all
+          if git diff --cached --quiet; then
+            echo "Nothing to publish"
+            exit 0
+          fi
+          git commit --quiet -m "$message"
+          git show --stat --oneline HEAD
+          git pull --quiet --rebase origin "$PUBLICATION_BRANCH"
+          git push origin "HEAD:refs/heads/$PUBLICATION_BRANCH"

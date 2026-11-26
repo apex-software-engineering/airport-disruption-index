@@ -187,8 +187,10 @@ jobs:
         id: changes
         run: |
           pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}\.r[0-9]+\.json(\.ots)?$'
+          # Notice readback records are the notice-readback workflow's (notice-readback.yml).
+          known='^notices/[0-9]+\.[0-9]+\.[0-9]+\.readback\.json(\.ots)?$'
           while IFS= read -r name; do
-            [[ "$name" =~ $pattern ]] || echo "::warning::$PUBLICATION_BRANCH holds $name, which is not an attestation file"
+            [[ "$name" =~ $pattern || "$name" =~ $known ]] || echo "::warning::$PUBLICATION_BRANCH holds $name, which is not an attestation file"
           done < <(git -C attestations ls-files)
           withheld=0
           changed=()
