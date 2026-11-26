@@ -7,6 +7,7 @@
 import {
 	activeReleases,
 	governs,
+	isActiveIn,
 	isNoticePublished,
 	SETTLEMENT_CUTOFF_MINUTES,
 	settlementReleaseFor,
@@ -77,15 +78,52 @@ export function dayAt(instant: Date): DayAt {
 		const label = labelAt(release, instant);
 		if (governs(release, label)) return { kind: 'day', release, window: dayWindow(release, label) };
 	}
-	for (const [index, release] of releases.entries()) {
-		const successor = releases[index + 1];
-		if (successor === undefined || release.effectiveUntil === null) continue;
-		const previous = dayWindow(release, release.effectiveUntil);
-		const next = dayWindow(successor, successor.effectiveFrom);
+	for (const cutover of activatedCutovers(releases)) {
+		const { previous, next } = cutover;
 		if (instant >= previous.end && instant < next.start)
 			return { kind: 'transition', previous, next };
 	}
 	throw new Error(`no methodology is in effect at ${instant.toISOString()}`);
+}
+
+/**
+ * An activated cutover: a release with an `effectiveUntil` and the active successor that takes
+ * over. Its transition interval is `[previous.end, next.start)`, which no settlement day covers.
+ */
+export type Cutover = {
+	readonly to: Methodology;
+	/** The last day of `from`. */
+	readonly previous: DayWindow;
+	/** The first day of `to`. */
+	readonly next: DayWindow;
+};
+
+/** Every activated cutover among `releases` (active ones only), oldest first. */
+export function activatedCutovers(releases: readonly Methodology[]): Cutover[] {
+	return releases.flatMap((from, index) => {
+		const to = releases[index + 1];
+		if (to === undefined || from.effectiveUntil === null) return [];
+		return [
+			{
+				to,
+				previous: dayWindow(from, from.effectiveUntil),
+				next: dayWindow(to, to.effectiveFrom),
+			},
+		];
+	});
+}
+
+/**
+ * The activated cutover into `release`, or null while it is not activated: `release` is active
+ * (announced, not withdrawn) and the active release before it has its `effectiveUntil` set.
+ */
+export function activatedCutoverInto(
+	release: Methodology,
+	releases: readonly Methodology[] = RELEASES,
+): Cutover | null {
+	return (
+		activatedCutovers(releases.filter(isActiveIn(releases))).find((c) => c.to === release) ?? null
+	);
 }
 
 /**
@@ -136,8 +174,11 @@ export function collectingRelease(instant: Date): Methodology {
 	return release;
 }
 
+/** A span of instants, `[start, end)`. */
+export type Interval = { readonly start: Date; readonly end: Date };
+
 /** The UTC storage partitions (`rounds/{date}/`) a window's slots fall in, in order. */
-export function partitionsOf(window: DayWindow): UtcDate[] {
+export function partitionsOf(window: Interval): UtcDate[] {
 	const last = utcDateOf(new Date(window.end.getTime() - 1));
 	const partitions = [utcDateOf(window.start)];
 	while (partitions.at(-1) !== last) partitions.push(addDays(partitions.at(-1) ?? last, 1));

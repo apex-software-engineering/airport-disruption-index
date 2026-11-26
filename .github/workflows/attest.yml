@@ -47,6 +47,7 @@ jobs:
     outputs:
       status: ${{ steps.attest.outputs.status }}
       branch-exists: ${{ steps.branch.outputs.exists }}
+      tip: ${{ steps.branch.outputs.tip }}
       changed: ${{ steps.changes.outputs.changed }}
       unproven-commits: ${{ steps.commits.outputs.unproven }}
       withheld: ${{ steps.changes.outputs.withheld }}
@@ -97,7 +98,8 @@ jobs:
           echo "through=$through" >> "$GITHUB_OUTPUT"
           echo "days=$days" >> "$GITHUB_OUTPUT"
 
-      # The branch tip, fetched before anything is checked, so a re-run sees what is published.
+      # The branch tip, fetched before anything is checked, so a re-run sees what is published. The
+      # tip is recorded, so the publish job can refuse to replay files that changed since.
       - name: Check out the publication branch
         id: branch
         run: |
@@ -107,6 +109,7 @@ jobs:
           if [[ $status == 0 ]]; then
             git clone --quiet --single-branch --branch "$PUBLICATION_BRANCH" "$remote" attestations
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "tip=$(git -C attestations rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           elif [[ $status == 2 ]]; then
             echo "::notice::$PUBLICATION_BRANCH does not exist yet; this run creates it"
             git init --quiet attestations
@@ -122,10 +125,10 @@ jobs:
       - name: Upgrade pending proofs
         run: |
           shopt -s nullglob
-          for proof in attestations/*.ots; do
+          for proof in attestations/*.ots attestations/transition/*.ots; do
             ots upgrade "$proof" || echo "$proof: not complete (pending or unreachable calendar)"
           done
-          rm -f attestations/*.bak
+          rm -f attestations/*.bak attestations/transition/*.bak
 
       # Writes an attestation only on MATCH. Days already attested are verified instead; never
       # rewritten. The exit status is kept so new attestations are still stamped and published
@@ -149,6 +152,8 @@ jobs:
         run: |
           unproven=0
           while read -r file; do
+            # The gap pin (transition/) records no deployment; only attestations do.
+            [[ "$file" == transition/* ]] && continue
             commit="$(jq -r .deployedCommit "attestations/$file")"
             if [[ "$commit" == null ]]; then
               echo "::warning::$file: the deployment did not report its commit"
@@ -162,13 +167,14 @@ jobs:
           echo "unproven=$unproven" >> "$GITHUB_OUTPUT"
 
       # Per file: one that fails to stamp is reported and left unproven (so it is withheld below),
-      # and the others still go out; the run fails at the end.
+      # and the others still go out; the run fails at the end. The gap pin (design §4, D8) is
+      # stamped the same way.
       - name: Stamp new attestations
         id: stamp
         run: |
           shopt -s nullglob
           failed=0
-          for file in attestations/*.json; do
+          for file in attestations/*.json attestations/transition/*.json; do
             [[ -e "$file.ots" ]] && continue
             if ots stamp --timeout 30 "$file" && ots info "$file.ots"; then
               echo "stamped $file"
@@ -186,7 +192,8 @@ jobs:
       - name: Collect and check changes
         id: changes
         run: |
-          pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}\.r[0-9]+\.json(\.ots)?$'
+          # Attestations, and the one gap pin of an activated cutover (transition/{effectiveFrom}.json).
+          pattern='^([0-9]{4}-[0-9]{2}-[0-9]{2}\.r[0-9]+|transition/[0-9]{4}-[0-9]{2}-[0-9]{2})\.json(\.ots)?$'
           # Notice readback records are the notice-readback workflow's (notice-readback.yml).
           known='^notices/[0-9]+\.[0-9]+\.[0-9]+\.readback\.(json(\.ots)?|incidents\.html|methodology\.html|methodology\.json)$'
           while IFS= read -r name; do
@@ -220,12 +227,12 @@ jobs:
               fi
               for file in "$name" "$name.ots"; do
                 if printf '%s\n' "${changed[@]}" | grep -qx "$file"; then
-                  cp "attestations/$file" outgoing/
+                  install -D -m 644 "attestations/$file" "outgoing/$file"
                 fi
               done
             done
           fi
-          ls -l outgoing
+          ls -lR outgoing
           echo "withheld=$withheld" >> "$GITHUB_OUTPUT"
           if compgen -G 'outgoing/*' > /dev/null; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -264,6 +271,8 @@ jobs:
         with:
           ref: ${{ env.PUBLICATION_BRANCH }}
           path: publication
+          # Full history, so the tip the attest job read can be compared with the current one.
+          fetch-depth: 0
 
       - uses: actions/checkout@v5
         if: needs.attest.outputs.changed == 'true' && needs.attest.outputs.branch-exists != 'true'
@@ -271,13 +280,55 @@ jobs:
           path: publication
 
       # Appends only: a new attestation needs its proof, an existing one must be byte-identical,
-      # and a proof may only be added or upgraded beside its attestation.
+      # and a proof may only be added or upgraded beside its attestation. A file that changed on the
+      # branch since the attest job read it (a re-run of an older run) is refused, before the commit
+      # and again after every rebase, so an older proof can never replace a newer one. A new gap pin
+      # is published only while the deployment collects under the release the pin names.
       - name: Publish
         if: needs.attest.outputs.changed == 'true'
         env:
           BRANCH_EXISTS: ${{ needs.attest.outputs.branch-exists }}
+          TIP: ${{ needs.attest.outputs.tip }}
         run: |
+          set -o pipefail
           cd publication
+          mapfile -t incoming < <(cd ../incoming && find . -type f | sed 's|^\./||' | sort)
+          # A new gap pin goes out only while the deployment collects under the release it names.
+          # One that fails this is withheld with its proof; everything else is still published, and
+          # the step fails at the end.
+          withheld=()
+          for name in "${incoming[@]}"; do
+            [[ "$name" == transition/*.json && ! -e "$name" ]] || continue
+            pinned="$(jq -r '.release.methodologyVersion + " " + .release.parameterHash' "../incoming/$name")" || pinned=unreadable
+            served="$(curl -fsS --max-time 60 "$BASE_URL/api/v1/methodology" | jq -r '.version + " " + .parameterHash')" || served="nothing (the methodology endpoint did not answer)"
+            if [[ "$served" != "$pinned" ]]; then
+              echo "::error::$name pins release $pinned, but $BASE_URL collects under $served; it and its proof are withheld"
+              withheld+=("$name" "$name.ots")
+            fi
+          done
+          if (( ${#withheld[@]} > 0 )); then
+            mapfile -t incoming < <(printf '%s\n' "${incoming[@]}" | grep -vxF -f <(printf '%s\n' "${withheld[@]}"))
+          fi
+          finish() {
+            if (( ${#withheld[@]} > 0 )); then
+              echo "::error::withheld ${withheld[*]}; everything else was published"
+              exit 1
+            fi
+            exit 0
+          }
+          # Each incoming file must be as the attest job saw it at $TIP on the branch at `ref`.
+          unchanged_since_tip() {
+            [[ "$BRANCH_EXISTS" != true ]] && return 0
+            local stale=0
+            for name in "${incoming[@]}"; do
+              if ! git diff --quiet "$TIP" "$1" -- "$name"; then
+                echo "::error::$name changed on $PUBLICATION_BRANCH since this run read $TIP; its artifact is stale and is not published"
+                stale=1
+              fi
+            done
+            return $stale
+          }
+          unchanged_since_tip HEAD || exit 1
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           if [[ "$BRANCH_EXISTS" != true ]]; then
@@ -285,9 +336,9 @@ jobs:
           fi
           shopt -s nullglob
           added=()
-          for source in ../incoming/*; do
-            name="$(basename "$source")"
-            if [[ ! "$name" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\.r[0-9]+\.json(\.ots)?$ ]]; then
+          for name in "${incoming[@]}"; do
+            source="../incoming/$name"
+            if [[ ! "$name" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}\.r[0-9]+|transition/[0-9]{4}-[0-9]{2}-[0-9]{2})\.json(\.ots)?$ ]]; then
               echo "::error::unexpected file $name"
               exit 1
             fi
@@ -295,6 +346,7 @@ jobs:
               if [[ -e "$name" ]]; then
                 cmp -s "$source" "$name" || { echo "::error::$name would be rewritten"; exit 1; }
               elif [[ -e "$source.ots" ]]; then
+                mkdir -p "$(dirname "$name")"
                 cp "$source" "$name"
                 added+=("${name%.json}")
               else
@@ -303,13 +355,14 @@ jobs:
               fi
             else
               [[ -e "${name%.ots}" || -e "${source%.ots}" ]] || { echo "::error::$name has no attestation"; exit 1; }
+              mkdir -p "$(dirname "$name")"
               cp "$source" "$name"
             fi
           done
           git add --all
           if git diff --cached --quiet; then
             echo "Nothing to publish"
-            exit 0
+            finish
           fi
           if (( ${#added[@]} > 0 )); then
             git commit --quiet -m "Attest ${added[*]}"
@@ -321,8 +374,9 @@ jobs:
           for attempt in 1 2 3; do
             if [[ "$BRANCH_EXISTS" == true ]]; then
               git pull --quiet --rebase origin "$PUBLICATION_BRANCH" || { sleep $((attempt * 5)); continue; }
+              unchanged_since_tip "origin/$PUBLICATION_BRANCH" || exit 1
             fi
-            git push origin "HEAD:refs/heads/$PUBLICATION_BRANCH" && exit 0
+            git push origin "HEAD:refs/heads/$PUBLICATION_BRANCH" && finish
             echo "push attempt $attempt lost a race; retrying"
             sleep $((attempt * 5))
           done

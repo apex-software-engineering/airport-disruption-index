@@ -14,13 +14,19 @@
  *
  * Every ordinary indicative day's window lies in UTC days D and D+1, both v1 settlement days.
  * E−1, whose window ends in the cutover's transition interval, has its own branch with the gap pin
- * (design §4, D8); until that lands it cannot be verified here.
+ * (design §4, D8): its one v1 reference covers the slots before the gap, and the pin the gap.
  */
-import { dayWindow, partitionsOf, slotIndexIn, type DayWindow } from '@/lib/index/calendar';
-import { indicativeReleaseFor } from '@/lib/index/indicative';
+import {
+	activatedCutoverInto,
+	dayWindow,
+	partitionsOf,
+	type Cutover,
+	type Interval,
+} from '@/lib/index/calendar';
+import { indicativeReleaseFor, indicativeServedBy } from '@/lib/index/indicative';
 import { settlementReleaseOrNull } from '@/lib/index/methodology';
-import type { DailyPrint, RoundSummary } from '@/lib/index/schemas';
-import { parseRoundId, type UtcDate } from '@/lib/index/time';
+import type { DailyPrint, IndicativePrint, RoundSummary } from '@/lib/index/schemas';
+import { addDays, parseRoundId, type UtcDate } from '@/lib/index/time';
 import {
 	CannotVerify,
 	Mismatch,
@@ -31,12 +37,34 @@ import {
 } from '@/lib/reproduce';
 
 import { proveRevisions, type BranchCheckout, type RevisionProof } from './attestations';
+import {
+	committedPin,
+	gapDifferences,
+	gapKey,
+	gapOf,
+	lastIndicativeDay,
+	pinWritable,
+	readGapReceipts,
+	readTransitionPin,
+	requireServedCutover,
+	transitionPinName,
+	writeTransitionPin,
+	type GapRound,
+} from './transition-pin';
 
 export type IndicativeProof =
 	| { kind: 'match'; log: string[] }
 	| { kind: 'mismatch'; log: string[]; problems: string[] }
-	/** The rebuild matches, but a v1 reference is not verified yet: no set comparison has run. */
+	/**
+	 * The rebuild matches, but a reference is not verified yet: a v1 reference (no set comparison
+	 * has run), or for E−1 the gap pin's proof (after the covered slots compared equal).
+	 */
 	| { kind: 'pending'; log: string[]; reason: string }
+	/**
+	 * E−1 only: the covered slots are equal both ways and the gap pin is absent. `unpinned` are the
+	 * gap receipts the print lists, which the pin would hold.
+	 */
+	| { kind: 'partial'; log: string[]; unpinned: GapRound[] }
 	| { kind: 'cannot_verify'; log: string[]; reason: string };
 
 /** A listed receipt as both sides are compared: its round and its hash. */
@@ -46,7 +74,14 @@ function pairsOf(rounds: readonly Pick<RoundSummary, 'roundId' | 'receiptHash'>[
 	return rounds.map(({ roundId, receiptHash }) => ({ roundId, key: `${roundId} ${receiptHash}` }));
 }
 
-/** Proves indicative ET day `label` against the attestations branch checked out at `checkout`. */
+/**
+ * Proves indicative ET day `label` against the attestations branch checked out at `checkout`.
+ *
+ * The last indicative day of a release, E−1 (`effectiveFrom − 1`), takes its own branch: its
+ * window ends in the activated cutover's transition interval, which no v1 print covers. Its
+ * covered slots are compared both ways against its one v1 reference first, so a missing or
+ * pending pin never hides a mismatch there; only then is the gap compared against the pin.
+ */
 export async function proveIndicativeDay(
 	label: UtcDate,
 	baseUrl: string,
@@ -68,7 +103,18 @@ export async function proveIndicativeDay(
 	}
 	// The print's own window: its schema already checked it is this one (rebuilt above).
 	const window = dayWindow(release, label);
-	const references = partitionsOf(window);
+	// E−1 of an activated cutover. With none (v1 simply continues), E−1 is an ordinary day.
+	const cutover =
+		label === addDays(release.effectiveFrom, -1) ? activatedCutoverInto(release) : null;
+	const gap = cutover === null ? null : gapOf(cutover);
+	if (gap !== null && (window.end.getTime() !== gap.end.getTime() || gap.start <= window.start)) {
+		throw new Error(
+			`${label}'s window does not end in the transition interval [${gap.start.toISOString()}, ${gap.end.toISOString()})`,
+		);
+	}
+	/** The part of the window the v1 references cover: all of it, or for E−1 up to the gap. */
+	const covered: Interval = { start: window.start, end: gap?.start ?? window.end };
+	const references = partitionsOf(covered);
 	const unowned = references.find(
 		(date) => settlementReleaseOrNull(date)?.parameters.day !== 'utc',
 	);
@@ -76,7 +122,7 @@ export async function proveIndicativeDay(
 		return {
 			kind: 'cannot_verify',
 			log,
-			reason: `${label}'s window reaches ${unowned}, which is no v1 UTC day: the E−1 branch and its gap pin are not part of this check yet`,
+			reason: `${label}'s window reaches ${unowned}, which is no v1 UTC day`,
 		};
 	}
 	const results: Reference[] = [];
@@ -98,33 +144,197 @@ export async function proveIndicativeDay(
 	for (const result of results.filter((r): r is VerifiedReference => r.kind === 'verified')) {
 		log.push(...result.lines);
 		for (const pair of result.pairs) {
-			if (inWindow(window, pair)) reference.set(pair.key, result.named);
+			if (inInterval(covered, pair.roundId)) reference.set(pair.key, result.named);
 		}
 	}
-	const indicative = new Set(pairsOf(rebuilt.print.rounds).map((pair) => pair.key));
-	const problems = [
-		...[...reference]
-			.filter(([key]) => !indicative.has(key))
-			.map(([key, named]) => `${named} lists ${key}, which the indicative print of ${label} omits`),
-		...[...indicative]
-			.filter((key) => !reference.has(key))
-			.map(
-				(key) =>
-					`the indicative print of ${label} lists ${key}, which no verified v1 reference lists`,
-			),
-	];
+	const listed = rebuilt.print.rounds;
+	const inGap = (roundId: string) => gap !== null && inInterval(gap, roundId);
+	const indicative = new Set(
+		pairsOf(listed.filter((round) => !inGap(round.roundId))).map((pair) => pair.key),
+	);
+	const problems = differences(
+		reference,
+		indicative,
+		(key, named) => `${named} lists ${key}, which the indicative print of ${label} omits`,
+		(key) => `the indicative print of ${label} lists ${key}, which no verified v1 reference lists`,
+	);
 	if (problems.length > 0) return { kind: 'mismatch', log, problems };
+	const what = gap === null ? 'receipts' : 'receipts in the covered slots';
 	log.push(
-		`indicative ${label}: ${indicative.size} receipts, equal both ways to the verified v1 references (${references.join(', ')})`,
+		`indicative ${label}: ${indicative.size} ${what}, equal both ways to the verified v1 references (${references.join(', ')})`,
+	);
+	if (cutover === null || gap === null) return { kind: 'match', log };
+	const archive = await archivedGap(cutover, rebuilt.print, baseUrl, get);
+	if (archive.kind !== 'equal') return { ...archive, log };
+	const gapRounds = archive.rounds;
+	log.push(
+		`gap [${gap.start.toISOString()}, ${gap.end.toISOString()}): ${gapRounds.length} receipts, equal both ways to the archive slot by slot`,
+	);
+	const pin = await readTransitionPin(checkout, cutover);
+	switch (pin.kind) {
+		case 'absent':
+			log.push(
+				`${pin.name} is not on the branch: the ${gapRounds.length} gap receipts are unpinned`,
+				...gapRounds.map((round) => `unpinned ${gapKey(round)}`),
+			);
+			return { kind: 'partial', log, unpinned: gapRounds };
+		case 'mismatch':
+			return { kind: 'mismatch', log, problems: pin.problems.map((p) => `gap pin: ${p}`) };
+		case 'cannot_verify':
+			return { kind: 'cannot_verify', log, reason: `gap pin: ${pin.reason}` };
+		case 'pending':
+			return {
+				kind: 'pending',
+				log,
+				reason: `the covered slots are equal both ways, but the gap pin's proof is not verified yet: ${pin.detail}`,
+			};
+		case 'verified':
+			break;
+	}
+	log.push(pin.line);
+	const gapProblems = gapDifferences(
+		pin.rounds,
+		gapRounds,
+		(key) => `the gap pin lists ${key}, which the indicative print of ${label} omits`,
+		(key) => `the indicative print of ${label} lists ${key}, which the gap pin does not`,
+	);
+	if (gapProblems.length > 0) return { kind: 'mismatch', log, problems: gapProblems };
+	log.push(
+		`indicative ${label}: ${gapRounds.length} gap receipts, equal both ways to the gap pin; all ${indicative.size + gapRounds.length} receipts proved`,
 	);
 	return { kind: 'match', log };
 }
 
 /**
+ * E−1's gap receipts, read slot by slot from the archive (`readGapReceipts`) and required to equal,
+ * both ways, the ones its print lists in the interval: the gap's only independent side.
+ */
+async function archivedGap(
+	cutover: Cutover,
+	print: IndicativePrint,
+	baseUrl: string,
+	get: Get,
+): Promise<
+	| { kind: 'equal'; rounds: GapRound[] }
+	| { kind: 'mismatch'; problems: string[] }
+	| { kind: 'cannot_verify'; reason: string }
+> {
+	const gap = gapOf(cutover);
+	let served: GapRound[];
+	try {
+		served = await readGapReceipts(cutover, baseUrl, get);
+	} catch (error) {
+		if (error instanceof Mismatch) return { kind: 'mismatch', problems: error.problems };
+		if (error instanceof CannotVerify) return { kind: 'cannot_verify', reason: error.message };
+		throw error;
+	}
+	const listed = print.rounds.filter((round) => inInterval(gap, round.roundId));
+	const problems = gapDifferences(
+		served,
+		listed,
+		(key) => `the archive serves ${key}, which the indicative print of ${print.date} omits`,
+		(key) => `the indicative print of ${print.date} lists ${key}, which the archive does not serve`,
+	);
+	return problems.length > 0 ? { kind: 'mismatch', problems } : { kind: 'equal', rounds: served };
+}
+
+/**
+ * The attest run's gap pin for a cutover (design §4, D8), written as soon as it may be: from E−1's
+ * freeze, independent of the v1 reference's proof, which only the verdict needs. Before it is
+ * written, the deployment must be collecting under the new release, E−1 must rebuild, and its gap
+ * receipts must equal the archive's. A run that finds no pin on the branch writes it, or fails: at
+ * once on a mismatch, and on anything it could not check yet only from E−1's due time (its freeze
+ * plus 2 hours, `indicativeServedBy`), before which the next run retries. So a missed pin is never
+ * a quiet log line, and an on-time E−1 never turns a run red.
+ */
+export async function pinGap(
+	cutover: Cutover,
+	baseUrl: string,
+	checkout: BranchCheckout,
+	get: Get,
+	clock: () => Date,
+): Promise<{ line: string; failed: boolean }> {
+	const label = lastIndicativeDay(cutover);
+	const name = transitionPinName(cutover);
+	const writable = pinWritable(cutover);
+	const now = clock();
+	if (now < writable.start) {
+		return {
+			line: `${label}: gap pin ${name} is due from ${writable.start.toISOString()}`,
+			failed: false,
+		};
+	}
+	const committed = committedPin(checkout, cutover);
+	// A pin already committed, or a rewritten one, is the verdict's to judge.
+	if (committed.bytes !== null || committed.problems.length > 0) {
+		return { line: `${label}: gap pin ${name} is on the branch`, failed: false };
+	}
+	const failed = (reason: string) => ({
+		line: `${label}: FAILED: gap pin ${name} is not on the branch and was not written: ${reason}. Recover by dispatching the Attest workflow with date ${label} before ${writable.end.toISOString()}`,
+		failed: true,
+	});
+	// Until E−1's print is due, what could not be checked yet is retried by the next run; a
+	// mismatch is never retried.
+	const due = indicativeServedBy(cutover.to, label) ?? writable.start;
+	const retried = (reason: string) =>
+		now < due
+			? {
+					line: `${label}: gap pin ${name} not written yet: ${reason}; the next run retries`,
+					failed: false,
+				}
+			: failed(reason);
+	if (now >= writable.end) {
+		return {
+			line: `${label}: FAILED: gap pin ${name} is not on the branch, and no pin is written after ${writable.end.toISOString()}: the gap slots of the indicative series have no timely external pin (log an incident)`,
+			failed: true,
+		};
+	}
+	try {
+		await requireServedCutover(baseUrl, cutover, get);
+	} catch (error) {
+		if (error instanceof Mismatch) return failed(error.problems.join('; '));
+		if (error instanceof CannotVerify) return retried(error.message);
+		throw error;
+	}
+	const rebuilt = await reproduceIndicativeDay(label, baseUrl, get, clock);
+	if (rebuilt.outcome.kind === 'mismatch')
+		return failed(`E−1 does not rebuild: ${rebuilt.outcome.problems.join('; ')}`);
+	if (rebuilt.print === null) {
+		return retried(
+			`the indicative print of ${label} is not served yet (it is due by ${due.toISOString()})`,
+		);
+	}
+	if (rebuilt.outcome.kind === 'cannot_verify') return retried(rebuilt.outcome.reason);
+	const archive = await archivedGap(cutover, rebuilt.print, baseUrl, get);
+	if (archive.kind === 'mismatch') return failed(archive.problems.join('; '));
+	if (archive.kind === 'cannot_verify') return retried(archive.reason);
+	const file = await writeTransitionPin(checkout.directory, cutover, archive.rounds, clock());
+	return {
+		line: `${label}: wrote gap pin ${file} (${archive.rounds.length} receipts)`,
+		failed: false,
+	};
+}
+
+/** Both ways: what `reference` lists that `listed` omits, then what `listed` adds. */
+function differences(
+	reference: ReadonlyMap<string, string>,
+	listed: ReadonlySet<string>,
+	omitted: (key: string, named: string) => string,
+	added: (key: string) => string,
+): string[] {
+	return [
+		...[...reference]
+			.filter(([key]) => !listed.has(key))
+			.map(([key, named]) => omitted(key, named)),
+		...[...listed].filter((key) => !reference.has(key)).map(added),
+	];
+}
+
+/**
  * The attest run's indicative check: each of `dates` that is an indicative day, proved in turn.
- * A MISMATCH fails it; PENDING and could-not-verify (a day not frozen yet, E−1 until its branch
- * lands, an unreachable API) are reported, never failed. An error the proof did not expect fails
- * that day only, and the rest are still proved.
+ * A MISMATCH fails it; PENDING, PARTIAL (E−1 with no gap pin yet; `pinGap` writes it, or fails
+ * the run) and could-not-verify (a day not frozen yet, an unreachable API) are reported, never
+ * failed. An error the proof did not expect fails that day only, and the rest are still proved.
  */
 export async function proveIndicativeDays(
 	dates: readonly UtcDate[],
@@ -155,6 +365,11 @@ export async function proveIndicativeDays(
 			case 'pending':
 				lines.push(`${date}: indicative PENDING: ${proof.reason}`);
 				break;
+			case 'partial':
+				lines.push(
+					`${date}: indicative PARTIAL: the covered slots are equal both ways; ${proof.unpinned.length} gap receipts are unpinned`,
+				);
+				break;
 			case 'cannot_verify':
 				lines.push(`${date}: indicative not checked: ${proof.reason}`);
 				break;
@@ -167,9 +382,10 @@ export async function proveIndicativeDays(
 	return { lines, failures };
 }
 
-function inWindow(window: DayWindow, pair: Pair): boolean {
-	const id = parseRoundId(pair.roundId);
-	return id !== null && slotIndexIn(window, id.slotStart) !== null;
+/** Whether round `roundId`'s slot starts in `[start, end)`. */
+function inInterval({ start, end }: Interval, roundId: string): boolean {
+	const id = parseRoundId(roundId);
+	return id !== null && id.slotStart >= start && id.slotStart < end;
 }
 
 type VerifiedReference = { kind: 'verified'; lines: string[]; named: string; pairs: Pair[] };

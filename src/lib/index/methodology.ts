@@ -114,8 +114,13 @@ export const SETTLEMENT_CUTOFF_MINUTES: MethodologyParameters['settlement']['cut
  * hashed and readable, but no day, round or deadline uses it.
  */
 export function isActive(release: Methodology): boolean {
-	if (release.withdrawn) return false;
-	return release === RELEASES[0] || release.announcedAt !== null;
+	return isActiveIn(RELEASES)(release);
+}
+
+/** `isActive` within a given registry, whose first release always governs. */
+export function isActiveIn(releases: readonly Methodology[]): (release: Methodology) => boolean {
+	return (release) =>
+		!release.withdrawn && (release === releases[0] || release.announcedAt !== null);
 }
 
 /**

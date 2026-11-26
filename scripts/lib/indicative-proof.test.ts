@@ -449,6 +449,24 @@ describe('the both-ways indicative proof', () => {
 	});
 });
 
+describe('E−1 while v1 simply continues (no activated cutover; Opus #46 r1, finding 1)', () => {
+	it('is an ordinary two-reference day, and matches', async () => {
+		const last = '2026-12-31';
+		for (const at of ['2026-12-31T05:00:03Z', '2026-12-31T23:55:03Z', '2027-01-01T04:55:03Z'])
+			await collectAt(store, at);
+		const prints = [
+			(await settleDay(store, last)).print,
+			(await settleDay(store, '2027-01-01')).print,
+		];
+		await freezeIndicativeDay(store, last, new Date('2027-01-01T05:30:00Z'));
+		await attest(prints);
+		const clock = () => new Date('2027-01-02T12:00:00Z');
+		expect(await proveIndicativeDay(last, SITE, checkout, routeGet, clock)).toMatchObject({
+			kind: 'match',
+		});
+	});
+});
+
 describe('the attest run’s indicative check (Sol #41 r1, finding 2; Opus findings 1 and 7)', () => {
 	it('fails only the day whose proof throws, and still proves the rest', async () => {
 		await collect();

@@ -182,3 +182,15 @@ export function fetchDay(
 ): Promise<{ print: DailyPrint; revisions: DailyPrint[]; deployedCommit: string | null }> {
 	return fetchSettledDay(baseUrl, date, getApi);
 }
+
+/**
+ * `text` with every control character (line breaks included) escaped as `\uXXXX`, so a line of
+ * output stays one line, and text from outside (calendars, explorers, the API) can never start a
+ * line of its own: the Actions runner reads any output line starting with `::` as a command.
+ */
+export function printable(text: string): string {
+	return text.replace(
+		/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g,
+		(c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
+	);
+}
