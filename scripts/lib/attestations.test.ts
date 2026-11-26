@@ -22,7 +22,7 @@ import {
 	verifyAttested,
 	type BranchCheckout,
 } from './attestations';
-import { CannotVerify, getApi } from './public-api';
+import { CannotVerify, Unattested, getApi } from './public-api';
 
 const receipt = collectedReceipt({
 	fetchedAt: new Date('2026-11-17T20:45:02.123Z'),
@@ -308,6 +308,36 @@ describe('verifyAttested', () => {
 	});
 });
 
+describe('an unattested live print (Sol #41 r2, finding 2; Opus finding 2)', () => {
+	it('is UNATTESTED before any proof is read, so an explorer outage cannot stop attesting it', async () => {
+		const branch = branchCheckout();
+		const { proof } = syntheticProof(new TextEncoder().encode(pin1), {
+			kind: 'bitcoin',
+			height: 100,
+		});
+		branch.commit({ '2026-11-17.r1.json': pin1, '2026-11-17.r1.json.ots': proof });
+		const explorer: string[] = [];
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string) => {
+				if (url.endsWith('/api/v1/days/2026-11-17'))
+					return Response.json({
+						date: '2026-11-17',
+						status: 'settled',
+						print: r2,
+						revisions: [r1, r2],
+					});
+				explorer.push(url);
+				return new Response('unavailable', { status: 503 });
+			}),
+		);
+		await expect(
+			verifyAttested('https://example.test', branch.checkout, '2026-11-17'),
+		).rejects.toThrow(Unattested);
+		expect(explorer).toEqual([]);
+	});
+});
+
 describe('verifyAttested on a correction', () => {
 	// r2 is built through main's correctionSchema; its cutoff is 48 hours after issuedAt.
 	const file = serializeAttestation(buildAttestation(r2, null));
@@ -423,6 +453,21 @@ describe('the preview bypass secret', () => {
 		} finally {
 			server.close();
 		}
+	});
+
+	it('asks the second block explorer when the first cannot answer (Sol #43 r1, finding 3)', async () => {
+		const calls = recordFetches((url) => {
+			if (url.startsWith('https://mempool.space/')) return new Response('busy', { status: 503 });
+			return url.includes('block-height')
+				? new Response('00ab')
+				: Response.json({ height: 7, merkle_root: 'cd', timestamp: 1 });
+		});
+		expect(await fetchBlock(7)).toEqual({ merkleRoot: 'cd', time: new Date(1000) });
+		expect(calls.map((call) => new URL(call.url).host)).toEqual([
+			'mempool.space',
+			'blockstream.info',
+			'blockstream.info',
+		]);
 	});
 
 	it('never goes to the block explorer', async () => {

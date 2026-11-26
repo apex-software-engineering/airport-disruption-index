@@ -105,10 +105,32 @@ export function indicativeFreezesAt(release: Methodology, label: string): Date {
 
 /**
  * How long after `indicativeFreezesAt` a published indicative day may still be unserved: the
- * settle runs that freeze it run within the hour after (04:30 to 06:00Z), so a day still missing
- * 2 hours after its freeze time is a failure, not a delay.
+ * settle runs that freeze it run within the hour after (04:30 to 06:00Z).
  */
 export const INDICATIVE_SERVE_MARGIN_MS = 2 * 60 * 60_000;
+
+/**
+ * How long after a release's notice instant the days that froze before it may still be unserved:
+ * the settle runs look back only a few days, so the earlier ones are written by the backfill
+ * (`npm run indicative -- --from <first day>`), which refuses production before the instant.
+ */
+export const INDICATIVE_BACKFILL_MS = 12 * 60 * 60_000;
+
+/**
+ * When indicative day `label` must be served: its freeze time plus INDICATIVE_SERVE_MARGIN_MS, or,
+ * for a day that froze before its release's notice was published, the notice instant plus
+ * INDICATIVE_BACKFILL_MS, whichever is later. Null while the release has no notice instant. A
+ * postponed or later notice moves it with the instant.
+ */
+export function indicativeServedBy(release: Methodology, label: string): Date | null {
+	if (release.noticePublishedAt === null) return null;
+	return new Date(
+		Math.max(
+			indicativeFreezesAt(release, label).getTime() + INDICATIVE_SERVE_MARGIN_MS,
+			Date.parse(release.noticePublishedAt) + INDICATIVE_BACKFILL_MS,
+		),
+	);
+}
 
 /**
  * The indicative days dated within the `lookbackDays` UTC dates before `now` whose freeze time

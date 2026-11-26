@@ -485,11 +485,18 @@ reference v1 prints of its UTC days list inside its window, invalid receipts inc
 day's reference is its latest revision that verifies on its own: attested, matching its attestation,
 and timestamped in a Bitcoin block before that revision's cutoff. A revision that is unattested,
 pending or late is not a reference, and both UTC days are always checked. Exit codes: 0 `MATCH`; 1
-`MISMATCH` (the sets differ, revisions of one v1 day list different receipts, an attestation
-conflicts with the API, or the indicative day is misfiled or still not served 2 hours after its
-freeze time); 2 could not verify; 4 `PENDING` (a UTC day has no verified revision yet). A mismatch
-on either UTC day wins over the other's pending or could-not-verify. The attest workflow runs it for
-every indicative day in its 7-day window and fails on a `MISMATCH`.
+`MISMATCH` (the sets differ, revisions of one v1 day list different receipts or do not chain, an
+attestation conflicts with the API, or the indicative day is misfiled or still not served when due);
+2 could not verify; 4 `PENDING` (a UTC day has no verified revision yet). A mismatch on either UTC
+day wins over the other's pending or could-not-verify. The attest workflow runs it for every
+indicative day in its 7-day window and fails on a `MISMATCH`.
+
+An indicative day is due 2 hours after its freeze time. A day that froze before its release's notice
+instant is due 12 hours after that instant instead: the settle runs look back only a few days, so
+the operator backfills the earlier ones right after the instant, with
+`npm run indicative -- --from <first indicative day>` (it refuses production before the instant).
+For v2.0.0 that means running it after 2026-11-29T00:00Z and before 12:00Z; a later or postponed
+notice moves the allowance with its instant.
 
 ### Attestations
 

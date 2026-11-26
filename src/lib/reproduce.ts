@@ -14,12 +14,11 @@ import { DEPLOYED_COMMIT_HEADER, parseDeployedCommit } from '@/lib/deployment';
 import { adapterOf } from '@/lib/index/adapters';
 import { publishBy, settlementDay, settlesAt } from '@/lib/index/calendar';
 import {
-	INDICATIVE_SERVE_MARGIN_MS,
 	indicativeFreezesAt,
 	indicativeReleaseFor,
-	indicativeSeriesPublished,
+	indicativeServedBy,
 } from '@/lib/index/indicative';
-import { admits, methodologyOf, type Identity } from '@/lib/index/methodology';
+import { admits, isNoticePublished, methodologyOf, type Identity } from '@/lib/index/methodology';
 import { receiptHashMatches } from '@/lib/index/round';
 import {
 	indicativePrintSchema,
@@ -111,14 +110,15 @@ function unservedIndicativeDay(date: UtcDate, body: unknown, asked: Date): Error
 	}
 	const release = indicativeReleaseFor(date, { includeWithdrawn: true });
 	if (release === null) return new CannotVerify(`${date} is no indicative day in this checkout`);
-	if (!indicativeSeriesPublished(asked))
+	const servedBy = indicativeServedBy(release, date);
+	if (!isNoticePublished(release, asked) || servedBy === null)
 		return new CannotVerify(`the indicative series is not published yet`);
 	if (release.withdrawn)
 		return new CannotVerify(`indicative day ${date} is not served; its release is withdrawn`);
 	const freezesAt = indicativeFreezesAt(release, date);
-	if (asked.getTime() >= freezesAt.getTime() + INDICATIVE_SERVE_MARGIN_MS) {
+	if (asked >= servedBy) {
 		return new Mismatch([
-			`indicative day ${date} is not served at ${asked.toISOString()}, though it freezes at ${freezesAt.toISOString()}`,
+			`indicative day ${date} is not served at ${asked.toISOString()}, though it was due by ${servedBy.toISOString()}`,
 		]);
 	}
 	if (
@@ -142,9 +142,10 @@ async function jsonOrNull(response: Response): Promise<unknown> {
 
 /**
  * `reproduceIndicative`, with the print it checked once the API served one. A day the API does not
- * serve is judged at `clock`'s reading before the request: misfiled, or still unserved
- * INDICATIVE_SERVE_MARGIN_MS after this checkout's freeze time once the series is published, it is
- * a mismatch; otherwise it cannot be verified yet.
+ * serve is judged at `clock`'s reading before the request: misfiled, or still unserved at this
+ * checkout's `indicativeServedBy` (freeze time plus 2 hours, or for a day frozen before the notice,
+ * the notice instant plus the 12-hour backfill allowance), it is a mismatch; otherwise it cannot be
+ * verified yet.
  */
 export async function reproduceIndicativeDay(
 	date: UtcDate,

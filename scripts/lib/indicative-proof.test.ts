@@ -11,6 +11,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildAttestation, publicationCutoff, serializeAttestation } from '@/lib/index/attestation';
+import { hashJson } from '@/lib/index/json';
 import type { DailyPrint } from '@/lib/index/schemas';
 import type { Get } from '@/lib/reproduce';
 import { routeGet } from '@/test/api';
@@ -250,6 +251,25 @@ describe('the both-ways indicative proof', () => {
 	});
 
 	describe('errors are outcomes, never escapes (Sol #41 r1, finding 2; Opus finding 1)', () => {
+		it('still checks D+1 when the explorer answers D’s block unreadably (Sol #41 r2, finding 3)', async () => {
+			await collect();
+			const [dayPrint, nextPrint] = await settleBoth();
+			await freeze();
+			const conflicting = { ...required(nextPrint), printHash: 'f'.repeat(64) };
+			await attest([required(dayPrint), conflicting]);
+			const explorer = globalThis.fetch;
+			vi.stubGlobal(
+				'fetch',
+				vi.fn(async (url: string) =>
+					/\/block\/h100$/.test(url) ? Response.json({ unexpected: true }) : explorer(url),
+				),
+			);
+			expect(await prove()).toMatchObject({
+				kind: 'mismatch',
+				problems: [expect.stringMatching(/^r1: /)],
+			});
+		});
+
 		it('is a mismatch when a reference day serves no revisions', async () => {
 			await collect();
 			const prints = await settleBoth();
@@ -336,6 +356,46 @@ describe('the both-ways indicative proof', () => {
 			);
 		});
 
+		it('is a mismatch when an earlier revision is served rewritten (Sol #41 r2, finding 1)', async () => {
+			await collect();
+			const [dayPrint, nextPrint] = await settleBoth();
+			const r2 = await correctionOf(required(nextPrint), '2026-11-22T10:00:00Z');
+			await freeze();
+			await attest([required(dayPrint), r2]);
+			/** The API serving r1 of D+1 with one round's status flipped, the receipt hash kept. */
+			const rewriting =
+				(rehash: boolean): Get =>
+				async (url) => {
+					if (!url.endsWith(`/api/v1/days/${NEXT}`)) return routeGet(url);
+					const body = await (await routeGet(url)).json();
+					const [first, ...rest] = body.revisions;
+					const [round, ...rounds] = first.rounds;
+					const flipped = {
+						...first,
+						rounds: [
+							{ ...round, status: round.status === 'valid' ? 'invalid' : 'valid' },
+							...rounds,
+						],
+					};
+					const { printHash: _stale, ...unsigned } = flipped;
+					void _stale;
+					const served = rehash ? { ...unsigned, printHash: hashJson(unsigned) } : flipped;
+					return Response.json({ ...body, revisions: [served, ...rest] });
+				};
+			expect(await proveIndicativeDay(DAY, SITE, checkout, rewriting(false), CLOCK)).toMatchObject({
+				kind: 'mismatch',
+				problems: ['revisions[0] does not match its printHash'],
+			});
+			expect(await proveIndicativeDay(DAY, SITE, checkout, rewriting(true), CLOCK)).toMatchObject({
+				kind: 'mismatch',
+				problems: [
+					expect.stringMatching(
+						/^revisions\[1\] supersedes [0-9a-f]{64}, not revisions\[0\]'s printHash /,
+					),
+				],
+			});
+		});
+
 		it('is a mismatch when revisions of one v1 day list different receipts', async () => {
 			await collect();
 			const [dayPrint, nextPrint] = await settleBoth();
@@ -382,7 +442,7 @@ describe('the both-ways indicative proof', () => {
 			expect(await at('2026-11-21T07:30:00Z')).toMatchObject({
 				kind: 'mismatch',
 				problems: [
-					'indicative day 2026-11-20 is not served at 2026-11-21T07:30:00.000Z, though it freezes at 2026-11-21T05:30:00.000Z',
+					'indicative day 2026-11-20 is not served at 2026-11-21T07:30:00.000Z, though it was due by 2026-11-21T07:30:00.000Z',
 				],
 			});
 		});

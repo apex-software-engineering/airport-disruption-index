@@ -127,6 +127,19 @@ export function dayResponseProblems(
 			problems.push(`revisions[${index}] is a print for ${revision.date}, not ${date}`);
 		if (revision.revision !== index + 1)
 			problems.push(`revisions[${index}] is revision ${revision.revision}, expected ${index + 1}`);
+		// Each revision is the print it claims to be, and each correction names the one it replaced,
+		// so an earlier revision can be neither edited in place nor swapped for another print.
+		if (!printHashMatches(revision))
+			problems.push(`revisions[${index}] does not match its printHash`);
+		const previous = revisions[index - 1];
+		const supersedes = revision.correction?.supersedesPrintHash ?? null;
+		if (previous === undefined && supersedes !== null)
+			problems.push(`revisions[${index}] supersedes ${supersedes}, but nothing precedes it`);
+		if (previous !== undefined && supersedes !== previous.printHash) {
+			problems.push(
+				`revisions[${index}] supersedes ${supersedes ?? 'nothing'}, not revisions[${index - 1}]'s printHash ${previous.printHash}`,
+			);
+		}
 	});
 	const last = revisions.at(-1);
 	if (last === undefined || canonicalJson(last) !== canonicalJson(print))
