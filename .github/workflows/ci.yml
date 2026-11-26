@@ -43,3 +43,7 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # The runner ships Google Chrome; the suite uses it (channel: chrome) with its sandbox on.
+      - name: Home chart against fixture data
+        run: npm run test:fixtures

@@ -27,6 +27,7 @@ import {
 import type {
 	Correction,
 	DailyPrint,
+	HistoryIndex,
 	IndicativePrint,
 	RoundReceipt,
 	RoundSummary,
@@ -46,6 +47,8 @@ import { CACHE } from './http';
 import type { ObjectStore } from './storage';
 
 export const API_BASE = '/api/v1';
+/** The longest span one `/api/v1/history` request returns, in days. */
+export const HISTORY_MAX_DAYS = 366;
 export const roundUrl = (id: string) => `${API_BASE}/rounds/${id}`;
 
 /**
@@ -191,7 +194,11 @@ export async function dayView(store: ObjectStore, date: UtcDate): Promise<DayVie
 }
 
 export async function historyView(store: ObjectStore, from: UtcDate, to: UtcDate) {
-	const { days } = await readHistory(store);
+	return historyWindow(await readHistory(store), from, to);
+}
+
+/** The history view of [from, to] from an index already read, so one read serves every window. */
+export function historyWindow({ days }: HistoryIndex, from: UtcDate, to: UtcDate) {
 	return {
 		from,
 		to,

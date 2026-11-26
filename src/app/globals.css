@@ -4,9 +4,10 @@
 @custom-variant noscript (@media (scripting: none));
 
 /*
- * Design tokens. Neutral ink on a near-white page, one accent for links, and the two chart
- * series from the validated reference palette (slot 1 blue, slot 2 orange). Dark mode uses the
- * same roles with their dark steps, selected for the dark surface.
+ * Design tokens. Neutral ink on a near-white page, one accent for links, and three chart series
+ * from the validated reference palette (slots 1 to 3: blue, orange, aqua; they pass its all-pairs
+ * check in both modes). Dark mode uses the same roles with their dark steps, selected for the
+ * dark surface. Aqua uses its darker step in both modes, the one that clears 3:1 on both pages.
  */
 @theme {
 	--color-page: #fcfcfb;
@@ -18,6 +19,8 @@
 	--color-accent: #1f5fae;
 	--color-series-gs: #2a78d6;
 	--color-series-gdp: #eb6834;
+	/* The home chart's daily ADI line, distinct from the hourly chart's two series. */
+	--color-series-adi: #199e70;
 	--color-good: #0f7a3d;
 	--color-warn: #9a6200;
 	--color-bad: #b42318;

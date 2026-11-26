@@ -73,14 +73,15 @@ export function Instant({ at, punctuation = '' }: { at: string; punctuation?: st
 
 /**
  * A UTC calendar day, labelled by `children` (the date by default), with the stretch of the
- * viewer's local time it covers on the line below.
+ * viewer's local time it covers on the line below. Its machine-readable time is the day's start
+ * as a UTC instant (`…T00:00:00.000Z`), never a bare date, which would read as a floating local day.
  */
 export function UtcDay({ date, children = date }: { date: UtcDate; children?: ReactNode }) {
 	const start = new Date(dayStartMs(date)).toISOString();
 	const end = new Date(dayStartMs(addDays(date, 1))).toISOString();
 	return (
 		<>
-			<time dateTime={date}>{children}</time>
+			<time dateTime={start}>{children}</time>
 			<LocalTime at={start} until={end} />
 		</>
 	);

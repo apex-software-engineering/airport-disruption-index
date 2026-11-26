@@ -18,7 +18,8 @@
 		"attest": "tsx scripts/attest.ts",
 		"verify-attestation": "tsx scripts/verify-attestation.ts",
 		"check-proofs": "tsx scripts/check-proofs.ts",
-		"test:smoke": "playwright test -c playwright.smoke.config.ts"
+		"test:smoke": "playwright test -c playwright.smoke.config.ts",
+		"test:fixtures": "playwright test -c playwright.fixtures.config.ts"
 	},
 	"engines": {
 		"node": "24.x"

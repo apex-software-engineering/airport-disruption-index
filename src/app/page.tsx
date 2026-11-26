@@ -4,7 +4,9 @@ import { describeCoverage } from '@/components/coverage';
 import { dayName, ZONE_LABEL } from '@/components/day-name';
 import { formatInteger, formatPercent } from '@/components/format';
 import { HourlyChart } from '@/components/hourly-chart';
+import { IndexChart } from '@/components/index-chart';
 import {
+	CHART_API,
 	hasValidRound,
 	readSiteData,
 	RECENT_PRINT_DAYS,
@@ -33,7 +35,7 @@ import { site } from '@/lib/site';
 export const dynamic = 'force-dynamic';
 
 export default async function HomePage() {
-	const { current, recent, recentIndicative } = await readSiteData(new Date());
+	const { current, recent, chartHistory, recentIndicative } = await readSiteData(new Date());
 	// The methodology in effect at the same instant as the running value.
 	const parameters = collectingRelease(new Date(current.asOf)).parameters;
 	return (
@@ -42,6 +44,7 @@ export default async function HomePage() {
 				title={site.name}
 				lede={`Airport-minutes under FAA ground stops and ground delay programs across ${parameters.panel.length} US hub airports, per ${dayName(parameters)}. Methodology v${parameters.version}.`}
 			/>
+			<IndexChart history={chartHistory} current={current} api={CHART_API} />
 			{current.status === 'transition' ? (
 				<TransitionNotice current={current} />
 			) : (
@@ -49,7 +52,7 @@ export default async function HomePage() {
 			)}
 			{current.status === 'provisional' && hasValidRound(current) ? (
 				<>
-					<Section title='Hourly series'>
+					<Section title='Today by hour'>
 						<HourlyChart hourly={current.hourly} />
 					</Section>
 					<Section title='By airport'>
@@ -81,12 +84,7 @@ function Today({ current }: { current: Provisional }) {
 	return (
 		<Section title={<UtcDay date={current.date}>Today, {current.date} (UTC)</UtcDay>}>
 			{hasValidRound(current) ? (
-				<div className='grid gap-6 sm:grid-cols-3'>
-					<Figure
-						label='ADI, running'
-						value={formatInteger(current.value)}
-						note='airport-minutes, GS or GDP'
-					/>
+				<div className='grid gap-6 sm:grid-cols-2'>
 					<Figure
 						label='ADI-GS, running'
 						value={formatInteger(current.groundStopValue)}

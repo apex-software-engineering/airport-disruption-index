@@ -7,6 +7,7 @@
  */
 import type { HourBucket } from '@/lib/index/schemas';
 
+import { niceCeiling, ticksTo } from './chart-scale';
 import { formatInteger, formatUtcHour } from './format';
 import { LocalHour, LocalTime, LocalTimeTitle } from './local-time';
 import { Table } from './ui';
@@ -42,15 +43,6 @@ function barsOf(hourly: readonly HourBucket[]): Bar[] {
 			upcoming: ended === 0,
 		};
 	});
-}
-
-/** Smallest 1/2/5 × 10^k at or above `value`, so the top gridline is a round number. */
-function niceCeiling(value: number): number {
-	if (value <= 0) return 60;
-	const magnitude = 10 ** Math.floor(Math.log10(value));
-	const step = [1, 2, 5, 10].find((m) => m * magnitude >= value);
-	if (step === undefined) throw new Error(`no nice ceiling for ${value}`);
-	return step * magnitude;
 }
 
 /** A bar segment with rounded top corners only (the data end), flat on the baseline side. */
@@ -94,8 +86,7 @@ export function HourlyChart({ hourly }: { hourly: readonly HourBucket[] }) {
 	const slotWidth = plotWidth / bars.length;
 	const barWidth = slotWidth - GAP;
 	const yOf = (minutes: number) => PLOT.top + plotHeight * (1 - minutes / top);
-	// A mid gridline only where it lands on a whole number of airport-minutes.
-	const ticks = top % 2 === 0 ? [0, top / 2, top] : [0, top];
+	const ticks = ticksTo(top);
 
 	return (
 		<figure>

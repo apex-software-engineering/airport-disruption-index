@@ -113,3 +113,20 @@ export function isUtcOffsetZero(iso: string, timeZone: string): boolean {
 	);
 	return wallClockAsUtc === Math.floor(at.getTime() / 60_000) * 60_000;
 }
+
+const SHORT_DATE = new Intl.DateTimeFormat('en-US', {
+	month: 'short',
+	day: 'numeric',
+	timeZone: 'UTC',
+});
+
+/** A UTC day for a chart axis: `2026-11-21` → `Nov 21`. */
+export function formatShortDate(date: string): string {
+	return SHORT_DATE.format(instant(`${date}T00:00:00Z`));
+}
+
+/** A change with its sign, minus as U+2212: `+395`, `−40`, `0`. */
+export function formatSigned(value: number): string {
+	if (value === 0) return '0';
+	return `${value > 0 ? '+' : '−'}${formatInteger(Math.abs(value))}`;
+}
