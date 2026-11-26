@@ -74,6 +74,7 @@ jobs:
     outputs:
       changed: ${{ steps.changes.outputs.changed }}
       tip: ${{ steps.branch.outputs.tip }}
+      problem: ${{ steps.readback.outputs.problem }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -129,11 +130,19 @@ jobs:
           if [[ $existed == true && -e "$record.ots" ]]; then
             ots upgrade "$record.ots" || echo "$record.ots: not complete yet (pending or unreachable calendar)"
             rm -f "$record.ots.bak"
+            # A proof normally reaches a block within hours: one still pending a day after N is
+            # reported, so the run is not one of many quiet green ones.
+            notice_at="$(jq -r .noticeAt "$record")"
+            if ! ots info "$record.ots" | grep -qE '^[[:space:]]*verify BitcoinBlockHeaderAttestation\(' &&
+              (( $(date -u +%s) - $(date -u -d "$notice_at" +%s) > 86400 )); then
+              echo "problem=$record.ots is still pending a day after N ($notice_at); check its calendars" >> "$GITHUB_OUTPUT"
+            fi
           elif [[ $existed == true ]]; then
-            # The record's proof is missing: stamp the same bytes again (B is then the new block).
-            echo "::warning::$record has no proof beside it; stamping it again"
+            # The record's proof is missing: stamp the same bytes again (B is then the new, later
+            # block), publish it, and still fail the run so the loss is seen.
             ots stamp --timeout 30 "$record"
             ots info "$record.ots"
+            echo "problem=$record had no proof beside it; it was stamped again, so B is the new proof's block" >> "$GITHUB_OUTPUT"
           else
             ots stamp --timeout 30 "$record"
             ots info "$record.ots"
@@ -243,4 +252,20 @@ jobs:
             sleep $((attempt * 5))
           done
           echo "::error::could not push to $PUBLICATION_BRANCH after 3 attempts"
+          exit 1
+
+  # Last, so a recovered proof is published first: a problem the readback job found fails the run.
+  report:
+    name: Fail for a missing or stuck proof
+    needs: [readback, publish]
+    if: ${{ always() && needs.readback.outputs.problem != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Report
+        env:
+          PROBLEM: ${{ needs.readback.outputs.problem }}
+        run: |
+          echo "::error::$PROBLEM"
           exit 1
