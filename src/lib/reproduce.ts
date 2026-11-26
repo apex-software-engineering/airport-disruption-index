@@ -190,23 +190,29 @@ const unsettledSchema = z.object({ status: z.literal('unsettled'), publishBy: z.
  * before admission closed, and is a mismatch. An unsettled day answers 404 stating its
  * `publishBy`; one that states another deadline is a mismatch, since a later one could hide an
  * overdue print. Anything else that is not a settled day cannot be judged.
+ *
+ * The server answered at some instant between the request's start and its end, both read from
+ * `clock`, so each verdict takes the edge that makes it certain: settled is premature only if the
+ * request ended before the cutoff, and unsettled is overdue only if it started at the deadline.
  */
 export async function fetchPublication(
 	baseUrl: string,
 	date: UtcDate,
-	now: Date,
+	clock: () => Date,
 	get: Get,
 ): Promise<Publication> {
 	const url = `${baseUrl}/api/v1/days/${date}`;
+	const started = clock();
 	const response = await get(url).catch((error: unknown) => {
 		throw new CannotVerify(`GET ${url} failed: ${String(error)}`);
 	});
+	const ended = clock();
 	const { window } = settlementDay(date);
 	if (response.ok) {
 		const cutoff = settlesAt(window);
-		if (now < cutoff) {
+		if (ended < cutoff) {
 			throw new Mismatch([
-				`${date} is served as settled at ${now.toISOString()}, before its cutoff ${cutoff.toISOString()}`,
+				`${date} is served as settled at ${ended.toISOString()}, before its cutoff ${cutoff.toISOString()}`,
 			]);
 		}
 		return { kind: 'settled' };
@@ -221,7 +227,7 @@ export async function fetchPublication(
 		]);
 	}
 	return {
-		kind: now < deadline ? 'not_yet_due' : 'overdue',
+		kind: started < deadline ? 'not_yet_due' : 'overdue',
 		publishBy: deadline.toISOString(),
 	};
 }

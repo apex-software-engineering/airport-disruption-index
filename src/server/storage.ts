@@ -113,7 +113,30 @@ export class BlobStore implements ObjectStore {
 	}
 }
 
-/** Filesystem store. Versions are content hashes; conditional writes are not atomic across processes. */
+/**
+ * The conditional writes in flight per file in this process, so each one's check and write run
+ * as one step. Across processes they are still not atomic: FileStore is for dev and tests, one
+ * process each; production uses BlobStore, whose conditional put is atomic on the server.
+ */
+const writesInFlight = new Map<string, Promise<unknown>>();
+
+async function oneAtATime<T>(file: string, write: () => Promise<T>): Promise<T> {
+	const ahead = writesInFlight.get(file) ?? Promise.resolve();
+	const mine = ahead.then(write);
+	// The next writer waits for this one to finish, whatever its outcome.
+	const done = mine.then(
+		() => undefined,
+		() => undefined,
+	);
+	writesInFlight.set(file, done);
+	try {
+		return await mine;
+	} finally {
+		if (writesInFlight.get(file) === done) writesInFlight.delete(file);
+	}
+}
+
+/** Filesystem store. Versions are content hashes; conditional writes are atomic within a process. */
 export class FileStore implements ObjectStore {
 	constructor(private readonly root: string) {}
 
@@ -137,17 +160,19 @@ export class FileStore implements ObjectStore {
 	async write(key: string, body: Uint8Array, _contentType: string, condition: WriteCondition) {
 		const file = this.path(key);
 		await mkdir(path.dirname(file), { recursive: true });
-		if (condition.kind === 'if-version') {
-			const current = await this.read(key);
-			if (current === null || current.version !== condition.version) return 'conflict';
-		}
-		try {
-			await writeFile(file, body, { flag: condition.kind === 'if-absent' ? 'wx' : 'w' });
-			return 'written';
-		} catch (error) {
-			if (isErrno(error, 'EEXIST')) return 'conflict';
-			throw error;
-		}
+		return oneAtATime(file, async () => {
+			if (condition.kind === 'if-version') {
+				const current = await this.read(key);
+				if (current === null || current.version !== condition.version) return 'conflict';
+			}
+			try {
+				await writeFile(file, body, { flag: condition.kind === 'if-absent' ? 'wx' : 'w' });
+				return 'written';
+			} catch (error) {
+				if (isErrno(error, 'EEXIST')) return 'conflict';
+				throw error;
+			}
+		});
 	}
 
 	async list(prefix: string): Promise<string[]> {

@@ -161,9 +161,10 @@ count.
 
 - Day D settles at **D+1 00:30Z** (the cutoff), and its print is published by **D+1 01:30Z** (the
   publication deadline). A cron builds the print at 00:30Z and runs again at 00:45Z and 01:00Z.
-  Later runs, from 04:30Z to 06:00Z, also retry every day whose cutoff passed in the last 48 hours,
-  so a missed run is recovered the same morning. A run after the print exists changes nothing, and
-  no run ever overwrites a print. See [Settlement rules](#settlement-rules).
+  Every settle run, these and the later ones from 04:30Z to 06:00Z, retries each day whose cutoff
+  passed in the last 48 hours, so a missed run is recovered the same morning. A run after the print
+  exists changes nothing, and no run ever overwrites a print. See
+  [Settlement rules](#settlement-rules).
 - The print is built only from day D's stored receipts, each checked against its own `receiptHash`
   first. The day index that serves the running value is a cache of those receipts: each collect
   reconciles it against a listing of the day's receipts, and settlement rebuilds it. Settlement
@@ -234,15 +235,15 @@ this document disagree, the rule wins and the disagreement is a documentation bu
    ground delay programs under a new name and list, v1 undercounts until a methodology change counts
    it.
 7. **Publication deadline and retries.** The print for day D is due by **D+1 01:30Z**. The settle
-   job runs at 00:30Z and retries at 00:45Z and 01:00Z; later runs from 04:30Z to 06:00Z retry any
-   day whose cutoff passed in the last 48 hours. A run that finds no print reads every receipt of
-   the day and checks it against its `receiptHash`; a receipt that cannot be read or verified stops
-   that run without printing anything, and the next run tries again. A run that finds a print
-   already stored reads no receipts: it returns that print and points the history index at the day's
-   latest revision, which repairs a history update that failed after the print was written. If no
-   print exists at the deadline the operator opens an incident on the [incident log](#incident-log).
-   **A late print is still the print**: it is built by the same rules from the same receipts, and
-   lateness alone never changes its status or value.
+   job runs at 00:30Z and retries at 00:45Z and 01:00Z; every settle run, including later ones from
+   04:30Z to 06:00Z, retries any day whose cutoff passed in the last 48 hours. A run that finds no
+   print reads every receipt of the day and checks it against its `receiptHash`; a receipt that
+   cannot be read or verified stops that run without printing anything, and the next run tries
+   again. A run that finds a print already stored reads no receipts: it returns that print and
+   points the history index at the day's latest revision, which repairs a history update that failed
+   after the print was written. If no print exists at the deadline the operator opens an incident on
+   the [incident log](#incident-log). **A late print is still the print**: it is built by the same
+   rules from the same receipts, and lateness alone never changes its status or value.
 8. **Corrections.** Only Apex Software Engineering LLC, the operator, issues a correction print
    (revision 2 or later, see [Revisions](#revisions)), with `npm run correct` (see the
    [README](https://github.com/apex-software-engineering/airport-disruption-index#corrections)). A
