@@ -93,9 +93,29 @@ export function dayAt(instant: Date): DayAt {
  * replaces (settlement rule 4). v1 took effect at 2026-11-17T00:00Z; v2, replacing v1, at 00:00Z
  * of its first date, five hours before its first ET day starts.
  */
-export function effectiveAt(release: Methodology): Date {
-	const predecessor = RELEASES[RELEASES.indexOf(release) - 1] ?? release;
+export function effectiveAt(
+	release: Methodology,
+	releases: readonly Methodology[] = RELEASES,
+): Date {
+	const index = releases.indexOf(release);
+	if (index < 0) {
+		throw new Error(
+			`${release.parameters.version} is not this registry's release object: when it takes effect depends on the release before it`,
+		);
+	}
+	const predecessor = releases[index - 1] ?? release;
 	return dayWindow(predecessor, release.effectiveFrom).start;
+}
+
+/** v1 settlement rule 4: a new version is announced at least 30 days before it takes effect. */
+export const NOTICE_PERIOD_MS = 30 * DAY_MS;
+
+/**
+ * The earliest instant a release announced at N, with its readback proof's block time B, may take
+ * effect: max(N, B) + 30 × 24 h (design §2). The later of the two needs no check that B ≥ N.
+ */
+export function noticeBound(noticeAt: Date, proofAt: Date): Date {
+	return new Date(Math.max(noticeAt.getTime(), proofAt.getTime()) + NOTICE_PERIOD_MS);
 }
 
 /**

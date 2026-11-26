@@ -4,8 +4,8 @@
  * methodology.test.ts). Older entries stay so that their days keep settling, validating and
  * reproducing under the parameters they were collected under.
  *
- * The schedule fields (`effectiveUntil`, `announcedAt`, `withdrawn`, `noticePublishedAt`) are not
- * hashed. They change only through the published cutover steps in docs/design/v2-eastern-day.md.
+ * The schedule fields (`effectiveUntil`, `announcedAt`, `announcedProofAt`, `announcedProofHeight`,
+ * `withdrawn`, `noticePublishedAt`) are not hashed. They change only through the published cutover steps in docs/design/v2-eastern-day.md.
  */
 import { hashJson } from './json';
 import type { Methodology, MethodologyParameters, ZonedDayParameters } from './methodology';
@@ -94,7 +94,15 @@ export const METHODOLOGY_V2 = {
 } as const satisfies ZonedDayParameters;
 
 type Schedule = Partial<
-	Pick<Methodology, 'effectiveUntil' | 'announcedAt' | 'withdrawn' | 'noticePublishedAt'>
+	Pick<
+		Methodology,
+		| 'effectiveUntil'
+		| 'announcedAt'
+		| 'announcedProofAt'
+		| 'announcedProofHeight'
+		| 'withdrawn'
+		| 'noticePublishedAt'
+	>
 >;
 
 export function release(
@@ -108,6 +116,8 @@ export function release(
 		effectiveFrom,
 		effectiveUntil: schedule.effectiveUntil ?? null,
 		announcedAt: schedule.announcedAt ?? null,
+		announcedProofAt: schedule.announcedProofAt ?? null,
+		announcedProofHeight: schedule.announcedProofHeight ?? null,
 		withdrawn: schedule.withdrawn ?? false,
 		noticePublishedAt: schedule.noticePublishedAt ?? null,
 	};

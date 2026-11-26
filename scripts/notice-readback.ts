@@ -14,10 +14,11 @@
  */
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 
 import { isNoticePublished } from '@/lib/index/methodology';
 import { RELEASES } from '@/lib/index/releases';
-import { readBackNotice } from '@/lib/notice-readback';
+import { READBACK_ORIGIN, readBackNotice, readbackRecordName } from '@/lib/notice-readback';
 import { Mismatch } from '@/lib/reproduce';
 
 import { DEFAULT_DIRECTORY } from './lib/attestations';
@@ -25,9 +26,6 @@ import { CannotVerify, describeError, getPublicNoRedirect, parseArgs } from './l
 
 const USAGE =
 	'npm run notice-readback -- <version> --run-id <id> --run-attempt <n> --run-started-at <ISO> [--dir attestations]';
-
-/** The only site a readback record is ever for: N is when the production notice was public. */
-const PRODUCTION = 'https://airports.apexsofteng.com';
 
 async function main(): Promise<number> {
 	const {
@@ -37,8 +35,8 @@ async function main(): Promise<number> {
 	} = parseArgs(process.argv.slice(2), USAGE, ['run-id', 'run-attempt', 'run-started-at', 'dir']);
 	const release = RELEASES.find((candidate) => candidate.parameters.version === version);
 	if (release === undefined) throw new CannotVerify(`no registered release is ${version}`);
-	if (baseUrl !== PRODUCTION) {
-		throw new CannotVerify(`a readback record is only for ${PRODUCTION}, never ${baseUrl}`);
+	if (baseUrl !== READBACK_ORIGIN) {
+		throw new CannotVerify(`a readback record is only for ${READBACK_ORIGIN}, never ${baseUrl}`);
 	}
 	if (!isNoticePublished(release, new Date())) {
 		console.log(
@@ -54,15 +52,15 @@ async function main(): Promise<number> {
 		throw new CannotVerify(
 			`--run-id, --run-attempt and --run-started-at are required; usage: ${USAGE}`,
 		);
-	const directory = `${options.get('dir') ?? DEFAULT_DIRECTORY}/notices`;
-	const path = `${directory}/${version}.readback.json`;
+	const path = `${options.get('dir') ?? DEFAULT_DIRECTORY}/${readbackRecordName(version)}`;
+	const directory = dirname(path);
 	if (existsSync(path)) {
 		console.log(`${path} already exists; a readback record is never rewritten`);
 		return 0;
 	}
 	// The public internet, never the preview bypass: N is when anyone could read the notice.
 	const readback = await readBackNotice(
-		PRODUCTION,
+		READBACK_ORIGIN,
 		release,
 		{ id, attempt, startedAt },
 		() => new Date(),

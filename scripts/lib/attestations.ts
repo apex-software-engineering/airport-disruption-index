@@ -24,7 +24,7 @@ import { OtsFormatError, readOtsProof } from '@/lib/ots';
 
 import type { SettledDay } from '@/lib/reproduce';
 
-import { CannotVerify, Pending, Unattested, fetchDay, getPublic } from './public-api';
+import { CannotVerify, Mismatch, Pending, Unattested, fetchDay, getPublic } from './public-api';
 
 export const DEFAULT_DIRECTORY = 'attestations';
 export const DEFAULT_BRANCH = 'attestations';
@@ -66,6 +66,38 @@ export async function fetchBlock(height: number): Promise<BitcoinBlock> {
 	throw new CannotVerify(`no block explorer answered for block ${height}: ${failures.join('; ')}`);
 }
 
+/**
+ * A block as every explorer reports it, for the step-2 bound, where one explorer's word is not
+ * enough: each is asked, and asked again once if it cannot answer. They must all answer (else
+ * CannotVerify) and agree on the block's merkle root and time (else Mismatch, naming each).
+ */
+export async function fetchBlockAgreed(height: number): Promise<BitcoinBlock> {
+	const answers: { base: string; block: BitcoinBlock }[] = [];
+	for (const base of BLOCK_EXPLORERS) {
+		const block = await fetchBlockFrom(base, height).catch((error: unknown) => {
+			if (!(error instanceof CannotVerify)) throw error;
+			return fetchBlockFrom(base, height);
+		});
+		answers.push({ base, block });
+	}
+	const [first, ...rest] = answers;
+	if (first === undefined) throw new Error('no block explorer is configured');
+	const disagreeing = rest.filter(
+		({ block }) =>
+			block.merkleRoot !== first.block.merkleRoot ||
+			block.time.getTime() !== first.block.time.getTime(),
+	);
+	if (disagreeing.length > 0) {
+		throw new Mismatch(
+			answers.map(
+				({ base, block }) =>
+					`${base} reports block ${height} with merkle root ${block.merkleRoot} at ${block.time.toISOString()}`,
+			),
+		);
+	}
+	return first.block;
+}
+
 async function fetchBlockFrom(base: string, height: number): Promise<BitcoinBlock> {
 	const explorer = async (path: string) => {
 		const url = `${base}${path}`;
@@ -86,8 +118,14 @@ async function fetchBlockFrom(base: string, height: number): Promise<BitcoinBloc
 
 export type Pin = { revision: number; name: string; attestation: Attestation; bytes: Uint8Array };
 
+/** The most any one git command may take, so a stalled remote never holds a check open. */
+export const GIT_TIMEOUT_MS = 120_000;
+
 function git(directory: string, args: string[]): Buffer {
-	return execFileSync('git', ['-C', directory, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+	return execFileSync('git', ['-C', directory, ...args], {
+		stdio: ['ignore', 'pipe', 'pipe'],
+		timeout: GIT_TIMEOUT_MS,
+	});
 }
 
 function commitOf(directory: string, ref: string): string | null {
@@ -176,16 +214,18 @@ function liveTip(directory: string, branch: string): string | null {
 }
 
 /**
- * Every attestation ever committed for a date, as first committed, with a problem for each later
- * modification or deletion of one. Each commit is diffed against its first parent, so a merge
- * cannot hide a rewrite or a deletion.
+ * Every file under `pathspec` (with a name `accept` takes) ever committed to the publication
+ * branch, as first committed, with a problem for each later modification or deletion of one and
+ * for any merge commit. Each commit is diffed against its first parent, so a merge cannot hide a
+ * rewrite or a deletion. The one reader of the branch's history.
  */
-export function readPins(
+export function firstCommittedFiles(
 	checkout: BranchCheckout,
-	date: UtcDate,
-): { pins: Pin[]; problems: string[] } {
+	pathspec: string,
+	accept: (name: string) => boolean,
+): { files: Map<string, Uint8Array>; problems: string[] } {
 	const { directory } = checkout;
-	if (!requireBranchCheckout(checkout)) return { pins: [], problems: [] };
+	if (!requireBranchCheckout(checkout)) return { files: new Map(), problems: [] };
 	// The branch ruleset requires linear history; a merge commit anywhere means it was bypassed,
 	// and a first-parent walk alone could then miss what the merged side changed.
 	const problems = git(directory, ['rev-list', '--merges', 'HEAD'])
@@ -202,21 +242,66 @@ export function readPins(
 		'--format=commit %H',
 		'--name-status',
 		'--',
-		`${date}.r*.json`,
+		pathspec,
 	]).toString();
-	const pattern = new RegExp(`^${date}\\.r([1-9]\\d*)\\.json$`);
 	const firstAdded = new Map<string, string>();
 	let commit = '';
 	for (const line of log.split('\n')) {
 		if (line.startsWith('commit ')) commit = line.slice('commit '.length);
 		const [status, name] = line.split('\t');
-		if (status === undefined || name === undefined || !pattern.test(name)) continue;
+		if (status === undefined || name === undefined || !accept(name)) continue;
 		if (status === 'A' && !firstAdded.has(name)) firstAdded.set(name, commit);
 		else problems.push(`${name} was ${status === 'D' ? 'deleted' : 'modified'} in ${commit}`);
 	}
-	const pins: Pin[] = [];
+	const files = new Map<string, Uint8Array>();
 	for (const [name, added] of firstAdded) {
-		const bytes = new Uint8Array(git(directory, ['show', `${added}:${name}`]));
+		files.set(name, new Uint8Array(git(directory, ['show', `${added}:${name}`])));
+	}
+	return { files, problems };
+}
+
+/**
+ * Every version of file `name` committed to the publication branch, oldest first, along its
+ * first-parent history: how a proof upgraded in place reached what it now holds. Call it after
+ * `firstCommittedFiles` has checked the checkout.
+ */
+export function committedVersions(
+	{ directory }: BranchCheckout,
+	name: string,
+): { commit: string; bytes: Uint8Array }[] {
+	const commits = git(directory, [
+		'log',
+		'--reverse',
+		'--first-parent',
+		'--no-renames',
+		'--format=%H',
+		'--diff-filter=AM',
+		'--',
+		name,
+	])
+		.toString()
+		.split('\n')
+		.filter((commit) => commit !== '');
+	return commits.map((commit) => ({
+		commit,
+		bytes: new Uint8Array(git(directory, ['show', `${commit}:${name}`])),
+	}));
+}
+
+/**
+ * Every attestation ever committed for a date, as first committed, with a problem for each later
+ * modification or deletion of one (`firstCommittedFiles`).
+ */
+export function readPins(
+	checkout: BranchCheckout,
+	date: UtcDate,
+): { pins: Pin[]; problems: string[] } {
+	const pattern = new RegExp(`^${date}\\.r([1-9]\\d*)\\.json$`);
+	const { files, problems } = firstCommittedFiles(checkout, `${date}.r*.json`, (name) =>
+		pattern.test(name),
+	);
+	const pins: Pin[] = [];
+	for (const [name, bytes] of files) {
 		const parsed = attestationSchema.safeParse(JSON.parse(new TextDecoder().decode(bytes)));
 		const revision = Number(pattern.exec(name)?.[1]);
 		if (!parsed.success) {
