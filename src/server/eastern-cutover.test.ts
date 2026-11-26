@@ -577,6 +577,20 @@ describe('the attest gate reads each day’s own publishBy', () => {
 		expect(await at('2027-01-02T06:45:00Z')).toEqual({ kind: 'settled' });
 	});
 
+	it('refuses a day served as settled before its own cutoff (Sol 3b r1, finding 2)', async () => {
+		// At 01:45Z E (cutoff 05:30Z) cannot have a print yet: one served then was built early.
+		await collectAroundE();
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2027-01-02T05:30:00Z'));
+		await settleDay(store, E);
+		vi.useRealTimers();
+		await expect(
+			fetchPublication('http://test', E, new Date('2027-01-02T01:45:00Z'), routeGet),
+		).rejects.toThrow(
+			'is served as settled at 2027-01-02T01:45:00.000Z, before its cutoff 2027-01-02T05:30:00.000Z',
+		);
+	});
+
 	it('judges by its own deadline, never one the server states', async () => {
 		// A server stating a later deadline could otherwise keep an overdue print "not yet due".
 		const later: Get = async () =>

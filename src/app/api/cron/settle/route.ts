@@ -26,8 +26,13 @@ export const maxDuration = 300;
  * history at the latest revision; `nothing_due` means no day was due. `?date=YYYY-MM-DD` settles
  * that past day at any age (the operator's recovery path), and refuses it before its cutoff.
  *
- * Every authorized run then freezes the indicative ET days (design §4) of the last few dates whose
- * freeze time has passed, whatever the settlements did, each independently.
+ * Every authorized run also freezes the indicative ET days (design §4) of the last few dates whose
+ * freeze time has passed, whatever the settlements do.
+ *
+ * Every day and every freeze runs concurrently under its own deadline (ATTEMPT_DEADLINE_MS), so a
+ * stalled storage request fails only its own attempt and the run still answers within
+ * maxDuration. Abandoned work is safe: every print and index write is conditional, so it can only
+ * store the same print later, never overwrite one.
  *
  * The status is 500 when any day failed, else 409 when any was blocked (its print key holds
  * something else, reported as `misfiled` and never overwritten), else 200.
@@ -38,9 +43,10 @@ export async function GET(request: Request) {
 	const store = storeFromEnv();
 	const named = new URL(request.url).searchParams.get('date');
 	if (named === null) {
-		const settled: Settled[] = [];
-		for (const { window } of dueSettlementDays(now)) settled.push(await settle(store, window.date));
-		const indicative = await freezeDue(store, now);
+		const [settled, indicative] = await Promise.all([
+			Promise.all(dueSettlementDays(now).map(({ window }) => settle(store, window.date))),
+			freezeDue(store, now),
+		]);
 		const status = settled.length === 0 ? 'nothing_due' : 'ran';
 		return json({ status, settled, indicative }, CACHE.none, httpStatusOf(settled));
 	}
@@ -50,8 +56,7 @@ export async function GET(request: Request) {
 		return problem(400, `no methodology is in effect on ${named}, so it has nothing to settle`);
 	const cutoff = settlesAt(dayWindow(release, named));
 	if (now < cutoff) return problem(409, `${named} settles at ${cutoff.toISOString()}`);
-	const settled = await settle(store, named);
-	const indicative = await freezeDue(store, now);
+	const [settled, indicative] = await Promise.all([settle(store, named), freezeDue(store, now)]);
 	return json({ ...settled, indicative }, CACHE.none, httpStatusOf([settled]));
 }
 
@@ -67,9 +72,28 @@ type Settled =
 	| { date: string; status: 'blocked'; misfiled: MisfiledPrints }
 	| { date: string; status: 'failed'; reason: string };
 
+/** How long one day's settlement, or one freeze, may take: a run still answers in maxDuration. */
+export const ATTEMPT_DEADLINE_MS = (maxDuration - 30) * 1000;
+
+/** `work`, or a rejection once ATTEMPT_DEADLINE_MS has passed. */
+async function withinDeadline<T>(what: string, work: Promise<T>): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<never>((_, reject) => {
+		timer = setTimeout(
+			() => reject(new Error(`${what} did not finish within ${ATTEMPT_DEADLINE_MS / 1000} s`)),
+			ATTEMPT_DEADLINE_MS,
+		);
+	});
+	try {
+		return await Promise.race([work, deadline]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 async function settle(store: ObjectStore, date: string): Promise<Settled> {
 	try {
-		const { status, print } = await settleDay(store, date);
+		const { status, print } = await withinDeadline(`settling ${date}`, settleDay(store, date));
 		const misfiled = await misfiledPrints(store, date);
 		return {
 			date,
@@ -98,17 +122,20 @@ const INDICATIVE_LOOKBACK_DAYS = 3;
 /** Freezes every due indicative day, each independently. None before the series is published. */
 async function freezeDue(store: ObjectStore, now: Date) {
 	const due = indicativeSeriesPublished() ? dueIndicativeDays(now, INDICATIVE_LOOKBACK_DAYS) : [];
-	const frozen = [];
-	for (const date of due) {
-		try {
-			const { status, print } = await freezeIndicativeDay(store, date, now);
-			frozen.push({ date, status, result: print.result.status, printHash: print.printHash });
-		} catch (error) {
-			console.error(`indicative freeze ${date} failed`, error);
-			frozen.push({ date, status: 'failed' as const, reason: reasonOf(error) });
-		}
-	}
-	return frozen;
+	return Promise.all(
+		due.map(async (date) => {
+			try {
+				const { status, print } = await withinDeadline(
+					`freezing ${date}`,
+					freezeIndicativeDay(store, date, now),
+				);
+				return { date, status, result: print.result.status, printHash: print.printHash };
+			} catch (error) {
+				console.error(`indicative freeze ${date} failed`, error);
+				return { date, status: 'failed' as const, reason: reasonOf(error) };
+			}
+		}),
+	);
 }
 
 function reasonOf(error: unknown): string {
