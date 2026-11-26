@@ -20,7 +20,7 @@ import {
 } from '@/lib/index/calendar';
 import { settlementReleaseFor } from '@/lib/index/methodology';
 import { buildPrint, historyEntryOf } from '@/lib/index/print';
-import { fetchPublication, reproduce } from '@/lib/reproduce';
+import { fetchPublication, reproduce, type Get } from '@/lib/reproduce';
 import { routeGet } from '@/test/api';
 import { RELEASES } from '@/lib/index/releases';
 import { addDays } from '@/lib/index/time';
@@ -575,5 +575,17 @@ describe('the attest gate reads each day’s own publishBy', () => {
 		});
 		await settleDay(store, E);
 		expect(await at('2027-01-02T06:45:00Z')).toEqual({ kind: 'settled' });
+	});
+
+	it('judges by its own deadline, never one the server states', async () => {
+		// A server stating a later deadline could otherwise keep an overdue print "not yet due".
+		const later: Get = async () =>
+			Response.json(
+				{ status: 'unsettled', publishBy: '2027-01-09T06:30:00.000Z' },
+				{ status: 404 },
+			);
+		await expect(
+			fetchPublication('http://test', E, new Date('2027-01-02T07:00:00Z'), later),
+		).rejects.toThrow('states publishBy 2027-01-09T06:30:00.000Z, not 2027-01-02T06:30:00.000Z');
 	});
 });

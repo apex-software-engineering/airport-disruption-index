@@ -12,6 +12,7 @@ import { z } from 'zod';
 
 import { DEPLOYED_COMMIT_HEADER, parseDeployedCommit } from '@/lib/deployment';
 import { adapterOf } from '@/lib/index/adapters';
+import { publishBy, settlementDay } from '@/lib/index/calendar';
 import { admits, methodologyOf, type Identity } from '@/lib/index/methodology';
 import { receiptHashMatches } from '@/lib/index/round';
 import {
@@ -183,8 +184,11 @@ export type Publication =
 const unsettledSchema = z.object({ status: z.literal('unsettled'), publishBy: z.iso.datetime() });
 
 /**
- * A day's publication state at `now`, from `/api/v1/days/{date}`: an unsettled day answers 404
- * with its `publishBy`. Anything else that is not a settled day cannot be judged.
+ * A day's publication state at `now`, from `/api/v1/days/{date}`. The deadline is this checkout's
+ * own (`publishBy` of the release that owns the date), never the server's: the server is the party
+ * checked, so a later deadline it states could hide an overdue print. An unsettled day answers 404
+ * stating its `publishBy`; one that states another deadline is a mismatch. Anything else that is
+ * not a settled day cannot be judged.
  */
 export async function fetchPublication(
 	baseUrl: string,
@@ -200,8 +204,16 @@ export async function fetchPublication(
 	const unsettled = unsettledSchema.safeParse(await response.json().catch(() => null));
 	if (response.status !== 404 || !unsettled.success)
 		throw new CannotVerify(`GET ${url}: HTTP ${response.status}`);
-	const { publishBy } = unsettled.data;
-	return { kind: now < new Date(publishBy) ? 'not_yet_due' : 'overdue', publishBy };
+	const deadline = publishBy(settlementDay(date).window);
+	if (unsettled.data.publishBy !== deadline.toISOString()) {
+		throw new Mismatch([
+			`${url} states publishBy ${unsettled.data.publishBy}, not ${deadline.toISOString()}`,
+		]);
+	}
+	return {
+		kind: now < deadline ? 'not_yet_due' : 'overdue',
+		publishBy: deadline.toISOString(),
+	};
 }
 
 function deployedCommitOf(response: Response): string | null {

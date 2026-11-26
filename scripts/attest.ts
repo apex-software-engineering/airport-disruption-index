@@ -6,9 +6,9 @@
  *
  *   npm run attest -- <YYYY-MM-DD> [--days 1] [--dir attestations] [--base-url URL]
  *
- * A day not yet settled before its own `publishBy` (read from the API, so ET days and both DST
- * nights need no clock maths here) is skipped as not yet published; one still unsettled at or after
- * it is overdue, and fails.
+ * A day not yet settled before its `publishBy` (this checkout's calendar, which the API must state
+ * too; see fetchPublication) is skipped as not yet published; one still unsettled at or after it
+ * is overdue, and fails.
  *
  * Then every proof in the directory, of any date, is checked offline: invalid proofs are reported
  * apart from pending ones. Exit 0 when every day in the window is attested and matches (a pending
