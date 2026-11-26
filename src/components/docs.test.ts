@@ -93,6 +93,17 @@ describe('docs rendering', () => {
 		}
 	});
 
+	it.each([
+		['a trailing space', '<!-- notice 2.0.0 --> \nhidden\n<!-- /notice -->\n'],
+		['CRLF line ends', '<!-- notice 2.0.0 -->\r\nhidden\r\n<!-- /notice -->\r\n'],
+		['a double space after the opener', '<!--  notice 2.0.0 -->\nhidden\n<!-- /notice -->\n'],
+		['a double space before the version', '<!-- notice  2.0.0 -->\nhidden\n<!-- /notice -->\n'],
+		['a closer without spaces', '<!-- notice 2.0.0 -->\nhidden\n<!--/notice-->\n'],
+		['a closer with a double space', '<!-- log 2.0.0 -->\nhidden\n<!-- /log  -->\n'],
+	])('refuses a marker in any form but the exact one: %s (Opus #39 r2, finding 1)', (_, doc) => {
+		expect(() => gateNotices(doc, BEFORE)).toThrow();
+	});
+
 	it('refuses a notice marker naming no release, or left unclosed', () => {
 		expect(() => gateNotices('<!-- notice 9.9.9 -->\nx\n<!-- /notice -->\n', FROM)).toThrow(
 			'docs mark a notice of 9.9.9, no release',

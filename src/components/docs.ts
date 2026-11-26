@@ -93,7 +93,7 @@ export function gateNoticesIn(
 	releases: readonly Methodology[],
 ): string {
 	checkNoticeMarkers(markdown, releases);
-	return markdown.replace(
+	const gated = markdown.replace(
 		/<!-- (notice|before-notice|log) (\S+) -->\n([\s\S]*?)<!-- \/\1 -->\n?/g,
 		(_, kind: string, version: string, passage: string) => {
 			const release = releases.find((candidate) => candidate.parameters.version === version);
@@ -104,19 +104,33 @@ export function gateNoticesIn(
 			return shown ? passage : '';
 		},
 	);
+	// Every marker was strict and so was consumed: anything marker-like left over is an error.
+	if (MARKER_LIKE.test(gated))
+		throw new Error('docs leave a notice marker the gate did not consume');
+	return gated;
 }
 
+/** Anything that looks like a notice marker, in whatever spacing. */
+const MARKER_LIKE = /<!--\s*\/?\s*(?:notice|before-notice|log)\b[^]*?-->/;
+
+/** The one form a marker may take: `<!-- kind version -->` opens, `<!-- /kind -->` closes. */
+const STRICT_MARKER = /^<!-- (\/?)(notice|before-notice|log)(?: (\S+))? -->$/;
+
 /**
- * Every notice marker, checked as a structure before anything is hidden: each opener names a
- * registered release and is closed, by the matching closer, before the next opener. Nesting, a
- * stray or mismatched closer, or an opener left open throws, so no malformed marker can ever show
- * a passage early.
+ * Every notice marker, checked as a structure before anything is hidden. Each must be in the one
+ * strict form on a line of its own (LF line ends); each opener names a registered release and is
+ * closed, by the matching closer, before the next opener. Any other spacing, nesting, a stray or
+ * mismatched closer, or an opener left open throws, so no malformed marker can show a passage early.
  */
 function checkNoticeMarkers(markdown: string, releases: readonly Methodology[]): void {
 	let open: { kind: string; version: string } | null = null;
-	for (const [marker, closing, kind, version] of markdown.matchAll(
-		/<!--\s*(\/?)(notice|before-notice|log)\b(?:\s+(\S+))?\s*-->/g,
-	)) {
+	for (const match of markdown.matchAll(new RegExp(MARKER_LIKE.source, 'g'))) {
+		const marker = match[0];
+		const strict = STRICT_MARKER.exec(marker);
+		const after = markdown[match.index + marker.length];
+		if (strict === null || (after !== '\n' && after !== undefined))
+			throw new Error(`docs hold ${JSON.stringify(marker)}, not a notice marker in its exact form`);
+		const [, closing, kind, version] = strict;
 		if (closing === '/') {
 			if (open === null || open.kind !== kind || version !== undefined)
 				throw new Error(`docs close ${JSON.stringify(marker)} with no matching open marker`);

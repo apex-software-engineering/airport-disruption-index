@@ -113,6 +113,13 @@ it with a new commit: `git worktree add /tmp/adi-attestations origin/attestation
 it. Never edit or remove a `{date}.r{revision}.json` file: `verify-attestation` treats any change to
 one after its first commit as a failure. A proof (`.ots`) may change only by `ots upgrade`.
 
+**Notice step 1.** The commit that sets a release's `noticePublishedAt` deploys before that instant:
+the notice (incidents entry, versioned rules, banner, `upcoming`, indicative series) appears at it,
+and its dated text states it. If the deploy slips past the instant, move `noticePublishedAt` to the
+next 00:00Z first; the docs test fails until the dated text moves with it. The notice markers in
+`docs/` stay until the postponement deadline has passed (a withdrawal brings back the
+`before-notice` passages), and a later cleanup PR removes them.
+
 **Notice readback.** After a methodology notice deploys, run the notice-readback workflow
 (`.github/workflows/notice-readback.yml`) by hand; it also runs every 15 minutes, and its first job
 stops at once before the notice instant or once the record's proof reaches a Bitcoin block. A run

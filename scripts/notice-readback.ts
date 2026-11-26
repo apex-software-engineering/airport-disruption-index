@@ -1,7 +1,8 @@
 /**
- * Reads a methodology notice back from the public site and, once both the incidents entry and the
- * `upcoming` block show it, writes the single write-once record `notices/{version}.readback.json`
- * into the attestations checkout (design §2). Run by the notice-readback workflow, which then
+ * Reads a methodology notice back from the public site and, once the incidents entry, the
+ * methodology page's rules and the `upcoming` block all show it, writes the single write-once
+ * record `notices/{version}.readback.json` and its three bodies into the attestations checkout
+ * (design §2). Run by the notice-readback workflow, which then
  * stamps and publishes it.
  *
  *   npm run notice-readback -- <version> --run-id <id> --run-started-at <ISO> [--dir attestations] [--base-url URL]

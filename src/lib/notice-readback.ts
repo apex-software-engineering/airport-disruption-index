@@ -40,7 +40,7 @@ export const readbackSchema = z.object({
 		attempt: z.number().int().positive(),
 		/** GitHub's `run_started_at`. */
 		startedAt: z.iso.datetime(),
-		/** The runner's own clock once both responses were in. */
+		/** The runner's own clock once all three responses were in. */
 		observedAt: z.iso.datetime(),
 	}),
 	/** The incidents page, the methodology page, then `/api/v1/methodology`, as received. */
@@ -120,7 +120,7 @@ function shown(value: string): string {
 /** The run doing the readback: its id, its attempt and GitHub's `run_started_at`. */
 export type ReadbackRun = { id: number; attempt: number; startedAt: Date };
 
-/** The files beside `notices/{version}.readback.json` holding the two response bodies. */
+/** The files beside `notices/{version}.readback.json` holding the three response bodies. */
 export function readbackBodyNames(version: string): {
 	incidents: string;
 	rules: string;

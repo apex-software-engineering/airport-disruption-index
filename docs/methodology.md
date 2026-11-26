@@ -635,7 +635,7 @@ These notes bind whoever deploys the index.
    writes would make the first v2 day `suspended`).
 3. Expect cached responses to lag the 00:00Z cutover by up to five minutes: the edge can serve a
    copy of `/api/v1/methodology` or `/api/v1/current` up to five minutes old (60 s fresh, then stale
-   while it refreshes), and the `/methodology` page re-renders every minute.
+   while it refreshes); the `/methodology` page renders on every request.
 4. After the first v2 day prints, run `npm run reproduce` on it and on the last v1 day; both must
    print `MATCH`.
 

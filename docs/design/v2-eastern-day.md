@@ -99,7 +99,10 @@ deployment, after the first has been read back:
    `announcedAt: null`. **While `announcedAt` is null, v2 is never in effect.** `dayAt` and the
    settlement lookup ignore it, v1 has no `effectiveUntil`, and the collector keeps tagging v1. Only
    the indicative series (which selects v2 explicitly, see below) and `/api/v1/methodology`'s
-   `upcoming` block use it.
+   `upcoming` block use it. **Step 1 deploys before its `noticePublishedAt`**, which every part of
+   the notice waits for and its dated text states; if the deploy slips past that instant, move
+   `noticePublishedAt` to the next 00:00Z first (the docs test then forces the dated text to
+   follow). It is never a past value at deploy.
 2. **Readback: one record.** A Vercel `ready` timestamp is not used, because a deployment can be
    ready before it serves production traffic. Instead, a `notice-readback` GitHub Actions workflow
    runs after step 1 deploys, by hand and then every 15 minutes until it succeeds. It fetches
@@ -139,8 +142,10 @@ deployment, after the first has been read back:
    - `effectiveAt(v2) ≥ max(N, B) + 30 × 24 h`.
 
    The same PR removes the notice-readback workflow's 15-minute schedule (the proof is complete by
-   then, and the workflow stays for a manual run), and the docs' `before-notice` passages and the
-   notice markers, which have done their work once the notice is public.
+   then, and the workflow stays for a manual run). It keeps the docs' notice markers: a postponement
+   or withdrawal can still be announced until 2026-12-18T00:00Z, and the markers are what returns
+   the `before-notice` passages then. A later cleanup PR, after that deadline, removes the
+   `before-notice` passages the registry no longer needs and the markers.
 
    **This deployment is the rollback floor** (below). Until it deploys there is no cutover to
    protect.

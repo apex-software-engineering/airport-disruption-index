@@ -2,7 +2,7 @@ name: Notice readback
 
 # Records N, the instant a methodology notice is first shown to be public (design
 # docs/design/v2-eastern-day.md, section 2). Run by hand after the step-1 notice deploys, and every
-# 15 minutes until it succeeds. A run that cannot see the notice on both /incidents and
+# 15 minutes until it succeeds. A run that cannot see the notice on /incidents, /methodology and
 # /api/v1/methodology writes nothing. The one successful run writes the write-once record
 # notices/{version}.readback.json and the three response bodies it hashes, stamps the record with
 # OpenTimestamps, and appends them to the attestations branch. Later runs only upgrade the record's
