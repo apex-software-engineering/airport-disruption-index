@@ -12,8 +12,9 @@
  *
  * Once the indicative series is published, each indicative ET day in the window is then proved
  * both ways against these same v1 attestations (design §4, `reproduce --indicative`): a MISMATCH
- * fails the run; PENDING (a v1 reference not verified yet) and a day not frozen yet are reported,
- * never failed. No indicative file is ever written.
+ * fails the run, including a day misfiled or still unserved 2 hours after its freeze time; PENDING
+ * (a v1 reference not verified yet) and a day not frozen yet are reported, never failed. Each day
+ * is proved on its own, so an error in one never skips the rest. No indicative file is ever written.
  *
  * Then every proof in the directory, of any date, is checked offline: invalid proofs are reported
  * apart from pending ones. Exit 0 when every day in the window is attested and matches (a pending
@@ -22,7 +23,7 @@
  */
 import { buildAttestation } from '@/lib/index/attestation';
 import { fetchPublication, reproduceFetchedDay } from '@/lib/reproduce';
-import { indicativeReleaseFor, indicativeSeriesPublished } from '@/lib/index/indicative';
+import { indicativeSeriesPublished } from '@/lib/index/indicative';
 import { addDays, type UtcDate } from '@/lib/index/time';
 
 import {
@@ -34,7 +35,7 @@ import {
 	writeAttestation,
 	type BranchCheckout,
 } from './lib/attestations';
-import { proveIndicativeDay } from './lib/indicative-proof';
+import { proveIndicativeDays } from './lib/indicative-proof';
 import {
 	CannotVerify,
 	Mismatch,
@@ -114,28 +115,18 @@ async function main(): Promise<number> {
 			console.log(`${date}: FAILED: ${describeError(error)}`);
 		}
 	}
+	let indicativeFailures = 0;
 	if (indicativeSeriesPublished(new Date())) {
-		for (let offset = days - 1; offset >= 0; offset -= 1) {
-			const date = addDays(through, -offset);
-			if (indicativeReleaseFor(date) === null) continue;
-			const proof = await proveIndicativeDay(date, baseUrl, checkout, getApi, () => new Date());
-			for (const line of proof.log) console.log(line);
-			switch (proof.kind) {
-				case 'match':
-					console.log(`${date}: indicative MATCH`);
-					break;
-				case 'pending':
-					console.log(`${date}: indicative PENDING: ${proof.reason}`);
-					break;
-				case 'cannot_verify':
-					console.log(`${date}: indicative not checked: ${proof.reason}`);
-					break;
-				case 'mismatch':
-					failures += 1;
-					console.log(`${date}: FAILED: indicative MISMATCH: ${proof.problems.join('; ')}`);
-					break;
-			}
-		}
+		const dates = Array.from({ length: days }, (_, index) => addDays(through, index + 1 - days));
+		const indicative = await proveIndicativeDays(
+			dates,
+			baseUrl,
+			checkout,
+			getApi,
+			() => new Date(),
+		);
+		for (const line of indicative.lines) console.log(line);
+		indicativeFailures = indicative.failures;
 	}
 	// Every earlier proof too, reported apart from the days: written files are not stamped yet.
 	const earlier = (await attestationNames(checkout.directory)).filter(
@@ -143,9 +134,11 @@ async function main(): Promise<number> {
 	);
 	const invalid = await invalidProofs(checkout.directory, earlier);
 	for (const { problem } of invalid) console.log(`INVALID PROOF: ${problem}`);
-	const ok = failures === 0 && invalid.length === 0;
+	const ok = failures === 0 && indicativeFailures === 0 && invalid.length === 0;
 	console.log(
-		ok ? 'ATTESTED' : `FAILED: ${failures} day(s) not attested, ${invalid.length} invalid proof(s)`,
+		ok
+			? 'ATTESTED'
+			: `FAILED: ${failures} day(s) not attested, ${indicativeFailures} indicative day(s) failed, ${invalid.length} invalid proof(s)`,
 	);
 	return ok ? 0 : 1;
 }

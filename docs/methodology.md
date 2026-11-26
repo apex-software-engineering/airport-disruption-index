@@ -481,10 +481,15 @@ An indicative ET day, once its series is published, is proved both ways against 
 (with the `attestations` branch checked out as in [Attestations](#attestations)):
 `npm run reproduce -- --indicative <date> --dir attestations`. It rebuilds the frozen print from its
 rounds, then requires the `(roundId, receiptHash)` pairs it lists to equal exactly those the
-verified v1 prints of its UTC days list inside its window, invalid receipts included. Exit codes: 0
-`MATCH`, 1 `MISMATCH` (or verified v1 revisions of one day that disagree), 2 could not verify, 4
-`PENDING` (a v1 reference is not attested or its proof is not complete yet). The attest workflow
-runs it for every indicative day in its 7-day window and fails on a `MISMATCH`.
+reference v1 prints of its UTC days list inside its window, invalid receipts included. Each UTC
+day's reference is its latest revision that verifies on its own: attested, matching its attestation,
+and timestamped in a Bitcoin block before that revision's cutoff. A revision that is unattested,
+pending or late is not a reference, and both UTC days are always checked. Exit codes: 0 `MATCH`; 1
+`MISMATCH` (the sets differ, revisions of one v1 day list different receipts, an attestation
+conflicts with the API, or the indicative day is misfiled or still not served 2 hours after its
+freeze time); 2 could not verify; 4 `PENDING` (a UTC day has no verified revision yet). A mismatch
+on either UTC day wins over the other's pending or could-not-verify. The attest workflow runs it for
+every indicative day in its 7-day window and fails on a `MISMATCH`.
 
 ### Attestations
 

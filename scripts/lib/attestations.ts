@@ -225,38 +225,50 @@ export async function verifyAttested(
 	return verifyAttestedDay(await fetchDay(baseUrl, date), checkout);
 }
 
-/** verifyAttested for a day already fetched, so a caller can attest from the same response. */
-export async function verifyAttestedDay(
+/** What the attestations branch shows about one served revision of a day. */
+export type RevisionProof = { revision: number } & (
+	| { kind: 'unattested'; path: string }
+	| { kind: 'proven'; pin: Pin; height: number; time: Date; cutoff: Date }
+	/** Attested, but its time is not provable yet: the proof has not reached a Bitcoin block. */
+	| { kind: 'pending'; pin: Pin; detail: string }
+	/** Attested, but its proof is missing, malformed, wrong, or timestamped after its cutoff. */
+	| { kind: 'invalid'; pin: Pin; detail: string }
+);
+
+/**
+ * Every served revision of a day against the attestations branch. `problems` are conflicts, which
+ * no proof can make good: a pin rewritten, deleted or merged in, a pinned revision the API no longer
+ * serves, or an attestation its print contradicts. `revisions` says, per served revision, whether
+ * it is attested and what its proof shows against that revision's own cutoff.
+ */
+export async function proveRevisions(
 	{ print, revisions }: SettledDay,
 	checkout: BranchCheckout,
-): Promise<string[]> {
+): Promise<{ problems: string[]; revisions: RevisionProof[] }> {
 	const { directory } = checkout;
-	const date = print.date;
-	const { pins, problems } = readPins(checkout, date);
+	const { pins, problems } = readPins(checkout, print.date);
 	problems.push(
 		...pinProblems(
 			pins.map((pin) => pin.attestation),
 			revisions,
 		),
 	);
-	if (problems.length > 0) return problems;
-	if (!pins.some((pin) => pin.revision === print.revision)) {
-		throw new Unattested(
-			`the live print for ${date} is revision ${print.revision}; ${attestationPath(directory, date, print.revision)} is not on the branch`,
-		);
-	}
-	const pending: string[] = [];
-	for (const pin of pins) {
-		const { attestation } = pin;
-		console.log(
-			`attestation ${pin.name}: printHash ${attestation.printHash}, deployedCommit ${attestation.deployedCommit ?? 'unknown'}`,
-		);
-		const served = revisions.find((r) => r.revision === pin.revision);
-		if (served === undefined) throw new Error(`pinProblems lets r${pin.revision} through unserved`);
-		const cutoff = publicationCutoff(served);
+	if (problems.length > 0) return { problems, revisions: [] };
+	const proofs: RevisionProof[] = [];
+	for (const served of revisions) {
+		const { revision } = served;
+		const pin = pins.find((candidate) => candidate.revision === revision);
+		if (pin === undefined) {
+			proofs.push({
+				revision,
+				kind: 'unattested',
+				path: attestationPath(directory, print.date, revision),
+			});
+			continue;
+		}
 		const proofPath = `${directory}/${pin.name}.ots`;
 		if (!existsSync(proofPath)) {
-			problems.push(`${proofPath} does not exist`);
+			proofs.push({ revision, kind: 'invalid', pin, detail: `${proofPath} does not exist` });
 			continue;
 		}
 		let proof;
@@ -264,16 +276,56 @@ export async function verifyAttestedDay(
 			proof = readOtsProof(new Uint8Array(await readFile(proofPath)));
 		} catch (error) {
 			if (!(error instanceof OtsFormatError)) throw error;
-			problems.push(`${proofPath} is not a valid proof: ${error.message}`);
+			proofs.push({
+				revision,
+				kind: 'invalid',
+				pin,
+				detail: `${proofPath} is not a valid proof: ${error.message}`,
+			});
 			continue;
 		}
-		const verdict = await checkTimestamp(cutoff, pin.bytes, proof, fetchBlock);
-		if (verdict.kind === 'invalid') problems.push(`${proofPath}: ${verdict.problem}`);
-		else if (verdict.kind === 'pending')
-			pending.push(`${proofPath} is pending at ${verdict.calendars.join(', ')}`);
+		const verdict = await checkTimestamp(publicationCutoff(served), pin.bytes, proof, fetchBlock);
+		if (verdict.kind === 'invalid') {
+			proofs.push({ revision, kind: 'invalid', pin, detail: `${proofPath}: ${verdict.problem}` });
+		} else if (verdict.kind === 'pending') {
+			const detail = `${proofPath} is pending at ${verdict.calendars.join(', ')}`;
+			proofs.push({ revision, kind: 'pending', pin, detail });
+		} else {
+			proofs.push({ revision, pin, ...verdict });
+		}
+	}
+	return { problems, revisions: proofs };
+}
+
+/**
+ * verifyAttested for a day already fetched, so a caller can attest from the same response:
+ * verify-attestation's verdict on the live print, from `proveRevisions`.
+ */
+export async function verifyAttestedDay(
+	day: SettledDay,
+	checkout: BranchCheckout,
+): Promise<string[]> {
+	const { problems, revisions } = await proveRevisions(day, checkout);
+	if (problems.length > 0) return problems;
+	const live = revisions.find((proof) => proof.revision === day.print.revision);
+	if (live === undefined) throw new Error(`r${day.print.revision} is not among its own revisions`);
+	if (live.kind === 'unattested') {
+		throw new Unattested(
+			`the live print for ${day.print.date} is revision ${live.revision}; ${live.path} is not on the branch`,
+		);
+	}
+	const pending: string[] = [];
+	for (const proof of revisions) {
+		if (proof.kind === 'unattested') continue;
+		const { attestation, name } = proof.pin;
+		console.log(
+			`attestation ${name}: printHash ${attestation.printHash}, deployedCommit ${attestation.deployedCommit ?? 'unknown'}`,
+		);
+		if (proof.kind === 'invalid') problems.push(proof.detail);
+		else if (proof.kind === 'pending') pending.push(proof.detail);
 		else
 			console.log(
-				`timestamp: Bitcoin block ${verdict.height} at ${verdict.time.toISOString()}, before the cutoff ${verdict.cutoff.toISOString()}`,
+				`timestamp: Bitcoin block ${proof.height} at ${proof.time.toISOString()}, before the cutoff ${proof.cutoff.toISOString()}`,
 			);
 	}
 	if (problems.length > 0) return problems;

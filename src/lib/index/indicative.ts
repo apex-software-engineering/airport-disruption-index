@@ -104,6 +104,13 @@ export function indicativeFreezesAt(release: Methodology, label: string): Date {
 }
 
 /**
+ * How long after `indicativeFreezesAt` a published indicative day may still be unserved: the
+ * settle runs that freeze it run within the hour after (04:30 to 06:00Z), so a day still missing
+ * 2 hours after its freeze time is a failure, not a delay.
+ */
+export const INDICATIVE_SERVE_MARGIN_MS = 2 * 60 * 60_000;
+
+/**
  * The indicative days dated within the `lookbackDays` UTC dates before `now` whose freeze time
  * has passed, oldest first: what a settle run freezes if it is not frozen yet.
  */

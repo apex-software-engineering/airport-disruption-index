@@ -13,6 +13,12 @@ import { z } from 'zod';
 import { DEPLOYED_COMMIT_HEADER, parseDeployedCommit } from '@/lib/deployment';
 import { adapterOf } from '@/lib/index/adapters';
 import { publishBy, settlementDay, settlesAt } from '@/lib/index/calendar';
+import {
+	INDICATIVE_SERVE_MARGIN_MS,
+	indicativeFreezesAt,
+	indicativeReleaseFor,
+	indicativeSeriesPublished,
+} from '@/lib/index/indicative';
 import { admits, methodologyOf, type Identity } from '@/lib/index/methodology';
 import { receiptHashMatches } from '@/lib/index/round';
 import {
@@ -83,23 +89,82 @@ export async function reproduceIndicative(
 	date: UtcDate,
 	baseUrl: string,
 	get: Get,
+	clock: () => Date,
 ): Promise<ReproduceOutcome> {
-	return (await reproduceIndicativeDay(date, baseUrl, get)).outcome;
+	return (await reproduceIndicativeDay(date, baseUrl, get, clock)).outcome;
 }
 
-/** `reproduceIndicative`, with the print it checked once the API served one. */
+const unservedSchema = z.union([
+	z.object({
+		misfiled: z.object({ problem: z.literal('misfiled_indicative'), objects: z.array(z.string()) }),
+	}),
+	z.object({ status: z.literal('pending'), freezesAt: z.iso.datetime() }),
+]);
+
+/** Why the API's 404 for indicative day `date`, asked at `asked`, is a mismatch or not yet checkable. */
+function unservedIndicativeDay(date: UtcDate, body: unknown, asked: Date): Error {
+	const stated = unservedSchema.safeParse(body);
+	if (stated.success && 'misfiled' in stated.data) {
+		return new Mismatch([
+			`indicative day ${date} is not served: its key holds ${stated.data.misfiled.objects.join(', ')}, which is not its print (misfiled_indicative)`,
+		]);
+	}
+	const release = indicativeReleaseFor(date, { includeWithdrawn: true });
+	if (release === null) return new CannotVerify(`${date} is no indicative day in this checkout`);
+	if (!indicativeSeriesPublished(asked))
+		return new CannotVerify(`the indicative series is not published yet`);
+	if (release.withdrawn)
+		return new CannotVerify(`indicative day ${date} is not served; its release is withdrawn`);
+	const freezesAt = indicativeFreezesAt(release, date);
+	if (asked.getTime() >= freezesAt.getTime() + INDICATIVE_SERVE_MARGIN_MS) {
+		return new Mismatch([
+			`indicative day ${date} is not served at ${asked.toISOString()}, though it freezes at ${freezesAt.toISOString()}`,
+		]);
+	}
+	if (
+		stated.success &&
+		'freezesAt' in stated.data &&
+		stated.data.freezesAt !== freezesAt.toISOString()
+	) {
+		return new Mismatch([
+			`indicative day ${date} is stated to freeze at ${stated.data.freezesAt}, not ${freezesAt.toISOString()}`,
+		]);
+	}
+	return new CannotVerify(
+		`indicative day ${date} is not frozen yet (it freezes at ${freezesAt.toISOString()})`,
+	);
+}
+
+/** A response body as JSON, or null when it is not JSON. */
+async function jsonOrNull(response: Response): Promise<unknown> {
+	return response.json().catch(() => null);
+}
+
+/**
+ * `reproduceIndicative`, with the print it checked once the API served one. A day the API does not
+ * serve is judged at `clock`'s reading before the request: misfiled, or still unserved
+ * INDICATIVE_SERVE_MARGIN_MS after this checkout's freeze time once the series is published, it is
+ * a mismatch; otherwise it cannot be verified yet.
+ */
 export async function reproduceIndicativeDay(
 	date: UtcDate,
 	baseUrl: string,
 	get: Get,
+	clock: () => Date,
 ): Promise<{ outcome: ReproduceOutcome; print: IndicativePrint | null }> {
 	const log: string[] = [];
 	const api = new PublicApi(baseUrl, get);
 	let served: IndicativePrint | null = null;
 	const outcome = await outcomeOf(log, async () => {
 		if (parseUtcDate(date) === null) throw new CannotVerify(`${date} is not a date (2026-11-20)`);
-		const { print } = await api.getRecorded(
-			`/api/v1/indicative/days/${date}`,
+		const path = `/api/v1/indicative/days/${date}`;
+		const asked = clock();
+		const response = await api.fetchAnswer(path);
+		if (response.status === 404)
+			throw unservedIndicativeDay(date, await jsonOrNull(response), asked);
+		if (!response.ok) throw new CannotVerify(`GET ${baseUrl}${path}: HTTP ${response.status}`);
+		const { print } = parseRecorded(
+			await response.json(),
 			z.object({
 				standing: z.literal('indicative'),
 				date: z.literal(date),
@@ -264,12 +329,17 @@ class PublicApi {
 	) {}
 
 	async fetch(path: string): Promise<Response> {
+		const response = await this.fetchAnswer(path);
+		if (!response.ok) throw new CannotVerify(`GET ${this.baseUrl}${path}: HTTP ${response.status}`);
+		return response;
+	}
+
+	/** The response, whatever its status; only an unreachable API is CannotVerify. */
+	async fetchAnswer(path: string): Promise<Response> {
 		const url = `${this.baseUrl}${path}`;
-		const response = await this.get(url).catch((error: unknown) => {
+		return this.get(url).catch((error: unknown) => {
 			throw new CannotVerify(`GET ${url} failed: ${String(error)}`);
 		});
-		if (!response.ok) throw new CannotVerify(`GET ${url}: HTTP ${response.status}`);
-		return response;
 	}
 
 	/**

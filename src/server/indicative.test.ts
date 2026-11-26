@@ -168,7 +168,9 @@ describe('freezing an indicative ET day', () => {
 		expect(await evidence.json()).toEqual(unknown);
 		const unlisted = 'http://test/api/v1/indicative/days/2026-11-20/rounds/2026-11-20T07:00Z';
 		expect((await routeGet(unlisted)).status).toBe(404);
-		expect(await reproduceIndicative(DAY, 'http://test', routeGet)).toMatchObject({
+		expect(
+			await reproduceIndicative(DAY, 'http://test', routeGet, () => AFTER_FREEZE),
+		).toMatchObject({
 			kind: 'match',
 		});
 	});
@@ -325,7 +327,9 @@ describe('the settle run and reproduction', () => {
 			}
 			return routeGet(url);
 		};
-		expect(await reproduceIndicative('2026-11-21', 'http://test', swapped)).toMatchObject({
+		expect(
+			await reproduceIndicative('2026-11-21', 'http://test', swapped, () => AFTER_FREEZE),
+		).toMatchObject({
 			kind: 'mismatch',
 			problems: ['asked for indicative day 2026-11-21, got the print of 2026-11-20'],
 		});
@@ -335,10 +339,14 @@ describe('the settle run and reproduction', () => {
 	it('reproduces a frozen day from the public API, and cannot verify a pending one', async () => {
 		await collectAround();
 		await freezeIndicativeDay(store, DAY, AFTER_FREEZE);
-		expect(await reproduceIndicative(DAY, 'http://test', routeGet)).toMatchObject({
+		expect(
+			await reproduceIndicative(DAY, 'http://test', routeGet, () => AFTER_FREEZE),
+		).toMatchObject({
 			kind: 'match',
 		});
-		expect(await reproduceIndicative('2026-11-21', 'http://test', routeGet)).toMatchObject({
+		expect(
+			await reproduceIndicative('2026-11-21', 'http://test', routeGet, () => AFTER_FREEZE),
+		).toMatchObject({
 			kind: 'cannot_verify',
 		});
 	});
