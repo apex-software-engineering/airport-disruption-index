@@ -355,6 +355,21 @@ describe('the preview bypass secret', () => {
 		}
 	});
 
+	it('asks the second block explorer when the first cannot answer (Sol #43 r1, finding 3)', async () => {
+		const calls = recordFetches((url) => {
+			if (url.startsWith('https://mempool.space/')) return new Response('busy', { status: 503 });
+			return url.includes('block-height')
+				? new Response('00ab')
+				: Response.json({ height: 7, merkle_root: 'cd', timestamp: 1 });
+		});
+		expect(await fetchBlock(7)).toEqual({ merkleRoot: 'cd', time: new Date(1000) });
+		expect(calls.map((call) => new URL(call.url).host)).toEqual([
+			'mempool.space',
+			'blockstream.info',
+			'blockstream.info',
+		]);
+	});
+
 	it('never goes to the block explorer', async () => {
 		vi.stubEnv('VERCEL_AUTOMATION_BYPASS_SECRET', 'secret');
 		const calls = recordFetches((url) =>

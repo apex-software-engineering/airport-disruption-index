@@ -89,6 +89,11 @@ export type Methodology = {
 	 * `announcedAt` (cutover step 2). The notice bound is max(N, B) + 30 days.
 	 */
 	readonly announcedProofAt: string | null;
+	/**
+	 * The height of the Bitcoin block whose time is B, pinned with it: a later `ots upgrade` may add
+	 * an earlier block to the proof, or a re-stamp a later one, but B stays this block's time.
+	 */
+	readonly announcedProofHeight: number | null;
 	/** Set only by a withdrawal notice. A withdrawn release is never in effect. */
 	readonly withdrawn: boolean;
 	/**

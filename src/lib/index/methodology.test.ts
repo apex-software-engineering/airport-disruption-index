@@ -57,14 +57,18 @@ describe('methodology registry', () => {
 		});
 	});
 
-	it('announces a later release only with its proof time, at least 30 days before it takes effect', () => {
+	it('announces a later release only with its proof time and block, at least 30 days before it takes effect', () => {
 		RELEASES.slice(1).forEach((later) => {
-			const { announcedAt, announcedProofAt } = later;
+			const { announcedAt, announcedProofAt, announcedProofHeight } = later;
 			if (announcedAt === null) {
-				expect(announcedProofAt).toBeNull();
+				expect([announcedProofAt, announcedProofHeight]).toEqual([null, null]);
 				return;
 			}
-			if (announcedProofAt === null) throw new Error(`${later.parameters.version} has N without B`);
+			if (announcedProofAt === null || announcedProofHeight === null)
+				throw new Error(`${later.parameters.version} has N without B and its block`);
+			// Exactly as the record writes them, so the step-2 check compares like with like.
+			expect(new Date(announcedAt).toISOString()).toBe(announcedAt);
+			expect(new Date(announcedProofAt).toISOString()).toBe(announcedProofAt);
 			expect(effectiveAt(later).getTime()).toBeGreaterThanOrEqual(
 				noticeBound(new Date(announcedAt), new Date(announcedProofAt)).getTime(),
 			);

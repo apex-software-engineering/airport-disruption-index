@@ -42,13 +42,27 @@ jobs:
         run: npm test
 
       # Cutover step 2 (docs/design/v2-eastern-day.md, section 2): once the registry announces v2,
-      # its N and B must be the ones the readback record on the attestations branch proves, with
-      # the 30-day notice. Passes while v2 is not announced.
+      # its N, B and B's block must be the ones the readback record on the attestations branch
+      # proves, with the 30-day notice. It runs fail-closed, with the network (the git remote and
+      # two block explorers), on a push to main and on any PR that changes what it depends on: the
+      # registry and calendar, the record's format, the verifier, CI or the dependencies. Any other
+      # PR cannot move N or B, and the registry test holds the bound offline. The branch is cloned
+      # only once v2 is announced.
       - name: Verify the v2.0.0 notice readback
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          git clone --quiet --single-branch --branch attestations \
-            "https://github.com/$GITHUB_REPOSITORY" attestations
-          npm run -s verify-notice -- 2.0.0
+          if [[ -n "$BASE" ]]; then
+            git fetch --quiet --depth=1 origin "$BASE"
+            # Captured first: grep -q stopping early must not fail the pipeline under pipefail.
+            changed="$(git diff --name-only "$BASE" HEAD)"
+            if ! grep -qE '^(src/lib/index/|src/lib/(notice-readback|ots|reproduce|deployment)\.ts$|scripts/verify-notice\.ts$|scripts/lib/(notice-record|attestations|public-api)\.ts$|\.github/workflows/ci\.yml$|package(-lock)?\.json$)' <<< "$changed"; then
+              echo "::notice::this PR changes neither the announcement, the verifier nor CI; the registry test holds the bound"
+              exit 0
+            fi
+          fi
+          npm run -s verify-notice -- 2.0.0 --dir attestations \
+            --clone-from "https://github.com/$GITHUB_REPOSITORY"
 
       - name: Build
         run: npm run build

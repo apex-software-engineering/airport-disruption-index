@@ -126,10 +126,53 @@ function request(
 	extraHeaders: Record<string, string>,
 	redirect: RequestRedirect,
 ): Promise<Response> {
-	return fetch(url, {
-		headers: { 'User-Agent': 'airport-disruption-index-reproduce/1.0', ...extraHeaders },
-		redirect,
-	});
+	return fetchWhole(
+		url,
+		{
+			headers: { 'User-Agent': 'airport-disruption-index-reproduce/1.0', ...extraHeaders },
+			redirect,
+		},
+		REQUEST_TIMEOUT_MS,
+	);
+}
+
+/** The most one request may take, headers and body together. */
+export const REQUEST_TIMEOUT_MS = 60_000;
+
+/** Statuses whose response has no body. */
+const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
+
+/**
+ * GETs `url` and reads its whole body within `timeoutMs`, so a response that stalls, before its
+ * headers or partway through its body, can never hold a verifier open: past the deadline it is
+ * CannotVerify. The response comes back with its body buffered, its status, headers, final URL and
+ * whether it was redirected.
+ */
+export async function fetchWhole(
+	url: string,
+	init: RequestInit,
+	timeoutMs: number,
+): Promise<Response> {
+	const signal = AbortSignal.timeout(timeoutMs);
+	try {
+		const response = await fetch(url, { ...init, signal });
+		const body = NULL_BODY_STATUSES.has(response.status) ? null : await response.arrayBuffer();
+		const whole = new Response(body, {
+			status: response.status,
+			statusText: response.statusText,
+			headers: response.headers,
+		});
+		Object.defineProperties(whole, {
+			url: { value: response.url },
+			redirected: { value: response.redirected },
+		});
+		return whole;
+	} catch (error) {
+		if (signal.aborted) {
+			throw new CannotVerify(`GET ${url}: no complete response within ${timeoutMs / 1000} s`);
+		}
+		throw error;
+	}
 }
 
 /** A settled day, checked for consistency; see fetchSettledDay. */

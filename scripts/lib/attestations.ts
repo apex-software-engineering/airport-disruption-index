@@ -31,7 +31,7 @@ export const DEFAULT_BRANCH = 'attestations';
 
 /** Where the publication branch is checked out, and which branch it must be. */
 export type BranchCheckout = { directory: string; branch: string };
-const BLOCK_EXPLORER = 'https://mempool.space/api';
+const BLOCK_EXPLORERS = ['https://mempool.space/api', 'https://blockstream.info/api'];
 
 export function attestationPath(directory: string, date: UtcDate, revision: number): string {
 	return `${directory}/${date}.r${revision}.json`;
@@ -48,11 +48,29 @@ export async function writeAttestation(
 	return path;
 }
 
-/** A block's merkle root and time from a public block explorer (Esplora API). */
+/**
+ * A block's merkle root and time from a public block explorer (Esplora API): mempool.space, or
+ * blockstream.info when it cannot answer, so one explorer's outage never stops a check. Each
+ * request has the client's total deadline (`fetchWhole`).
+ */
 export async function fetchBlock(height: number): Promise<BitcoinBlock> {
+	const failures: string[] = [];
+	for (const base of BLOCK_EXPLORERS) {
+		try {
+			return await fetchBlockFrom(base, height);
+		} catch (error) {
+			if (!(error instanceof CannotVerify)) throw error;
+			failures.push(error.message);
+		}
+	}
+	throw new CannotVerify(`no block explorer answered for block ${height}: ${failures.join('; ')}`);
+}
+
+async function fetchBlockFrom(base: string, height: number): Promise<BitcoinBlock> {
 	const explorer = async (path: string) => {
-		const url = `${BLOCK_EXPLORER}${path}`;
+		const url = `${base}${path}`;
 		const response = await getPublic(url).catch((error: unknown) => {
+			if (error instanceof CannotVerify) throw error;
 			throw new CannotVerify(`GET ${url} failed: ${String(error)}`);
 		});
 		if (!response.ok) throw new CannotVerify(`GET ${url}: HTTP ${response.status}`);
@@ -61,8 +79,9 @@ export async function fetchBlock(height: number): Promise<BitcoinBlock> {
 	const hash = (await (await explorer(`/block-height/${height}`)).text()).trim();
 	const block = z
 		.object({ height: z.literal(height), merkle_root: z.string(), timestamp: z.number().int() })
-		.parse(await (await explorer(`/block/${hash}`)).json());
-	return { merkleRoot: block.merkle_root, time: new Date(block.timestamp * 1000) };
+		.safeParse(await (await explorer(`/block/${hash}`)).json().catch(() => null));
+	if (!block.success) throw new CannotVerify(`${base} answered block ${height} unreadably`);
+	return { merkleRoot: block.data.merkle_root, time: new Date(block.data.timestamp * 1000) };
 }
 
 export type Pin = { revision: number; name: string; attestation: Attestation; bytes: Uint8Array };

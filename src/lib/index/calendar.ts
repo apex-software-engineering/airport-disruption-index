@@ -97,7 +97,13 @@ export function effectiveAt(
 	release: Methodology,
 	releases: readonly Methodology[] = RELEASES,
 ): Date {
-	const predecessor = releases[releases.indexOf(release) - 1] ?? release;
+	const index = releases.indexOf(release);
+	if (index < 0) {
+		throw new Error(
+			`${release.parameters.version} is not this registry's release object: when it takes effect depends on the release before it`,
+		);
+	}
+	const predecessor = releases[index - 1] ?? release;
 	return dayWindow(predecessor, release.effectiveFrom).start;
 }
 
