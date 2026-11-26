@@ -22,16 +22,22 @@ import { DEFAULT_DIRECTORY } from './lib/attestations';
 import { CannotVerify, describeError, getPublic, parseArgs } from './lib/public-api';
 
 const USAGE =
-	'npm run notice-readback -- <version> --run-id <id> --run-started-at <ISO> [--dir attestations] [--base-url URL]';
+	'npm run notice-readback -- <version> --run-id <id> --run-attempt <n> --run-started-at <ISO> [--dir attestations]';
+
+/** The only site a readback record is ever for: N is when the production notice was public. */
+const PRODUCTION = 'https://airports.apexsofteng.com';
 
 async function main(): Promise<number> {
 	const {
 		target: version,
 		baseUrl,
 		options,
-	} = parseArgs(process.argv.slice(2), USAGE, ['run-id', 'run-started-at', 'dir']);
+	} = parseArgs(process.argv.slice(2), USAGE, ['run-id', 'run-attempt', 'run-started-at', 'dir']);
 	const release = RELEASES.find((candidate) => candidate.parameters.version === version);
 	if (release === undefined) throw new CannotVerify(`no registered release is ${version}`);
+	if (baseUrl !== PRODUCTION) {
+		throw new CannotVerify(`a readback record is only for ${PRODUCTION}, never ${baseUrl}`);
+	}
 	if (release.noticePublishedAt === null) {
 		console.log(
 			`${version}: its notice has not shipped (noticePublishedAt is null); nothing to read back`,
@@ -39,9 +45,13 @@ async function main(): Promise<number> {
 		return 3;
 	}
 	const id = Number(options.get('run-id'));
+	const attempt = Number(options.get('run-attempt'));
 	const startedAt = new Date(options.get('run-started-at') ?? '');
-	if (!Number.isInteger(id) || id <= 0 || Number.isNaN(startedAt.getTime()))
-		throw new CannotVerify(`--run-id and --run-started-at are required; usage: ${USAGE}`);
+	const positive = (value: number) => Number.isInteger(value) && value > 0;
+	if (!positive(id) || !positive(attempt) || Number.isNaN(startedAt.getTime()))
+		throw new CannotVerify(
+			`--run-id, --run-attempt and --run-started-at are required; usage: ${USAGE}`,
+		);
 	const directory = `${options.get('dir') ?? DEFAULT_DIRECTORY}/notices`;
 	const path = `${directory}/${version}.readback.json`;
 	if (existsSync(path)) {
@@ -49,12 +59,21 @@ async function main(): Promise<number> {
 		return 0;
 	}
 	// The public internet, never the preview bypass: N is when anyone could read the notice.
-	const readback = await readBackNotice(baseUrl, release, { id, startedAt }, getPublic);
+	const readback = await readBackNotice(
+		PRODUCTION,
+		release,
+		{ id, attempt, startedAt },
+		() => new Date(),
+		getPublic,
+	);
 	if (readback.kind === 'not_public') {
 		for (const reason of readback.reasons) console.log(`not public yet: ${reason}`);
 		return 3;
 	}
 	await mkdir(directory, { recursive: true });
+	// The bodies first, the record last: a record on disk always has its bodies beside it.
+	for (const { name, bytes } of readback.bodies)
+		await writeFile(`${directory}/${name}`, bytes, { flag: 'wx' });
 	await writeFile(path, `${JSON.stringify(readback.record, null, '\t')}\n`, { flag: 'wx' });
 	console.log(`wrote ${path}: ${version} public since ${readback.record.noticeAt} (N)`);
 	return 0;

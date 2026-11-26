@@ -1,14 +1,20 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
-import { METHODOLOGY_V1, METHODOLOGY_V2, release } from '@/lib/index/releases';
+import { METHODOLOGY_V1, METHODOLOGY_V2, RELEASES, release } from '@/lib/index/releases';
+
+import { sha256Hex } from '@/lib/index/json';
 
 import { noticeHeadline, readBackNotice, readbackSchema } from './notice-readback';
 import type { Get } from './reproduce';
 
 const V2 = release(METHODOLOGY_V2, '2027-01-01', { noticePublishedAt: '2026-11-28T00:00:00.000Z' });
 const COMMIT = 'a'.repeat(40);
-const RUN = { id: 42, startedAt: new Date('2026-11-28T15:00:00Z') };
+const RUN = { id: 42, attempt: 2, startedAt: new Date('2026-11-28T15:00:00Z') };
 const SITE = 'https://site.test';
+/** The runner's own clock while it reads: just after the run starts. */
+const CLOCK = () => new Date('2026-11-28T15:00:05Z');
 
 /** The incidents page as the site renders it: the headline split across markup. */
 const SHOWN = `<li><strong>2026-11-28: methodology v2.0.0 announced,
@@ -18,17 +24,25 @@ function site(pages: {
 	incidents?: string;
 	upcoming?: { version: string; parameterHash: string } | null;
 	dates?: [string, string];
+	commit?: string | null;
+	redirectedTo?: string;
 }): Get {
 	const [incidentsDate, methodologyDate] = pages.dates ?? [
 		'Sat, 28 Nov 2026 15:00:05 GMT',
 		'Sat, 28 Nov 2026 15:00:06 GMT',
 	];
 	return async (url) => {
-		const headers = { 'X-Deployed-Commit': COMMIT };
+		const commit = pages.commit === undefined ? COMMIT : pages.commit;
+		const headers: Record<string, string> = commit === null ? {} : { 'X-Deployed-Commit': commit };
 		if (url === `${SITE}/incidents`) {
-			return new Response(pages.incidents ?? '<p>no notice</p>', {
+			const response = new Response(pages.incidents ?? '<p>no notice</p>', {
 				headers: { ...headers, Date: incidentsDate },
 			});
+			if (pages.redirectedTo !== undefined) {
+				Object.defineProperty(response, 'redirected', { value: true });
+				Object.defineProperty(response, 'url', { value: pages.redirectedTo });
+			}
+			return response;
 		}
 		if (url === `${SITE}/api/v1/methodology`) {
 			return Response.json(
@@ -50,49 +64,140 @@ describe('the notice readback', () => {
 	});
 
 	it('writes nothing until both the incidents entry and the upcoming block show it', async () => {
-		expect(await readBackNotice(SITE, V2, RUN, site({ upcoming }))).toEqual({
+		expect(await readBackNotice(SITE, V2, RUN, CLOCK, site({ upcoming }))).toEqual({
 			kind: 'not_public',
 			reasons: [`${SITE}/incidents does not show "${noticeHeadline(V2)}"`],
 		});
-		expect(await readBackNotice(SITE, V2, RUN, site({ incidents: SHOWN }))).toEqual({
+		expect(await readBackNotice(SITE, V2, RUN, CLOCK, site({ incidents: SHOWN }))).toEqual({
 			kind: 'not_public',
 			reasons: [`${SITE}/api/v1/methodology has no upcoming block for 2.0.0`],
 		});
 	});
 
-	it('records N as the latest of the Date headers and the run start, with each body hashed', async () => {
-		const readback = await readBackNotice(SITE, V2, RUN, site({ incidents: SHOWN, upcoming }));
+	it('records N as the latest of the Date headers, the run start and its observation, with each body kept and hashed', async () => {
+		const readback = await readBackNotice(
+			SITE,
+			V2,
+			RUN,
+			CLOCK,
+			site({ incidents: SHOWN, upcoming }),
+		);
 		if (readback.kind !== 'recorded') throw new Error('expected a record');
 		expect(readbackSchema.parse(readback.record)).toEqual(readback.record);
 		expect(readback.record).toMatchObject({
 			schema: 'adi.notice-readback/1',
 			methodologyVersion: '2.0.0',
 			parameterHash: V2.parameterHash,
-			run: { id: 42, startedAt: '2026-11-28T15:00:00.000Z' },
+			run: {
+				id: 42,
+				attempt: 2,
+				startedAt: '2026-11-28T15:00:00.000Z',
+				observedAt: '2026-11-28T15:00:05.000Z',
+			},
 			responses: [
-				{ url: `${SITE}/incidents`, date: 'Sat, 28 Nov 2026 15:00:05 GMT', deployedCommit: COMMIT },
-				{ url: `${SITE}/api/v1/methodology`, date: 'Sat, 28 Nov 2026 15:00:06 GMT' },
+				{
+					url: `${SITE}/incidents`,
+					date: 'Sat, 28 Nov 2026 15:00:05 GMT',
+					deployedCommit: COMMIT,
+					body: '2.0.0.readback.incidents.html',
+				},
+				{
+					url: `${SITE}/api/v1/methodology`,
+					date: 'Sat, 28 Nov 2026 15:00:06 GMT',
+					body: '2.0.0.readback.methodology.json',
+				},
 			],
 			noticeAt: '2026-11-28T15:00:06.000Z',
 		});
-		// A server clock behind the run's start never moves N earlier than the run.
+		// Each body is kept under the name the record gives it, matching the hash it records.
+		expect(readback.bodies.map(({ name, bytes }) => [name, sha256Hex(bytes)])).toEqual(
+			readback.record.responses.map(({ body, bodySha256 }) => [body, bodySha256]),
+		);
+		expect(new TextDecoder().decode(readback.bodies[0]?.bytes)).toBe(SHOWN);
+		// A server clock a little behind never moves N before the run saw the notice.
 		const behind = await readBackNotice(
 			SITE,
 			V2,
 			RUN,
+			CLOCK,
 			site({
 				incidents: SHOWN,
 				upcoming,
-				dates: ['Sat, 28 Nov 2026 14:00:00 GMT', 'Sat, 28 Nov 2026 14:00:01 GMT'],
+				dates: ['Sat, 28 Nov 2026 14:58:00 GMT', 'Sat, 28 Nov 2026 14:58:01 GMT'],
 			}),
 		);
-		expect(behind).toMatchObject({ record: { noticeAt: '2026-11-28T15:00:00.000Z' } });
+		expect(behind).toMatchObject({ record: { noticeAt: '2026-11-28T15:00:05.000Z' } });
 	});
 
 	it('fails, never records, when the site states the release under another hash', async () => {
 		const wrong = { version: '2.0.0', parameterHash: 'f'.repeat(64) };
 		await expect(
-			readBackNotice(SITE, V2, RUN, site({ incidents: SHOWN, upcoming: wrong })),
-		).rejects.toThrow(`with parameter hash ${'f'.repeat(64)}, not ${V2.parameterHash}`);
+			readBackNotice(SITE, V2, RUN, CLOCK, site({ incidents: SHOWN, upcoming: wrong })),
+		).rejects.toThrow(`with parameter hash "${'f'.repeat(64)}", not ${V2.parameterHash}`);
+	});
+
+	describe('(Sol #37 r1)', () => {
+		it('refuses a Date header outside the runner’s own observation of the request (finding 1)', async () => {
+			for (const dates of [
+				['Thu, 01 Jan 2099 00:00:00 GMT', 'Sat, 28 Nov 2026 15:00:06 GMT'],
+				['Sat, 28 Nov 2026 14:00:00 GMT', 'Sat, 28 Nov 2026 15:00:06 GMT'],
+			] as [string, string][]) {
+				await expect(
+					readBackNotice(SITE, V2, RUN, CLOCK, site({ incidents: SHOWN, upcoming, dates })),
+				).rejects.toThrow('outside this run’s observation');
+			}
+		});
+
+		it('counts only the visible page: never a headline in a script, a style or a comment (finding 2)', async () => {
+			for (const hidden of [
+				`<script>self.__next_f.push("${noticeHeadline(V2)}")</script><p>no notice</p>`,
+				`<style>/* ${noticeHeadline(V2)} */</style><p>no notice</p>`,
+				`<!-- ${noticeHeadline(V2)} --><p>no notice</p>`,
+			]) {
+				expect(
+					await readBackNotice(SITE, V2, RUN, CLOCK, site({ incidents: hidden, upcoming })),
+				).toMatchObject({ kind: 'not_public' });
+			}
+		});
+
+		it('refuses a response without a deployed commit, or redirected anywhere (finding 2)', async () => {
+			for (const commit of [null, 'unknown']) {
+				await expect(
+					readBackNotice(SITE, V2, RUN, CLOCK, site({ incidents: SHOWN, upcoming, commit })),
+				).rejects.toThrow('names no deployed commit');
+			}
+			await expect(
+				readBackNotice(
+					SITE,
+					V2,
+					RUN,
+					CLOCK,
+					site({ incidents: SHOWN, upcoming, redirectedTo: 'https://elsewhere.test/incidents' }),
+				),
+			).rejects.toThrow('was redirected to "https://elsewhere.test/incidents"');
+		});
+
+		it('never echoes response text that could read as a workflow command (finding 6)', async () => {
+			const injected = { version: '2.0.0', parameterHash: 'ab\n::error::forged' };
+			const readback = readBackNotice(
+				SITE,
+				V2,
+				RUN,
+				CLOCK,
+				site({ incidents: SHOWN, upcoming: injected }),
+			);
+			await expect(readback).rejects.toThrow(
+				`states 2.0.0 with parameter hash "ab\\n::error::forged", not ${V2.parameterHash}`,
+			);
+		});
+	});
+
+	it('keeps the workflow’s cheap gate on the registry’s notice instant (Opus #37 r1, finding 6)', () => {
+		const workflow = readFileSync('.github/workflows/notice-readback.yml', 'utf8');
+		const version = /\n {2}VERSION: '([^']+)'/.exec(workflow)?.[1];
+		const noticeAt = /\n {2}NOTICE_AT: '([^']*)'/.exec(workflow)?.[1];
+		const notified = RELEASES.find((candidate) => candidate.parameters.version === version);
+		expect(notified).toBeDefined();
+		expect(noticeAt).toBe(notified?.noticePublishedAt ?? '');
 	});
 });
