@@ -37,28 +37,43 @@ import {
 } from './archive';
 import type { ObjectStore, StoredObject } from './storage';
 
+/** A round asked for as evidence for an indicative print. */
+export type IndicativeRound =
+	| { kind: 'receipt'; receipt: RoundReceipt }
+	/** The day is not frozen, or its print does not list the round. */
+	| { kind: 'not_listed' }
+	/** Listed, but its stored receipt is missing, unreadable or not the one listed: never served. */
+	| { kind: 'unservable'; reason: string };
+
 /**
- * A round a frozen indicative print lists, as evidence for that print only: null unless the day
- * is frozen and lists `id`, and refused unless its hash is the one the print lists. A receipt from
- * a release this code does not know is returned by its shape (it was foreign in the print).
+ * A round a frozen indicative print lists, as evidence for that print only, served only with the
+ * hash the print lists. A receipt from a release this code does not know is returned by its shape
+ * (it was foreign in the print). Stored content that cannot be served is classified, never thrown.
  */
 export async function readIndicativeRound(
 	store: ObjectStore,
 	label: string,
 	id: RoundId,
-): Promise<RoundReceipt | null> {
+): Promise<IndicativeRound> {
 	const day = await readIndicativeDay(store, label);
 	const listed = day.kind === 'frozen' ? day.print.rounds.find((r) => r.roundId === id) : undefined;
-	if (listed === undefined) return null;
+	if (listed === undefined) return { kind: 'not_listed' };
 	const key = keys.receipt(dateOf(id), id);
 	const object = await store.read(key);
-	if (object === null)
-		throw new Error(`${key} is listed by the indicative print of ${label} but missing`);
-	const receipt = decodeReceipt(key, object);
-	if (receipt.receiptHash !== listed.receiptHash || !receiptHashMatches(receipt)) {
-		throw new Error(`${key} is not the receipt the indicative print of ${label} lists`);
+	const receipt = object === null ? null : decodeReceipt(object);
+	if (receipt === null) {
+		return {
+			kind: 'unservable',
+			reason: `${key}, listed by the indicative print of ${label}, is not a readable receipt`,
+		};
 	}
-	return receipt;
+	if (receipt.receiptHash !== listed.receiptHash || !receiptHashMatches(receipt)) {
+		return {
+			kind: 'unservable',
+			reason: `${key} is not the receipt the indicative print of ${label} lists`,
+		};
+	}
+	return { kind: 'receipt', receipt };
 }
 
 /**
@@ -67,8 +82,13 @@ export async function readIndicativeRound(
  * it can be listed and served as a foreign round. It never counts: no day admits a release this
  * code does not know.
  */
-function decodeReceipt(key: string, object: StoredObject): RoundReceipt {
-	const body: unknown = JSON.parse(new TextDecoder().decode(object.body));
+function decodeReceipt(object: StoredObject): RoundReceipt | null {
+	let body: unknown;
+	try {
+		body = JSON.parse(new TextDecoder().decode(object.body));
+	} catch {
+		return null;
+	}
 	const full = receiptSchema.safeParse(body);
 	if (full.success) return full.data;
 	const shape = receiptShapeSchema.safeParse(body);
@@ -76,8 +96,7 @@ function decodeReceipt(key: string, object: StoredObject): RoundReceipt {
 		shape.success &&
 		methodologyOf(shape.data.methodologyVersion, shape.data.parameterHash) === null &&
 		receiptHashMatches(shape.data);
-	if (unknown) return shape.data;
-	throw new Error(`stored object ${key} fails its schema: ${full.error.message}`);
+	return unknown ? shape.data : null;
 }
 
 export type FreezeOutcome = { status: 'frozen' | 'already_frozen'; print: IndicativePrint };
@@ -197,7 +216,9 @@ async function readIndicativeRounds(
 		const key = keys.receipt(partition, id);
 		const object = await store.read(key);
 		if (object === null) throw new Error(`receipt ${key} is listed but could not be read`);
-		const receipt = decodeReceipt(key, object);
+		const receipt = decodeReceipt(object);
+		// Freezing stops on any receipt it cannot read: a frozen print never omits one (design §4).
+		if (receipt === null) throw new Error(`stored object ${key} is not a receipt`);
 		if (receipt.roundId !== id) throw new Error(`${key} holds round ${receipt.roundId}`);
 		if (!receiptHashMatches(receipt))
 			throw new Error(`receipt ${key} does not match its receiptHash`);
@@ -229,14 +250,15 @@ export async function readIndicativePrints(
 	});
 	const read = await readInBatches(listed, async (key) => {
 		const object = await store.read(key);
-		return object === null ? null : { key, classified: classifyIndicativeObject(key, object.body) };
+		return { key, classified: object === null ? null : classifyIndicativeObject(key, object.body) };
 	});
 	const prints: IndicativePrint[] = [];
 	const misfiled: string[] = [];
-	for (const entry of read) {
-		if (entry === null) continue; // listed, not readable yet: the next read sees it
-		if (entry.classified.kind === 'print') prints.push(entry.classified.print);
-		else misfiled.push(entry.key);
+	for (const { key, classified } of read) {
+		// A listed key that is not its day's print, or cannot be read at all, is reported: never
+		// silently left out of the series.
+		if (classified?.kind === 'print') prints.push(classified.print);
+		else misfiled.push(key);
 	}
 	return {
 		prints: prints.sort((x, y) => x.date.localeCompare(y.date)),

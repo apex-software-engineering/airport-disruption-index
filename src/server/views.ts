@@ -36,13 +36,12 @@ import type {
 import { addDays, parseRoundId, utcDateOf, type RoundId, type UtcDate } from '@/lib/index/time';
 
 import {
-	misfiledPrints,
 	type HistoryRead,
 	type MisfiledPrints,
 	readCorrectionPrints,
 	readDayIndex,
 	readHistory,
-	readPrints,
+	readDayPrints,
 } from './archive';
 import {
 	type MisfiledIndicative,
@@ -217,10 +216,8 @@ export type DayView = SettlementEnvelope & {
 /** A day's current print (latest revision) with every revision kept visible. */
 export async function dayView(store: ObjectStore, date: string): Promise<DayView> {
 	const day = settlementDay(date);
-	const [revisions, misfiled] = await Promise.all([
-		readPrints(store, date),
-		misfiledPrints(store, date),
-	]);
+	// One read of the day's chain: the revisions served and the objects reported outside them agree.
+	const { prints: revisions, misfiled } = await readDayPrints(store, date);
 	const stated = {
 		date,
 		...settlementEnvelope(day),

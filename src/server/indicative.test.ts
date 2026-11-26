@@ -3,7 +3,7 @@
  * production today), an ET day frozen from both UTC partitions after its cutoff, served by the API
  * with its zone and standing, and reproduced from the public API, once the series is published.
  */
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET as settleRoute } from '@/app/api/cron/settle/route';
 import { GET as indicativeDayRoute } from '@/app/api/v1/indicative/days/[date]/route';
 import { GET as indicativeHistoryRoute } from '@/app/api/v1/indicative/history/route';
+import { GET as indicativeRoundRoute } from '@/app/api/v1/indicative/days/[date]/rounds/[id]/route';
 import { INDICATIVE_SERIES } from '@/lib/index/indicative';
 import { reproduceIndicative } from '@/lib/reproduce';
 import { proxy } from '@/proxy';
@@ -361,6 +362,24 @@ describe('stored indicative objects that are not their day’s print (#34, item 
 		});
 	});
 
+	it('reports a listed key that cannot be read, never drops it silently (Sol #38 r1, finding 5)', async () => {
+		await collectAround();
+		await freezeIndicativeDay(store, DAY, AFTER_FREEZE);
+		const key = 'indicative/2.0.0/2026-11-20.json';
+		const read = FileStore.prototype.read;
+		vi.spyOn(FileStore.prototype, 'read').mockImplementation(function (this: FileStore, k) {
+			return k === key ? Promise.resolve(null) : read.call(this, k);
+		});
+		const response = await indicativeHistoryRoute(
+			new Request('http://test/api/v1/indicative/history?from=2026-11-20&to=2026-11-21'),
+		);
+		vi.restoreAllMocks();
+		expect(await response.json()).toMatchObject({
+			days: [],
+			misfiled: { problem: 'misfiled_indicative', objects: [key] },
+		});
+	});
+
 	it('answers a day whose key holds something else with 404 naming it, never 500', async () => {
 		await store.write(KEY_21, GARBAGE, 'application/json', { kind: 'if-absent' });
 		const response = await indicativeDayRoute(
@@ -380,5 +399,21 @@ describe('stored indicative objects that are not their day’s print (#34, item 
 			freezeIndicativeDay(store, '2026-11-21', new Date('2026-11-22T05:30:00Z')),
 		).rejects.toThrow(`${KEY_21} is not JSON`);
 		expect((await store.read(KEY_21))?.body).toEqual(GARBAGE);
+	});
+
+	it('answers a listed round whose receipt cannot be read with 404 naming it (Sol #38 r1, finding 4)', async () => {
+		await collectAround();
+		await freezeIndicativeDay(store, DAY, AFTER_FREEZE);
+		const id = '2026-11-20T05:00Z';
+		const key = `rounds/2026-11-20/${id}.json`;
+		await writeFile(path.join(root, key), '{');
+		const response = await indicativeRoundRoute(
+			new Request(`http://test/api/v1/indicative/days/${DAY}/rounds/${id}`),
+			{ params: Promise.resolve({ date: DAY, id }) },
+		);
+		expect(response.status).toBe(404);
+		expect(await response.json()).toEqual({
+			error: `${key}, listed by the indicative print of ${DAY}, is not a readable receipt`,
+		});
 	});
 });
