@@ -47,6 +47,7 @@ jobs:
     outputs:
       status: ${{ steps.attest.outputs.status }}
       branch-exists: ${{ steps.branch.outputs.exists }}
+      tip: ${{ steps.branch.outputs.tip }}
       changed: ${{ steps.changes.outputs.changed }}
       unproven-commits: ${{ steps.commits.outputs.unproven }}
       withheld: ${{ steps.changes.outputs.withheld }}
@@ -97,7 +98,8 @@ jobs:
           echo "through=$through" >> "$GITHUB_OUTPUT"
           echo "days=$days" >> "$GITHUB_OUTPUT"
 
-      # The branch tip, fetched before anything is checked, so a re-run sees what is published.
+      # The branch tip, fetched before anything is checked, so a re-run sees what is published. The
+      # tip is recorded, so the publish job can refuse to replay files that changed since.
       - name: Check out the publication branch
         id: branch
         run: |
@@ -107,6 +109,7 @@ jobs:
           if [[ $status == 0 ]]; then
             git clone --quiet --single-branch --branch "$PUBLICATION_BRANCH" "$remote" attestations
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "tip=$(git -C attestations rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           elif [[ $status == 2 ]]; then
             echo "::notice::$PUBLICATION_BRANCH does not exist yet; this run creates it"
             git init --quiet attestations
@@ -268,6 +271,8 @@ jobs:
         with:
           ref: ${{ env.PUBLICATION_BRANCH }}
           path: publication
+          # Full history, so the tip the attest job read can be compared with the current one.
+          fetch-depth: 0
 
       - uses: actions/checkout@v5
         if: needs.attest.outputs.changed == 'true' && needs.attest.outputs.branch-exists != 'true'
@@ -275,13 +280,31 @@ jobs:
           path: publication
 
       # Appends only: a new attestation needs its proof, an existing one must be byte-identical,
-      # and a proof may only be added or upgraded beside its attestation.
+      # and a proof may only be added or upgraded beside its attestation. A file that changed on the
+      # branch since the attest job read it (a re-run of an older run) is refused, before the commit
+      # and again after every rebase, so an older proof can never replace a newer one. A new gap pin
+      # is published only while the deployment collects under the release the pin names.
       - name: Publish
         if: needs.attest.outputs.changed == 'true'
         env:
           BRANCH_EXISTS: ${{ needs.attest.outputs.branch-exists }}
+          TIP: ${{ needs.attest.outputs.tip }}
         run: |
           cd publication
+          mapfile -t incoming < <(cd ../incoming && find . -type f | sed 's|^\./||' | sort)
+          # Each incoming file must be as the attest job saw it at $TIP on the branch at `ref`.
+          unchanged_since_tip() {
+            [[ "$BRANCH_EXISTS" != true ]] && return 0
+            local stale=0
+            for name in "${incoming[@]}"; do
+              if ! git diff --quiet "$TIP" "$1" -- "$name"; then
+                echo "::error::$name changed on $PUBLICATION_BRANCH since this run read $TIP; its artifact is stale and is not published"
+                stale=1
+              fi
+            done
+            return $stale
+          }
+          unchanged_since_tip HEAD || exit 1
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           if [[ "$BRANCH_EXISTS" != true ]]; then
@@ -289,7 +312,7 @@ jobs:
           fi
           shopt -s nullglob
           added=()
-          while IFS= read -r name; do
+          for name in "${incoming[@]}"; do
             source="../incoming/$name"
             if [[ ! "$name" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}\.r[0-9]+|transition/[0-9]{4}-[0-9]{2}-[0-9]{2})\.json(\.ots)?$ ]]; then
               echo "::error::unexpected file $name"
@@ -299,6 +322,14 @@ jobs:
               if [[ -e "$name" ]]; then
                 cmp -s "$source" "$name" || { echo "::error::$name would be rewritten"; exit 1; }
               elif [[ -e "$source.ots" ]]; then
+                if [[ "$name" == transition/* ]]; then
+                  pinned="$(jq -r '.release.methodologyVersion + " " + .release.parameterHash' "$source")"
+                  served="$(curl -fsS --max-time 60 "$BASE_URL/api/v1/methodology" | jq -r '.version + " " + .parameterHash')" || served=unreachable
+                  if [[ "$served" != "$pinned" ]]; then
+                    echo "::error::$name pins release $pinned, but $BASE_URL collects under $served; not published"
+                    exit 1
+                  fi
+                fi
                 mkdir -p "$(dirname "$name")"
                 cp "$source" "$name"
                 added+=("${name%.json}")
@@ -311,7 +342,7 @@ jobs:
               mkdir -p "$(dirname "$name")"
               cp "$source" "$name"
             fi
-          done < <(cd ../incoming && find . -type f | sed 's|^\./||' | sort)
+          done
           git add --all
           if git diff --cached --quiet; then
             echo "Nothing to publish"
@@ -327,6 +358,7 @@ jobs:
           for attempt in 1 2 3; do
             if [[ "$BRANCH_EXISTS" == true ]]; then
               git pull --quiet --rebase origin "$PUBLICATION_BRANCH" || { sleep $((attempt * 5)); continue; }
+              unchanged_since_tip "origin/$PUBLICATION_BRANCH" || exit 1
             fi
             git push origin "HEAD:refs/heads/$PUBLICATION_BRANCH" && exit 0
             echo "push attempt $attempt lost a race; retrying"

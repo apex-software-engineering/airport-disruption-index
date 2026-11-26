@@ -9,6 +9,7 @@
  * is bad, 1 otherwise.
  */
 import { invalidProofs } from './lib/attestations';
+import { printable } from './lib/public-api';
 
 const [directory, ...names] = process.argv.slice(2);
 if (directory === undefined) {
@@ -18,7 +19,7 @@ if (directory === undefined) {
 	void invalidProofs(directory, names).then((invalid) => {
 		const bad = new Set(invalid.map(({ name }) => name));
 		for (const name of names) if (!bad.has(name)) console.log(`OK ${name}`);
-		for (const { name, problem } of invalid) console.log(`INVALID ${name}: ${problem}`);
+		for (const { name, problem } of invalid) console.log(printable(`INVALID ${name}: ${problem}`));
 		console.log(invalid.length === 0 ? 'PROOFS OK' : `${invalid.length} invalid proof(s)`);
 		process.exitCode = invalid.length === 0 ? 0 : 1;
 	});

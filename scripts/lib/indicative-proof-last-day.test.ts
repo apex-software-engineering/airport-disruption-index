@@ -25,7 +25,12 @@ import { freezeIndicativeDay } from '@/server/indicative-archive';
 import { FileStore } from '@/server/storage';
 
 import type { BranchCheckout } from './attestations';
-import { proveIndicativeDay, proveIndicativeDays, type IndicativeProof } from './indicative-proof';
+import {
+	pinGap,
+	proveIndicativeDay,
+	proveIndicativeDays,
+	type IndicativeProof,
+} from './indicative-proof';
 import {
 	serializeTransitionPin,
 	transitionPinCutoff,
@@ -373,26 +378,117 @@ describe('the E−1 branch (design §4, test 12)', () => {
 	});
 });
 
-describe('writing the gap pin', () => {
-	it('round-trips: the pin written from a PARTIAL proves MATCH once stamped', async () => {
+/** The API as a deployment with step 2 live serves it: collecting under `served` (v2 by default). */
+function deployment(served: 'v2' | 'v1' = 'v2'): Get {
+	return async (url) => {
+		if (!url.endsWith('/api/v1/methodology')) return routeGet(url);
+		const release = served === 'v2' ? cutover().to : RELEASES[0];
+		return Response.json({
+			version: release?.parameters.version,
+			parameterHash: release?.parameterHash,
+		});
+	};
+}
+
+const pinAt = (at: string, get: Get = deployment()) =>
+	pinGap(cutover(), SITE, checkout, get, () => new Date(at));
+
+describe('writing the gap pin (pinGap)', () => {
+	it('writes it at the first run after E−1 froze, while UTC E−1’s proof is still pending (Sol S2, Opus O2)', async () => {
 		await collect();
-		const rounds = await gapRounds();
-		const file = await writeTransitionPin(checkout.directory, cutover(), rounds, CLOCK());
-		expect(path.relative(checkout.directory, file)).toBe('transition/2027-01-01.json');
-		const bytes = await readFile(file, 'utf8');
-		await pin(rounds, 'timely', bytes);
-		expectKind(await prove(), 'match');
+		await settle();
+		await freeze();
+		commit('nothing attested yet');
+		const written = await pinAt('2027-01-01T05:45:00Z');
+		expect(written).toEqual({
+			line: expect.stringMatching(
+				/^2026-12-31: wrote gap pin .*transition\/2027-01-01\.json \(60 receipts\)$/,
+			),
+			failed: false,
+		});
+		const bytes = await readFile(
+			path.join(checkout.directory, 'transition/2027-01-01.json'),
+			'utf8',
+		);
+		expect(JSON.parse(bytes)).toMatchObject({
+			release: { methodologyVersion: '2.0.0' },
+			window: { start: '2027-01-01T00:00:00.000Z', end: '2027-01-01T05:00:00.000Z' },
+		});
+		expect(JSON.parse(bytes).rounds).toHaveLength(60);
 	});
 
-	it('is refused before the interval ends, at its cutoff, and over an existing file', async () => {
+	it('round-trips: the pin it writes proves MATCH once stamped', async () => {
+		await collect();
+		await attest([await settle()]);
+		await freeze();
+		await pinAt('2027-01-01T05:45:00Z');
+		const name = transitionPinName(cutover());
+		const bytes = await readFile(path.join(checkout.directory, name), 'utf8');
+		await pin([], 'timely', bytes);
+		expectKind(await prove(), 'match');
+		expect(await pinAt('2027-01-01T06:45:00Z')).toEqual({
+			line: `2026-12-31: gap pin ${name} is on the branch`,
+			failed: false,
+		});
+	});
+
+	it('is not due before E−1 freezes, and writes nothing', async () => {
+		commit('empty');
+		expect(await pinAt('2027-01-01T05:29:59Z')).toEqual({
+			line: '2026-12-31: gap pin transition/2027-01-01.json is due from 2027-01-01T05:30:00.000Z',
+			failed: false,
+		});
+	});
+
+	it('fails, and writes nothing, while the deployment is not collecting under v2 (Sol S3)', async () => {
+		await collect();
+		await settle();
+		await freeze();
+		commit('empty');
+		const run = await pinAt('2027-01-01T05:45:00Z', deployment('v1'));
+		expect(run.failed).toBe(true);
+		expect(run.line).toMatch(/collects under 1\.0\.0 .*not 2\.0\.0: the cutover is not live there/);
+		expect(run.line).toMatch(
+			/Recover by dispatching the Attest workflow with date 2026-12-31 before 2027-01-01T17:00:00.000Z$/,
+		);
+		await expect(
+			readFile(path.join(checkout.directory, 'transition/2027-01-01.json')),
+		).rejects.toThrow(/ENOENT/);
+	});
+
+	it('fails, and writes nothing, when the archive holds a gap receipt the print omits (Sol S1)', async () => {
+		await collect();
+		await settle();
+		const receipt = path.join(root, 'rounds/2027-01-01/2027-01-01T00:00Z.json');
+		await rename(receipt, `${receipt}.aside`);
+		await freeze();
+		await rename(`${receipt}.aside`, receipt);
+		commit('empty');
+		const run = await pinAt('2027-01-01T05:45:00Z');
+		expect(run.failed).toBe(true);
+		expect(run.line).toMatch(
+			/the archive serves 2027-01-01T00:00Z \S+ valid, which the indicative print of 2026-12-31 omits/,
+		);
+	});
+
+	it('fails loudly once no pin can be written any more, and the run keeps failing (Sol S2, Opus O3)', async () => {
+		commit('empty');
+		const run = await pinAt('2027-01-01T17:00:00Z');
+		expect(run).toEqual({
+			line: expect.stringMatching(
+				/^2026-12-31: FAILED: gap pin transition\/2027-01-01\.json is not on the branch, and no pin is written after 2027-01-01T17:00:00.000Z/,
+			),
+			failed: true,
+		});
+	});
+
+	it('the writer refuses before E−1 froze, in the 12 hours before the cutoff, and over an existing file', async () => {
 		const write = (at: string) =>
 			writeTransitionPin(checkout.directory, cutover(), [], new Date(at));
-		await expect(write('2027-01-01T04:59:59Z')).rejects.toThrow(
-			/runs until 2027-01-01T05:00:00.000Z/,
+		await expect(write('2027-01-01T05:29:59Z')).rejects.toThrow(
+			/written from 2027-01-01T05:30:00.000Z/,
 		);
-		await expect(write('2027-01-02T05:00:00Z')).rejects.toThrow(
-			/cutoff 2027-01-02T05:00:00.000Z has passed/,
-		);
+		await expect(write('2027-01-01T17:00:00Z')).rejects.toThrow(/12 hours before its cutoff/);
 		await write('2027-01-01T05:45:00Z');
 		await expect(write('2027-01-01T06:45:00Z')).rejects.toThrow(/EEXIST/);
 	});
@@ -404,13 +500,11 @@ describe('writing the gap pin', () => {
 		const run = () => proveIndicativeDays([LAST], SITE, checkout, routeGet, CLOCK);
 		const partial = await run();
 		expect(partial.failures).toBe(0);
-		expect(partial.partial).toHaveLength(1);
 		expect(partial.lines.at(-1)).toBe(
 			'2026-12-31: indicative PARTIAL: the covered slots are equal both ways; 60 gap receipts are unpinned',
 		);
-		await pin(partial.partial[0]?.unpinned ?? [], 'late');
-		const late = await run();
-		expect([late.failures, late.partial]).toEqual([1, []]);
+		await pin(await gapRounds(), 'late');
+		expect((await run()).failures).toBe(1);
 	});
 });
 
@@ -441,5 +535,63 @@ describe('the pin is derived from the activated cutover, never a constant', () =
 			const [, next] = releases;
 			expect(next === undefined ? 'missing' : activatedCutoverInto(next, releases)).toBeNull();
 		}
+	});
+});
+
+describe('review findings on 57cf67d (each fails there)', () => {
+	it('S1: a stored gap receipt the print omits is a mismatch, not an empty pin and a MATCH', async () => {
+		await collect();
+		await attest([await settle()]);
+		const receipt = path.join(root, 'rounds/2027-01-01/2027-01-01T00:00Z.json');
+		await rename(receipt, `${receipt}.aside`);
+		await freeze();
+		await rename(`${receipt}.aside`, receipt);
+		expect(await prove()).toMatchObject({
+			kind: 'mismatch',
+			problems: [
+				expect.stringMatching(
+					/^the archive serves 2027-01-01T00:00Z \S+ valid, which the indicative print of 2026-12-31 omits$/,
+				),
+			],
+		});
+	});
+
+	it('S5: an explorer outage on the pin’s block cannot be verified, never an error', async () => {
+		await collect();
+		await pin(await gapRounds());
+		const explorer = globalThis.fetch;
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string) => {
+				const height = Number(/\/block-height\/(\d+)$/.exec(url)?.[1] ?? -1);
+				return height === 101 ? new Response('down', { status: 503 }) : explorer(url);
+			}),
+		);
+		expect(await prove()).toMatchObject({
+			kind: 'cannot_verify',
+			reason: expect.stringContaining('block 101'),
+		});
+	});
+
+	it('O5: a pin whose proof reaches a block well before the gap ended is a mismatch', async () => {
+		await collect();
+		const rounds = await gapRounds();
+		const name = transitionPinName(cutover());
+		// Stamped "timely", then its block dated three hours before the gap ends.
+		await pin(rounds);
+		const height = 101;
+		const block = blocks.get(height);
+		if (block === undefined) throw new Error('no pin block');
+		blocks.set(height, { ...block, time: Date.parse('2027-01-01T02:00:00Z') / 1000 });
+		expect(await prove()).toMatchObject({
+			kind: 'mismatch',
+			problems: [expect.stringContaining(`${name}`)],
+		});
+	});
+
+	it('O3: no pin is written in the last 12 hours before its cutoff', async () => {
+		await expect(
+			writeTransitionPin(checkout.directory, cutover(), [], new Date('2027-01-01T17:00:00Z')),
+		).rejects.toThrow(/12 hours before its cutoff/);
 	});
 });

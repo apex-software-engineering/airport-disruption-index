@@ -15,10 +15,11 @@
  * fails the run, including a day misfiled or still unserved 2 hours after its freeze time; PENDING
  * (a v1 reference not verified yet) and a day not frozen yet are reported, never failed. Each day
  * is proved on its own, so an error in one never skips the rest. No indicative file is ever written.
- * The one exception is E−1's gap pin (design §4, D8): when E−1 is PARTIAL (its covered slots
- * proved, no pin yet), its gap receipts are written to `{dir}/transition/{effectiveFrom}.json`,
- * once, between the end of the transition interval and the pin's cutoff. PARTIAL only exists once
- * the cutover is activated, so no pin is ever written before.
+ * The one exception is E−1's gap pin (design §4, D8, `pinGap`): once E−1 of an activated cutover
+ * has frozen, its gap receipts, read slot by slot from the archive, are written to
+ * `{dir}/transition/{effectiveFrom}.json` if the branch has no pin yet, whatever the v1
+ * reference's proof shows; a run that can neither find nor write it fails. Only with the cutover
+ * activated here and live at `--base-url` is a pin ever written.
  *
  * Then every proof in the directory, of any date, is checked offline: invalid proofs are reported
  * apart from pending ones. Exit 0 when every day in the window is attested and matches (a pending
@@ -27,7 +28,8 @@
  */
 import { buildAttestation } from '@/lib/index/attestation';
 import { fetchPublication, reproduceFetchedDay } from '@/lib/reproduce';
-import { indicativeSeriesPublished } from '@/lib/index/indicative';
+import { activatedCutoverInto, type Cutover } from '@/lib/index/calendar';
+import { indicativeReleaseFor, indicativeSeriesPublished } from '@/lib/index/indicative';
 import { addDays, type UtcDate } from '@/lib/index/time';
 
 import {
@@ -39,8 +41,7 @@ import {
 	writeAttestation,
 	type BranchCheckout,
 } from './lib/attestations';
-import { proveIndicativeDays } from './lib/indicative-proof';
-import { writeTransitionPin } from './lib/transition-pin';
+import { pinGap, proveIndicativeDays } from './lib/indicative-proof';
 import {
 	CannotVerify,
 	Mismatch,
@@ -50,6 +51,7 @@ import {
 	fetchDay,
 	getApi,
 	parseArgs,
+	printable,
 	requireDate,
 } from './lib/public-api';
 
@@ -57,6 +59,22 @@ const USAGE =
 	'npm run attest -- <YYYY-MM-DD> [--days 1] [--dir attestations] [--branch attestations] [--base-url URL]';
 /** Collection began 2026-11-20T04:30Z; no earlier day has a print. */
 const FIRST_PRINT_DATE = '2026-11-20';
+
+/**
+ * One line of the run's output, with control characters escaped: the Actions runner reads its
+ * output for `::` commands, and diagnostics carry text from calendars, explorers and the API.
+ */
+function say(line: string): void {
+	console.log(printable(line));
+}
+
+/** The activated cutover whose last indicative day (E−1) is `date`, if any. */
+function cutoverEndingOn(date: UtcDate): Cutover[] {
+	const release = indicativeReleaseFor(date, { includeWithdrawn: true });
+	if (release === null || date !== addDays(release.effectiveFrom, -1)) return [];
+	const cutover = activatedCutoverInto(release);
+	return cutover === null ? [] : [cutover];
+}
 
 /** The day's outcome, and the file written for it, if any. */
 async function attestDay(
@@ -82,7 +100,7 @@ async function attestDay(
 		if (!(error instanceof Unattested)) throw error;
 	}
 	const outcome = await reproduceFetchedDay(day, baseUrl, getApi);
-	for (const line of outcome.log) console.log(line);
+	for (const line of outcome.log) say(line);
 	if (outcome.kind === 'cannot_verify') throw new CannotVerify(outcome.reason);
 	if (outcome.kind === 'mismatch')
 		throw new Mismatch(outcome.problems.map((p) => `reproduce: ${p}`));
@@ -114,10 +132,10 @@ async function main(): Promise<number> {
 		try {
 			const day = await attestDay(baseUrl, checkout, date);
 			if (day.written !== null) written.add(day.written);
-			console.log(`${date}: ${day.outcome}`);
+			say(`${date}: ${day.outcome}`);
 		} catch (error) {
 			failures += 1;
-			console.log(`${date}: FAILED: ${describeError(error)}`);
+			say(`${date}: FAILED: ${describeError(error)}`);
 		}
 	}
 	let indicativeFailures = 0;
@@ -130,16 +148,16 @@ async function main(): Promise<number> {
 			getApi,
 			() => new Date(),
 		);
-		for (const line of indicative.lines) console.log(line);
+		for (const line of indicative.lines) say(line);
 		indicativeFailures = indicative.failures;
-		for (const { cutover, unpinned } of indicative.partial) {
+		for (const cutover of dates.flatMap(cutoverEndingOn)) {
 			try {
-				const path = await writeTransitionPin(checkout.directory, cutover, unpinned, new Date());
-				console.log(
-					`${cutover.previous.date}: wrote gap pin ${path} (${unpinned.length} receipts)`,
-				);
+				const pin = await pinGap(cutover, baseUrl, checkout, getApi, () => new Date());
+				say(pin.line);
+				if (pin.failed) indicativeFailures += 1;
 			} catch (error) {
-				console.log(`${cutover.previous.date}: gap pin not written: ${describeError(error)}`);
+				indicativeFailures += 1;
+				say(`${cutover.previous.date}: FAILED: gap pin error: ${describeError(error)}`);
 			}
 		}
 	}
@@ -148,9 +166,9 @@ async function main(): Promise<number> {
 		(name) => !written.has(`${checkout.directory}/${name}`),
 	);
 	const invalid = await invalidProofs(checkout.directory, earlier);
-	for (const { problem } of invalid) console.log(`INVALID PROOF: ${problem}`);
+	for (const { problem } of invalid) say(`INVALID PROOF: ${problem}`);
 	const ok = failures === 0 && indicativeFailures === 0 && invalid.length === 0;
-	console.log(
+	say(
 		ok
 			? 'ATTESTED'
 			: `FAILED: ${failures} day(s) not attested, ${indicativeFailures} indicative day(s) failed, ${invalid.length} invalid proof(s)`,
@@ -163,7 +181,7 @@ void main().then(
 		process.exitCode = code;
 	},
 	(error: unknown) => {
-		console.error(`cannot attest: ${describeError(error)}`);
+		console.error(printable(`cannot attest: ${describeError(error)}`));
 		process.exitCode = 1;
 	},
 );

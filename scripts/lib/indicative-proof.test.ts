@@ -449,19 +449,21 @@ describe('the both-ways indicative proof', () => {
 	});
 });
 
-describe('E−1 before the cutover is activated (design §4, D8)', () => {
-	it('cannot be verified, and gives the attest run no gap pin to write', async () => {
+describe('E−1 while v1 simply continues (no activated cutover; Opus #46 r1, finding 1)', () => {
+	it('is an ordinary two-reference day, and matches', async () => {
 		const last = '2026-12-31';
+		for (const at of ['2026-12-31T05:00:03Z', '2026-12-31T23:55:03Z', '2027-01-01T04:55:03Z'])
+			await collectAt(store, at);
+		const prints = [
+			(await settleDay(store, last)).print,
+			(await settleDay(store, '2027-01-01')).print,
+		];
 		await freezeIndicativeDay(store, last, new Date('2027-01-01T05:30:00Z'));
-		git('commit', '--quiet', '--allow-empty', '-m', 'empty');
-		git('update-ref', 'refs/remotes/origin/attestations', 'HEAD');
-		const clock = () => new Date('2027-01-01T12:00:00Z');
+		await attest(prints);
+		const clock = () => new Date('2027-01-02T12:00:00Z');
 		expect(await proveIndicativeDay(last, SITE, checkout, routeGet, clock)).toMatchObject({
-			kind: 'cannot_verify',
-			reason: expect.stringContaining('whose cutover is not activated'),
+			kind: 'match',
 		});
-		const run = await proveIndicativeDays([last], SITE, checkout, routeGet, clock);
-		expect([run.failures, run.partial]).toEqual([0, []]);
 	});
 });
 

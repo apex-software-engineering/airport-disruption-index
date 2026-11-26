@@ -496,19 +496,31 @@ runs it for every indicative day in its 7-day window and fails on a `MISMATCH`; 
 
 The last indicative day, 2026-12-31, has one v1 reference: its window
 `[2026-12-31T05:00Z, 2027-01-01T05:00Z)` ends in the 60 slots from 2027-01-01T00:00Z to 05:00Z,
-which no settlement print covers. Its check runs in this order and stops at the first outcome: the
-print is rebuilt (a difference is `MISMATCH`); UTC day 2026-12-31 must verify (else `PENDING`); its
-228 slots are compared both ways (a difference is `MISMATCH`, whatever the pin); then the gap pin,
-`transition/2027-01-01.json` on the `attestations` branch, is read as first committed. With no pin
-the result is `PARTIAL`, and the 60 slots' receipts are listed as unpinned. A pin that was
-rewritten, pins another window, or whose proof is invalid or first reaches a Bitcoin block at or
-after its cutoff, 2027-01-02T05:00Z, is a `MISMATCH`; one whose proof has no block yet is `PENDING`.
-A verified pin must list exactly the receipts the print lists in those 60 slots, giving `MATCH`. The
-attest workflow writes the pin once, at its first run after 2027-01-01T05:30Z, from the receipts of
-a `PARTIAL` check, and stamps it like an attestation. If the pin misses its cutoff, 2026-12-31 is a
-`MISMATCH` in every attest run until it leaves the 7-day window (the runs of 2027-01-01 to
-2027-01-07); nothing is rewritten to make them pass. The pin's name and window follow the cutover:
-if it is postponed, they move with it.
+which no settlement print covers. Its check runs in this order and stops at the first outcome:
+
+1. The print is rebuilt; a difference is `MISMATCH`.
+2. UTC day 2026-12-31 must verify, or the result is `PENDING`.
+3. Its 228 slots are compared both ways; a difference is `MISMATCH`, whatever the pin.
+4. Each of the 60 gap slots is read from the public archive (`/api/v1/rounds/{id}`). The receipts it
+   serves must equal those the print lists there; a difference is `MISMATCH`.
+5. The gap pin, `transition/2027-01-01.json` on the `attestations` branch, is read as first
+   committed. With no pin the result is `PARTIAL`, and the gap receipts are listed as unpinned. A
+   pin that was rewritten, names another window or release, or whose proof is invalid, first reaches
+   a Bitcoin block at or after its cutoff (2027-01-02T05:00Z), or is dated more than 2 hours before
+   the gap ended, is a `MISMATCH`. One whose proof has no block yet is `PENDING`. A verified pin
+   must list exactly the gap receipts, giving `MATCH`.
+
+The attest workflow writes the pin from the archive's gap receipts, once, at its first run from
+2027-01-01T05:30Z, when 2026-12-31 freezes. It does so whatever the v1 reference's proof shows, but
+only while the deployment collects under v2.0.0, the print rebuilds and the gap matches the archive.
+It stamps the pin like an attestation. No pin is written from 2027-01-01T17:00Z, 12 hours before its
+cutoff, because one written then would almost surely be late. From 05:30Z, every run that finds no
+pin either writes it or fails. To recover, dispatch the Attest workflow with date `2026-12-31`
+before 2027-01-01T17:00Z. If the pin is still missing then, or misses its cutoff, every attest run
+fails on 2026-12-31 until it leaves the 7-day window (the runs of 2027-01-01 to 2027-01-07), and
+nothing is rewritten to make them pass. What the pin attests is the operator's own gap receipts,
+fixed by a Bitcoin block before 2027-01-02T05:00Z. The pin's name and window follow the cutover: if
+it is postponed, they move with it.
 
 An indicative day is due 2 hours after its freeze time. A day that froze before its release's notice
 instant is due 12 hours after that instant instead: the settle runs look back only a few days, so

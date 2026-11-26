@@ -2,7 +2,14 @@ import { createServer, type RequestListener } from 'node:http';
 
 import { describe, expect, it } from 'vitest';
 
-import { CannotVerify, fetchWhole } from './public-api';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import { syntheticProof } from '@/test/ots';
+
+import { proveFile } from './attestations';
+import { CannotVerify, fetchWhole, printable } from './public-api';
 
 async function serving(handler: RequestListener, run: (base: string) => Promise<void>) {
 	const server = createServer(handler);
@@ -53,5 +60,26 @@ describe('fetchWhole (Sol #41 r1, finding 5)', () => {
 				expect([manual.status, manual.headers.get('Location')]).toEqual([302, '/end']);
 			},
 		);
+	});
+});
+
+describe('output the Actions runner reads (Sol #46 r1, finding 6)', () => {
+	it('keeps a pending diagnostic carrying a calendar URL with a line break on one line', async () => {
+		const directory = await mkdtemp(path.join(tmpdir(), 'adi-printable-'));
+		try {
+			const file = new TextEncoder().encode('pin');
+			const calendarUrl = 'https://a.example\n::error::injected';
+			const { proof } = syntheticProof(file, { kind: 'pending', calendarUrl });
+			await writeFile(path.join(directory, 'pin.ots'), proof);
+			const verdict = await proveFile(path.join(directory, 'pin.ots'), file, new Date(0));
+			if (verdict.kind !== 'pending') throw new Error(`expected pending, got ${verdict.kind}`);
+			// The parser passes the line break through: without escaping, `::error::` starts a line.
+			expect(verdict.detail).toContain('\n::error::injected');
+			const line = printable(`2026-12-31: indicative PENDING: ${verdict.detail}`);
+			expect(line.split('\n')).toHaveLength(1);
+			expect(line).toContain('a.example\\u000a::error::injected');
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
 	});
 });
