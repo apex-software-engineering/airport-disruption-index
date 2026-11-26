@@ -29,9 +29,9 @@ export const maxDuration = 300;
  * Every authorized run also freezes the indicative ET days (design §4) of the last few dates whose
  * freeze time has passed, whatever the settlements do.
  *
- * Every day and every freeze runs concurrently under its own deadline (ATTEMPT_DEADLINE_MS), so a
- * stalled storage request fails only its own attempt and the run still answers within
- * maxDuration. Abandoned work is safe: every print and index write is conditional, so it can only
+ * Every day's whole attempt (its settlement and the misfiled lookup after it) and every freeze runs
+ * concurrently under its own deadline (ATTEMPT_DEADLINE_MS), so a stalled storage request fails
+ * only its own attempt and the run still answers within maxDuration. Abandoned work is safe: every print and index write is conditional, so it can only
  * store the same print later, never overwrite one.
  *
  * The status is 500 when any day failed, else 409 when any was blocked (its print key holds
@@ -93,8 +93,14 @@ async function withinDeadline<T>(what: string, work: Promise<T>): Promise<T> {
 
 async function settle(store: ObjectStore, date: string): Promise<Settled> {
 	try {
-		const { status, print } = await withinDeadline(`settling ${date}`, settleDay(store, date));
-		const misfiled = await misfiledPrints(store, date);
+		// The deadline covers the diagnostic lookup too: the run waits on nothing unbounded.
+		const { status, print, misfiled } = await withinDeadline(
+			`settling ${date}`,
+			settleDay(store, date).then(async (outcome) => ({
+				...outcome,
+				misfiled: await misfiledPrints(store, date),
+			})),
+		);
 		return {
 			date,
 			status,

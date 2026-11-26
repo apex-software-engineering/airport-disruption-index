@@ -26,6 +26,7 @@ beforeEach(async () => {
 	vi.useFakeTimers({ toFake: ['Date'] });
 });
 afterEach(async () => {
+	vi.restoreAllMocks();
 	vi.useRealTimers();
 	vi.unstubAllEnvs();
 	await rm(root, { recursive: true, force: true });
@@ -199,6 +200,58 @@ describe('settle route', () => {
 			}),
 			expect.objectContaining({ date: '2026-11-18', status: 'settled' }),
 		]);
+	});
+
+	it('bounds the misfiled lookup after a settlement by the same deadline (Sol 3b r2, finding 1)', async () => {
+		await recordAt(`${DAY}T10:00:03Z`);
+		// Listing print keys is only the diagnostic lookup's; settling never lists them.
+		const list = FileStore.prototype.list;
+		const stalled = vi.spyOn(FileStore.prototype, 'list').mockImplementation(function (
+			this: FileStore,
+			prefix,
+		) {
+			return prefix.startsWith('prints/') ? new Promise(() => {}) : list.call(this, prefix);
+		});
+		let printWritten = () => {};
+		const settled = new Promise<void>((resolve) => (printWritten = resolve));
+		const write = FileStore.prototype.write;
+		const watched = vi.spyOn(FileStore.prototype, 'write').mockImplementation(async function (
+			this: FileStore,
+			...args
+		) {
+			const result = await write.apply(this, args);
+			if (args[0] === 'prints/history.json') printWritten();
+			return result;
+		});
+		vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+		vi.setSystemTime(new Date('2026-11-18T00:30:00Z'));
+		const pending = GET(
+			new Request('http://test/api/cron/settle', {
+				headers: { authorization: `Bearer ${SECRET}` },
+			}),
+		);
+		await settled;
+		for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+		await vi.advanceTimersByTimeAsync(ATTEMPT_DEADLINE_MS);
+		const response = await pending;
+		stalled.mockRestore();
+		watched.mockRestore();
+		expect(runSchema.parse(await response.json()).settled).toEqual([
+			expect.objectContaining({
+				date: DAY,
+				status: 'failed',
+				reason: expect.stringMatching(/did not finish within/),
+			}),
+		]);
+	});
+
+	it('settles two due v1 days at once into one history (Sol 3b r2, finding 2)', async () => {
+		await recordAt(`${DAY}T10:00:03Z`);
+		await recordAt('2026-11-18T10:00:03Z');
+		await defaultRunAt('2026-11-19T00:30:00Z');
+		expect(
+			(await readHistory(new FileStore(root), DAY, '2026-11-18')).days.map((day) => day.date),
+		).toEqual([DAY, '2026-11-18']);
 	});
 
 	it('repoints the history at the settled print on already_settled', async () => {

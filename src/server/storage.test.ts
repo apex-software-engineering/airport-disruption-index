@@ -111,3 +111,25 @@ describe('storeTarget', () => {
 		expect(storeTarget({ BLOB_READ_WRITE_TOKEN: 'x' })).toBeNull();
 	});
 });
+
+describe('FileStore conditional writes', () => {
+	it('lets only one of two concurrent writes against the same version succeed (Sol 3b r2, finding 2)', async () => {
+		const { mkdtemp, rm } = await import('node:fs/promises');
+		const { tmpdir } = await import('node:os');
+		const path = await import('node:path');
+		const { FileStore } = await import('./storage');
+		const root = await mkdtemp(path.join(tmpdir(), 'adi-filestore-'));
+		const store = new FileStore(root);
+		const encode = (text: string) => new TextEncoder().encode(text);
+		await store.write('k.json', encode('v0'), 'application/json', { kind: 'if-absent' });
+		const read = await store.read('k.json');
+		if (read === null) throw new Error('written above');
+		const condition = { kind: 'if-version', version: read.version } as const;
+		const outcomes = await Promise.all([
+			store.write('k.json', encode('a'), 'application/json', condition),
+			store.write('k.json', encode('b'), 'application/json', condition),
+		]);
+		expect([...outcomes].sort()).toEqual(['conflict', 'written']);
+		await rm(root, { recursive: true, force: true });
+	});
+});

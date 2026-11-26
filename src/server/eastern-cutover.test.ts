@@ -564,7 +564,8 @@ describe('default settle runs across the cutover and both DST nights', () => {
 
 describe('the attest gate reads each day’s own publishBy', () => {
 	it('skips E before 06:30Z (01:30 EST), fails it as overdue from then, and attests it once settled', async () => {
-		const at = (instant: string) => fetchPublication('http://test', E, new Date(instant), routeGet);
+		const at = (instant: string) =>
+			fetchPublication('http://test', E, () => new Date(instant), routeGet);
 		expect(await at('2027-01-02T05:45:00Z')).toEqual({
 			kind: 'not_yet_due',
 			publishBy: '2027-01-02T06:30:00.000Z',
@@ -585,10 +586,40 @@ describe('the attest gate reads each day’s own publishBy', () => {
 		await settleDay(store, E);
 		vi.useRealTimers();
 		await expect(
-			fetchPublication('http://test', E, new Date('2027-01-02T01:45:00Z'), routeGet),
+			fetchPublication('http://test', E, () => new Date('2027-01-02T01:45:00Z'), routeGet),
 		).rejects.toThrow(
 			'is served as settled at 2027-01-02T01:45:00.000Z, before its cutoff 2027-01-02T05:30:00.000Z',
 		);
+	});
+
+	it('takes the edge of the request that makes each verdict certain (Sol 3b r2, finding 3)', async () => {
+		await collectAroundE();
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2027-01-02T05:30:00Z'));
+		await settleDay(store, E);
+		vi.useRealTimers();
+		// A request that starts 1 ms before the cutoff and is answered at it: settled, not premature.
+		let now = new Date('2027-01-02T05:29:59.999Z');
+		const answeredAtCutoff: Get = async (url) => {
+			now = new Date('2027-01-02T05:30:00.000Z');
+			return routeGet(url);
+		};
+		expect(await fetchPublication('http://test', E, () => now, answeredAtCutoff)).toEqual({
+			kind: 'settled',
+		});
+		// Unsettled, with a request spanning the deadline: not yet certain to be overdue.
+		now = new Date('2027-01-09T06:29:59.999Z');
+		const unsettled: Get = async () => {
+			now = new Date('2027-01-09T06:30:01.000Z');
+			return Response.json(
+				{ status: 'unsettled', publishBy: '2027-01-09T06:30:00.000Z' },
+				{ status: 404 },
+			);
+		};
+		expect(await fetchPublication('http://test', '2027-01-08', () => now, unsettled)).toEqual({
+			kind: 'not_yet_due',
+			publishBy: '2027-01-09T06:30:00.000Z',
+		});
 	});
 
 	it('judges by its own deadline, never one the server states', async () => {
@@ -599,7 +630,7 @@ describe('the attest gate reads each day’s own publishBy', () => {
 				{ status: 404 },
 			);
 		await expect(
-			fetchPublication('http://test', E, new Date('2027-01-02T07:00:00Z'), later),
+			fetchPublication('http://test', E, () => new Date('2027-01-02T07:00:00Z'), later),
 		).rejects.toThrow('states publishBy 2027-01-09T06:30:00.000Z, not 2027-01-02T06:30:00.000Z');
 	});
 });

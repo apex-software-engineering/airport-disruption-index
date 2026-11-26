@@ -252,8 +252,8 @@ function emptyDayIndex(date: UtcDate): DayIndex {
  * The day index: one summary per stored round, so the running value needs a single read. One that
  * does not decode is rebuilt from the partition's receipts, never thrown on: under v1 the next
  * collect would rebuild it, but under v2 nothing rewrites a partition once its UTC day is over,
- * while the ET day still reads it for five hours (#34). A rebuild that cannot read every receipt
- * throws and leaves the index as it was.
+ * while the ET day still reads it for five hours (#34). A rebuild that cannot read every receipt is
+ * served without the unreadable ones but never stored, so the next read rebuilds it again.
  */
 export async function readDayIndex(store: ObjectStore, date: UtcDate): Promise<DayIndex> {
 	const object = await store.read(keys.dayIndex(date));
@@ -279,9 +279,9 @@ type IndexSync =
  *   cannot be read is skipped and retried next time. An index that does not decode is rebuilt
  *   from every listed receipt plus the round just resolved.
  * - On settle: rebuilt from the receipts settle already read.
- * - On repair: unless another writer already fixed it, rebuilt from every listed receipt. One that
- *   cannot be read fails the repair, which writes nothing, so the next read tries again: a repaired
- *   partition is one no collect rewrites any more, so a skipped receipt would never come back.
+ * - On repair: unless another writer already fixed it, rebuilt from every listed receipt. If one
+ *   cannot be read, the rebuilt index is returned without it but not stored: a repaired partition
+ *   is one no collect rewrites any more, so a stored index missing a round would never regain it.
  * A rebuild ignores the old content and uses only its version. Returns the index as stored.
  */
 async function syncDayIndex(store: ObjectStore, date: UtcDate, sync: IndexSync): Promise<DayIndex> {
@@ -291,12 +291,14 @@ async function syncDayIndex(store: ObjectStore, date: UtcDate, sync: IndexSync):
 		const object = await store.read(key);
 		const current = object === null ? emptyDayIndex(date) : tryDecode(dayIndexSchema, object);
 		let rounds: RoundSummary[];
+		let partial = false;
 		if (sync.kind === 'settle') {
 			rounds = sync.receipts.map(summarizeReceipt);
 		} else if (sync.kind === 'repair') {
 			if (current !== null) return current;
-			// Every receipt, or nothing: no later write would add one this skipped (#35 review).
-			rounds = (await readReceipts(store, date, listed, 'throw')).map(summarizeReceipt);
+			const receipts = await readReceipts(store, date, listed, 'skip');
+			rounds = receipts.map(summarizeReceipt);
+			partial = receipts.length < listed.length;
 		} else if (current === null) {
 			// The listing can lag the write that just happened, so the own round is always read.
 			const all = [sync.refresh, ...listed.filter((id) => id !== sync.refresh)];
@@ -320,6 +322,7 @@ async function syncDayIndex(store: ObjectStore, date: UtcDate, sync: IndexSync):
 			...emptyDayIndex(date),
 			rounds: rounds.sort((x, y) => x.roundId.localeCompare(y.roundId)),
 		};
+		if (partial) return index;
 		const next = encode(index);
 		if (object !== null && Buffer.from(next).equals(Buffer.from(object.body))) return index;
 		const condition: WriteCondition =

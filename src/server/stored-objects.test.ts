@@ -246,30 +246,34 @@ describe('a day index that does not decode is rebuilt, never thrown on (#34, ite
 		});
 	});
 
-	it('never persists a repair that could not read every receipt (Sol 3b r1, finding 4)', async () => {
+	it('serves a repair that could not read every receipt, but never stores it (#35 reviews)', async () => {
 		await collectAt('2027-01-01T05:00:03Z');
+		await collectAt('2027-01-01T06:00:03Z');
 		await collectAt('2027-01-02T02:55:03Z');
 		await writeFile(path.join(root, 'days/2027-01-01.json'), GARBAGE);
 		const receipt = 'rounds/2027-01-01/2027-01-01T05:00Z.json';
 		const read = FileStore.prototype.read;
 		let failures = 1;
-		const flaky = vi.spyOn(FileStore.prototype, 'read').mockImplementation(function (
-			this: FileStore,
-			key,
-		) {
+		vi.spyOn(FileStore.prototype, 'read').mockImplementation(function (this: FileStore, key) {
 			if (key === receipt && failures > 0) {
 				failures -= 1;
 				return Promise.reject(new Error('transient read failure'));
 			}
 			return read.call(this, key);
 		});
+		const write = vi.spyOn(FileStore.prototype, 'write');
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(new Date('2027-01-02T03:01:00Z'));
-		await expect(get('/api/v1/current')).rejects.toThrow('transient read failure');
+		// One receipt unreadable: /current stays up without it, and the partial index is not stored.
+		const first = await get('/api/v1/current');
+		expect(first.status).toBe(200);
+		expect(await first.json()).toMatchObject({ date: E, coverage: { validRounds: 2 } });
+		expect(write).not.toHaveBeenCalled();
 		expect((await store.read('days/2027-01-01.json'))?.body).toEqual(GARBAGE);
-		// The next read repairs it in full.
-		const current = await get('/api/v1/current');
-		expect(await current.json()).toMatchObject({ date: E, coverage: { validRounds: 2 } });
-		flaky.mockRestore();
+		// The next read rebuilds it in full, and stores it.
+		const next = await get('/api/v1/current');
+		expect(await next.json()).toMatchObject({ date: E, coverage: { validRounds: 3 } });
+		expect(write).toHaveBeenCalledTimes(1);
+		vi.restoreAllMocks();
 	});
 });

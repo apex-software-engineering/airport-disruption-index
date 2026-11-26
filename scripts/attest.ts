@@ -51,7 +51,7 @@ async function attestDay(
 	checkout: BranchCheckout,
 	date: UtcDate,
 ): Promise<{ outcome: string; written: string | null }> {
-	const publication = await fetchPublication(baseUrl, date, new Date(), getApi);
+	const publication = await fetchPublication(baseUrl, date, () => new Date(), getApi);
 	if (publication.kind === 'not_yet_due') {
 		return { outcome: `not yet published (due by ${publication.publishBy})`, written: null };
 	}
