@@ -290,8 +290,32 @@ jobs:
           BRANCH_EXISTS: ${{ needs.attest.outputs.branch-exists }}
           TIP: ${{ needs.attest.outputs.tip }}
         run: |
+          set -o pipefail
           cd publication
           mapfile -t incoming < <(cd ../incoming && find . -type f | sed 's|^\./||' | sort)
+          # A new gap pin goes out only while the deployment collects under the release it names.
+          # One that fails this is withheld with its proof; everything else is still published, and
+          # the step fails at the end.
+          withheld=()
+          for name in "${incoming[@]}"; do
+            [[ "$name" == transition/*.json && ! -e "$name" ]] || continue
+            pinned="$(jq -r '.release.methodologyVersion + " " + .release.parameterHash' "../incoming/$name")" || pinned=unreadable
+            served="$(curl -fsS --max-time 60 "$BASE_URL/api/v1/methodology" | jq -r '.version + " " + .parameterHash')" || served="nothing (the methodology endpoint did not answer)"
+            if [[ "$served" != "$pinned" ]]; then
+              echo "::error::$name pins release $pinned, but $BASE_URL collects under $served; it and its proof are withheld"
+              withheld+=("$name" "$name.ots")
+            fi
+          done
+          if (( ${#withheld[@]} > 0 )); then
+            mapfile -t incoming < <(printf '%s\n' "${incoming[@]}" | grep -vxF -f <(printf '%s\n' "${withheld[@]}"))
+          fi
+          finish() {
+            if (( ${#withheld[@]} > 0 )); then
+              echo "::error::withheld ${withheld[*]}; everything else was published"
+              exit 1
+            fi
+            exit 0
+          }
           # Each incoming file must be as the attest job saw it at $TIP on the branch at `ref`.
           unchanged_since_tip() {
             [[ "$BRANCH_EXISTS" != true ]] && return 0
@@ -322,14 +346,6 @@ jobs:
               if [[ -e "$name" ]]; then
                 cmp -s "$source" "$name" || { echo "::error::$name would be rewritten"; exit 1; }
               elif [[ -e "$source.ots" ]]; then
-                if [[ "$name" == transition/* ]]; then
-                  pinned="$(jq -r '.release.methodologyVersion + " " + .release.parameterHash' "$source")"
-                  served="$(curl -fsS --max-time 60 "$BASE_URL/api/v1/methodology" | jq -r '.version + " " + .parameterHash')" || served=unreachable
-                  if [[ "$served" != "$pinned" ]]; then
-                    echo "::error::$name pins release $pinned, but $BASE_URL collects under $served; not published"
-                    exit 1
-                  fi
-                fi
                 mkdir -p "$(dirname "$name")"
                 cp "$source" "$name"
                 added+=("${name%.json}")
@@ -346,7 +362,7 @@ jobs:
           git add --all
           if git diff --cached --quiet; then
             echo "Nothing to publish"
-            exit 0
+            finish
           fi
           if (( ${#added[@]} > 0 )); then
             git commit --quiet -m "Attest ${added[*]}"
@@ -360,7 +376,7 @@ jobs:
               git pull --quiet --rebase origin "$PUBLICATION_BRANCH" || { sleep $((attempt * 5)); continue; }
               unchanged_since_tip "origin/$PUBLICATION_BRANCH" || exit 1
             fi
-            git push origin "HEAD:refs/heads/$PUBLICATION_BRANCH" && exit 0
+            git push origin "HEAD:refs/heads/$PUBLICATION_BRANCH" && finish
             echo "push attempt $attempt lost a race; retrying"
             sleep $((attempt * 5))
           done

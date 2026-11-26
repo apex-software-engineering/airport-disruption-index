@@ -23,7 +23,7 @@ import {
 	type Cutover,
 	type Interval,
 } from '@/lib/index/calendar';
-import { indicativeReleaseFor } from '@/lib/index/indicative';
+import { indicativeReleaseFor, indicativeServedBy } from '@/lib/index/indicative';
 import { settlementReleaseOrNull } from '@/lib/index/methodology';
 import type { DailyPrint, IndicativePrint, RoundSummary } from '@/lib/index/schemas';
 import { addDays, parseRoundId, type UtcDate } from '@/lib/index/time';
@@ -242,8 +242,10 @@ async function archivedGap(
  * The attest run's gap pin for a cutover (design §4, D8), written as soon as it may be: from E−1's
  * freeze, independent of the v1 reference's proof, which only the verdict needs. Before it is
  * written, the deployment must be collecting under the new release, E−1 must rebuild, and its gap
- * receipts must equal the archive's. Once E−1 has frozen, a run that finds no pin on the branch
- * either writes it or fails, so a missed pin is never a quiet log line.
+ * receipts must equal the archive's. A run that finds no pin on the branch writes it, or fails: at
+ * once on a mismatch, and on anything it could not check yet only from E−1's due time (its freeze
+ * plus 2 hours, `indicativeServedBy`), before which the next run retries. So a missed pin is never
+ * a quiet log line, and an on-time E−1 never turns a run red.
  */
 export async function pinGap(
 	cutover: Cutover,
@@ -271,6 +273,16 @@ export async function pinGap(
 		line: `${label}: FAILED: gap pin ${name} is not on the branch and was not written: ${reason}. Recover by dispatching the Attest workflow with date ${label} before ${writable.end.toISOString()}`,
 		failed: true,
 	});
+	// Until E−1's print is due, what could not be checked yet is retried by the next run; a
+	// mismatch is never retried.
+	const due = indicativeServedBy(cutover.to, label) ?? writable.start;
+	const retried = (reason: string) =>
+		now < due
+			? {
+					line: `${label}: gap pin ${name} not written yet: ${reason}; the next run retries`,
+					failed: false,
+				}
+			: failed(reason);
 	if (now >= writable.end) {
 		return {
 			line: `${label}: FAILED: gap pin ${name} is not on the branch, and no pin is written after ${writable.end.toISOString()}: the gap slots of the indicative series have no timely external pin (log an incident)`,
@@ -281,19 +293,21 @@ export async function pinGap(
 		await requireServedCutover(baseUrl, cutover, get);
 	} catch (error) {
 		if (error instanceof Mismatch) return failed(error.problems.join('; '));
-		if (error instanceof CannotVerify) return failed(error.message);
+		if (error instanceof CannotVerify) return retried(error.message);
 		throw error;
 	}
 	const rebuilt = await reproduceIndicativeDay(label, baseUrl, get, clock);
 	if (rebuilt.outcome.kind === 'mismatch')
 		return failed(`E−1 does not rebuild: ${rebuilt.outcome.problems.join('; ')}`);
-	if (rebuilt.outcome.kind === 'cannot_verify' || rebuilt.print === null)
-		return failed(
-			rebuilt.outcome.kind === 'cannot_verify' ? rebuilt.outcome.reason : `${label} is not served`,
+	if (rebuilt.print === null) {
+		return retried(
+			`the indicative print of ${label} is not served yet (it is due by ${due.toISOString()})`,
 		);
+	}
+	if (rebuilt.outcome.kind === 'cannot_verify') return retried(rebuilt.outcome.reason);
 	const archive = await archivedGap(cutover, rebuilt.print, baseUrl, get);
 	if (archive.kind === 'mismatch') return failed(archive.problems.join('; '));
-	if (archive.kind === 'cannot_verify') return failed(archive.reason);
+	if (archive.kind === 'cannot_verify') return retried(archive.reason);
 	const file = await writeTransitionPin(checkout.directory, cutover, archive.rounds, clock());
 	return {
 		line: `${label}: wrote gap pin ${file} (${archive.rounds.length} receipts)`,

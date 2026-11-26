@@ -514,13 +514,16 @@ The attest workflow writes the pin from the archive's gap receipts, once, at its
 2027-01-01T05:30Z, when 2026-12-31 freezes. It does so whatever the v1 reference's proof shows, but
 only while the deployment collects under v2.0.0, the print rebuilds and the gap matches the archive.
 It stamps the pin like an attestation. No pin is written from 2027-01-01T17:00Z, 12 hours before its
-cutoff, because one written then would almost surely be late. From 05:30Z, every run that finds no
-pin either writes it or fails. To recover, dispatch the Attest workflow with date `2026-12-31`
-before 2027-01-01T17:00Z. If the pin is still missing then, or misses its cutoff, every attest run
-fails on 2026-12-31 until it leaves the 7-day window (the runs of 2027-01-01 to 2027-01-07), and
-nothing is rewritten to make them pass. What the pin attests is the operator's own gap receipts,
-fixed by a Bitcoin block before 2027-01-02T05:00Z. The pin's name and window follow the cutover: if
-it is postponed, they move with it.
+cutoff, because one written then would almost surely be late. A run that finds no pin and cannot
+write it fails at once on a mismatch. If it simply could not check yet, for example because the
+print is not served, it fails only from 07:30Z, when the print is due; before then the next run
+retries. The 60 gap reads have 10 minutes in all. If the deployment does not confirm v2.0.0 when the
+pin is published, the pin is withheld, everything else is published, and the run fails. To recover,
+dispatch the Attest workflow with date `2026-12-31` before 2027-01-01T17:00Z. If the pin is still
+missing then, or misses its cutoff, every attest run fails on 2026-12-31 until it leaves the 7-day
+window (the runs of 2027-01-01 to 2027-01-07), and nothing is rewritten to make them pass. What the
+pin attests is the operator's own gap receipts, fixed by a Bitcoin block before 2027-01-02T05:00Z.
+The pin's name and window follow the cutover: if it is postponed, they move with it.
 
 An indicative day is due 2 hours after its freeze time. A day that froze before its release's notice
 instant is due 12 hours after that instant instead: the settle runs look back only a few days, so

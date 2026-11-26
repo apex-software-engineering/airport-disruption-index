@@ -32,6 +32,7 @@ import {
 	type IndicativeProof,
 } from './indicative-proof';
 import {
+	readGapReceipts,
 	serializeTransitionPin,
 	transitionPinCutoff,
 	transitionPinName,
@@ -593,5 +594,47 @@ describe('review findings on 57cf67d (each fails there)', () => {
 		await expect(
 			writeTransitionPin(checkout.directory, cutover(), [], new Date('2027-01-01T17:00:00Z')),
 		).rejects.toThrow(/12 hours before its cutoff/);
+	});
+});
+
+describe('review findings on e36c1c9 (each fails there)', () => {
+	it('Sol r2 S2: before E−1 is due (07:30Z), an unserved print is retried, not a failed run', async () => {
+		await collect();
+		await settle();
+		commit('empty');
+		const run = await pinAt('2027-01-01T05:45:00Z');
+		expect(run).toEqual({
+			line: '2026-12-31: gap pin transition/2027-01-01.json not written yet: the indicative print of 2026-12-31 is not served yet (it is due by 2027-01-01T07:30:00.000Z); the next run retries',
+			failed: false,
+		});
+	});
+
+	it('Sol r2 S2: from E−1’s due time (07:30Z), an unserved print fails the run', async () => {
+		await collect();
+		await settle();
+		commit('empty');
+		const run = await pinAt('2027-01-01T07:30:00Z');
+		expect(run.failed).toBe(true);
+		expect(run.line).toMatch(
+			/^2026-12-31: FAILED: .*E−1 does not rebuild: indicative day 2026-12-31 is not served at /,
+		);
+	});
+
+	it('Sol r2 S3: the gap reads run 6 at a time and give up as cannot-verify past their budget', async () => {
+		let inFlight = 0;
+		let most = 0;
+		const slow: Get = async () => {
+			inFlight += 1;
+			most = Math.max(most, inFlight);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			inFlight -= 1;
+			return new Response('none', { status: 404 });
+		};
+		expect(await readGapReceipts(cutover(), SITE, slow)).toEqual([]);
+		expect(most).toBe(6);
+		const hanging: Get = () => new Promise(() => {});
+		await expect(readGapReceipts(cutover(), SITE, hanging, { budgetMs: 50 })).rejects.toThrow(
+			/the 60 gap reads did not finish within 0\.05 s/,
+		);
 	});
 });

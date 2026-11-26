@@ -262,16 +262,27 @@ export async function requireServedCutover(
 	}
 }
 
+/** How many gap slots are read at once. */
+const GAP_READ_CONCURRENCY = 6;
 /**
- * Every receipt the public archive holds in the interval, one request per slot: 200 is a receipt
- * this code can verify; 404 an empty slot; 422 a receipt recording a release this code does not
- * know (foreign), read from E−1's evidence endpoint, which serves it only if E−1 lists it, so a
- * 404 there is a stored receipt the print omits. Anything else cannot be verified.
+ * The most all gap reads together may take. Each request also has the client's own deadline
+ * (`fetchWhole`); this bounds the total well inside the attest job's 30-minute limit, so a slow
+ * archive leaves time to stamp and publish whatever else the run produced.
+ */
+const GAP_READ_BUDGET_MS = 10 * 60_000;
+
+/**
+ * Every receipt the public archive holds in the interval, one request per slot, 6 at a time: 200
+ * is a receipt this code can verify; 404 an empty slot; 422 a receipt recording a release this code
+ * does not know (foreign), read from E−1's evidence endpoint, which serves it only if E−1 lists it,
+ * so a 404 there is a stored receipt the print omits. Anything else, or reads still running after
+ * `budgetMs`, cannot be verified.
  */
 export async function readGapReceipts(
 	cutover: Cutover,
 	baseUrl: string,
 	get: Get,
+	{ budgetMs = GAP_READ_BUDGET_MS }: { budgetMs?: number } = {},
 ): Promise<GapRound[]> {
 	const gap = gapOf(cutover);
 	const label = lastIndicativeDay(cutover);
@@ -285,10 +296,9 @@ export async function readGapReceipts(
 		});
 		return { url, response };
 	};
-	const rounds: GapRound[] = [];
-	for (const id of ids) {
+	const readSlot = async (id: string): Promise<GapRound | null> => {
 		let { url, response } = await read(`/api/v1/rounds/${id}`);
-		if (response.status === 404) continue;
+		if (response.status === 404) return null;
 		if (response.status === 422) {
 			({ url, response } = await read(`/api/v1/indicative/days/${label}/rounds/${id}`));
 			if (response.status === 404) {
@@ -302,13 +312,38 @@ export async function readGapReceipts(
 		if (!receipt.success || receipt.data.roundId !== id || !receiptHashMatches(receipt.data)) {
 			throw new Mismatch([`${url} serves round ${id} malformed or with a wrong receiptHash`]);
 		}
-		rounds.push({
+		return {
 			roundId: id,
 			receiptHash: receipt.data.receiptHash,
 			status: receipt.data.observation.status,
-		});
+		};
+	};
+	const slots: (GapRound | null)[] = new Array<GapRound | null>(ids.length).fill(null);
+	let next = 0;
+	const worker = async () => {
+		for (let index = next++; index < ids.length; index = next++) {
+			const id = ids[index];
+			if (id !== undefined) slots[index] = await readSlot(id);
+		}
+	};
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const budget = new Promise<never>((_, reject) => {
+		timer = setTimeout(
+			() =>
+				reject(
+					new CannotVerify(
+						`the ${ids.length} gap reads did not finish within ${budgetMs / 1000} s`,
+					),
+				),
+			budgetMs,
+		);
+	});
+	try {
+		await Promise.race([Promise.all(Array.from({ length: GAP_READ_CONCURRENCY }, worker)), budget]);
+	} finally {
+		clearTimeout(timer);
 	}
-	return rounds;
+	return slots.filter((slot): slot is GapRound => slot !== null);
 }
 
 /** `(roundId, receiptHash, status)`, the key both sides of a gap comparison use. */
