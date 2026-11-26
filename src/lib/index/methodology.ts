@@ -87,8 +87,9 @@ export type Methodology = {
 	/** Set only by a withdrawal notice. A withdrawn release is never in effect. */
 	readonly withdrawn: boolean;
 	/**
-	 * When the release's public notice shipped (cutover step 1), set in the same commit as the
-	 * notice. Until then nothing derived from the release is published: no indicative series.
+	 * The instant the release's public notice is published (cutover step 1), set in the same commit
+	 * as the notice and deployed before it: never a past instant at deploy time. From it, and not
+	 * before, everything the notice publishes appears together (`isNoticePublished`).
 	 */
 	readonly noticePublishedAt: string | null;
 };
@@ -105,6 +106,15 @@ export const SETTLEMENT_CUTOFF_MINUTES: MethodologyParameters['settlement']['cut
 export function isActive(release: Methodology): boolean {
 	if (release.withdrawn) return false;
 	return release === RELEASES[0] || release.announcedAt !== null;
+}
+
+/**
+ * Whether `release`'s notice is public at `now`: its `noticePublishedAt` has been reached. The one
+ * gate for everything the notice publishes: the indicative series, the `upcoming` block, the
+ * banner, and the notice's passages in the docs.
+ */
+export function isNoticePublished(release: Methodology, now: Date): boolean {
+	return release.noticePublishedAt !== null && now >= new Date(release.noticePublishedAt);
 }
 
 /** The active releases, oldest first. */

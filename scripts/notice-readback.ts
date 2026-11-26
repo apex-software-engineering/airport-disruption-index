@@ -1,19 +1,21 @@
 /**
- * Reads a methodology notice back from the public site and, once both the incidents entry and the
- * `upcoming` block show it, writes the single write-once record `notices/{version}.readback.json`
- * into the attestations checkout (design §2). Run by the notice-readback workflow, which then
+ * Reads a methodology notice back from the public site and, once the incidents entry, the
+ * methodology page's rules and the `upcoming` block all show it, writes the single write-once
+ * record `notices/{version}.readback.json` and its three bodies into the attestations checkout
+ * (design §2). Run by the notice-readback workflow, which then
  * stamps and publishes it.
  *
  *   npm run notice-readback -- <version> --run-id <id> --run-started-at <ISO> [--dir attestations] [--base-url URL]
  *
  * Exit 0 when the record is written, or already exists (it is never rewritten); 3 when the notice
  * is not public yet (nothing is written; run again later), including before the release's notice
- * has shipped (`noticePublishedAt` null); 1 when the site states the release wrongly; 2 when the
+ * instant (`noticePublishedAt`, unset or not reached); 1 when the site states the release wrongly; 2 when the
  * check could not run.
  */
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 
+import { isNoticePublished } from '@/lib/index/methodology';
 import { RELEASES } from '@/lib/index/releases';
 import { readBackNotice } from '@/lib/notice-readback';
 import { Mismatch } from '@/lib/reproduce';
@@ -38,9 +40,9 @@ async function main(): Promise<number> {
 	if (baseUrl !== PRODUCTION) {
 		throw new CannotVerify(`a readback record is only for ${PRODUCTION}, never ${baseUrl}`);
 	}
-	if (release.noticePublishedAt === null) {
+	if (!isNoticePublished(release, new Date())) {
 		console.log(
-			`${version}: its notice has not shipped (noticePublishedAt is null); nothing to read back`,
+			`${version}: its notice is not published yet (noticePublishedAt ${release.noticePublishedAt ?? 'unset'}); nothing to read back`,
 		);
 		return 3;
 	}

@@ -5,7 +5,7 @@
  * admission policy that lets its rounds, collected under v1, count.
  */
 import { dayWindow, settlesAt } from './calendar';
-import { identityOf, type Identity, type Methodology } from './methodology';
+import { identityOf, isNoticePublished, type Identity, type Methodology } from './methodology';
 import { RELEASES } from './releases';
 import { addDays, utcDateOf } from './time';
 
@@ -118,18 +118,18 @@ export function dueIndicativeDays(now: Date, lookbackDays: number): string[] {
 }
 
 /**
- * Whether the indicative series is public: its release's notice has shipped
- * (`noticePublishedAt`). Until then no indicative day is served, shown or frozen by a settle run,
- * and none is frozen into production. This is the only place that decides it.
+ * Whether the indicative series is public at `now`: its release's notice is published
+ * (`isNoticePublished`). Until then no indicative day is served, shown or frozen by a settle run,
+ * and none is frozen into production.
  */
-export function indicativeSeriesPublished(): boolean {
-	return indicativeSeriesPublishedIn(RELEASES);
+export function indicativeSeriesPublished(now: Date): boolean {
+	return indicativeSeriesPublishedIn(RELEASES, now);
 }
 
 /** `indicativeSeriesPublished` over a given registry. */
-export function indicativeSeriesPublishedIn(releases: readonly Methodology[]): boolean {
+export function indicativeSeriesPublishedIn(releases: readonly Methodology[], now: Date): boolean {
 	return releases.some(
-		(release) => indicativeAdmissionFor(release) !== null && release.noticePublishedAt !== null,
+		(release) => indicativeAdmissionFor(release) !== null && isNoticePublished(release, now),
 	);
 }
 

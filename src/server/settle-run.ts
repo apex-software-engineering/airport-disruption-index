@@ -101,7 +101,9 @@ type Frozen = Awaited<ReturnType<typeof freezeDue>>[number];
 
 /** Freezes every due indicative day, each independently. None before the series is published. */
 async function freezeDue(store: ObjectStore, now: Date, deadlineMs: number) {
-	const due = indicativeSeriesPublished() ? dueIndicativeDays(now, INDICATIVE_LOOKBACK_DAYS) : [];
+	const due = indicativeSeriesPublished(now)
+		? dueIndicativeDays(now, INDICATIVE_LOOKBACK_DAYS)
+		: [];
 	return Promise.all(
 		due.map(async (date) => {
 			try {

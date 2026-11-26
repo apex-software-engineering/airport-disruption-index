@@ -73,7 +73,7 @@ describe('docToReact', () => {
 
 	// The incidents page renders per request, so a bad <time> in a doc must fail CI instead.
 	it.each(DOC_NAMES)('renders every <time> in docs/%s.md', async (name) => {
-		const html = await renderDoc(name);
+		const html = await renderDoc(name, new Date('2026-11-29T00:00:00Z'));
 		expect(() => renderToStaticMarkup(docToReact(html))).not.toThrow();
 	});
 

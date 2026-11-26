@@ -49,19 +49,23 @@ afterEach(async () => {
 const NOT_PUBLISHED = { error: 'the indicative series is not yet published' };
 
 describe('the indicative series before its notice', () => {
-	it('is published only once its release records noticePublishedAt', () => {
-		expect(indicativeSeriesPublished()).toBe(false);
+	it('is published from its release’s noticePublishedAt instant, and not a moment before', () => {
+		expect(indicativeSeriesPublished(new Date('2026-12-01T00:00:00Z'))).toBe(false);
 		const step1 = [
 			release(METHODOLOGY_V1, '2026-11-17'),
-			release(METHODOLOGY_V2, '2027-01-01', { noticePublishedAt: '2026-11-25T15:00:00.000Z' }),
+			release(METHODOLOGY_V2, '2027-01-01', { noticePublishedAt: '2026-11-29T00:00:00.000Z' }),
 		];
-		expect(indicativeSeriesPublishedIn(step1)).toBe(true);
+		expect(indicativeSeriesPublishedIn(step1, new Date('2026-11-28T23:59:59.999Z'))).toBe(false);
+		expect(indicativeSeriesPublishedIn(step1, new Date('2026-11-29T00:00:00.000Z'))).toBe(true);
 		// A notice on a release without an indicative series publishes nothing.
 		expect(
-			indicativeSeriesPublishedIn([
-				release(METHODOLOGY_V1, '2026-11-17', { noticePublishedAt: '2026-11-25T15:00:00.000Z' }),
-				release(METHODOLOGY_V2, '2027-01-01'),
-			]),
+			indicativeSeriesPublishedIn(
+				[
+					release(METHODOLOGY_V1, '2026-11-17', { noticePublishedAt: '2026-11-25T15:00:00.000Z' }),
+					release(METHODOLOGY_V2, '2027-01-01'),
+				],
+				new Date('2026-12-01T00:00:00Z'),
+			),
 		).toBe(false);
 	});
 

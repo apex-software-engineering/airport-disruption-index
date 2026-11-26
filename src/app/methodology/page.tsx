@@ -3,22 +3,28 @@ import type { Metadata } from 'next';
 import { dayName } from '@/components/day-name';
 import { DocBody } from '@/components/doc-body';
 import { Facts, Mono, Section, Table } from '@/components/ui';
+import { UpcomingNotice } from '@/components/upcoming-notice';
 import { CURRENT_ADAPTER } from '@/lib/index/adapters';
 import { collectingRelease } from '@/lib/index/calendar';
 import type { MethodologyParameters } from '@/lib/index/methodology';
 
 export const metadata: Metadata = { title: 'Methodology' };
 
-/** Re-rendered hourly, so the parameters shown follow a release's effective day. */
-export const revalidate = 3600;
+/**
+ * Rendered per request, as /incidents is: a cached render would show the page as it was, so a
+ * notice's passages, its banner and the parameters in force all follow the one render instant.
+ */
+export const dynamic = 'force-dynamic';
 
 /** The prose is docs/methodology.md; the parameters block is the versioned module itself. */
 export default function MethodologyPage() {
-	const { parameters, parameterHash } = collectingRelease(new Date());
+	const now = new Date();
+	const { parameters, parameterHash } = collectingRelease(now);
 	const { carry, coverage, settlement } = parameters;
 	return (
 		<>
-			<DocBody name='methodology' />
+			<UpcomingNotice now={now} />
+			<DocBody name='methodology' now={now} />
 			<Section id='parameters' title='Parameters in force'>
 				<p className='text-ink-muted mb-4 text-sm'>
 					Read from the methodology module the calculation uses, and served as JSON at{' '}

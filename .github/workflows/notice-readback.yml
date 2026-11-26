@@ -2,9 +2,9 @@ name: Notice readback
 
 # Records N, the instant a methodology notice is first shown to be public (design
 # docs/design/v2-eastern-day.md, section 2). Run by hand after the step-1 notice deploys, and every
-# 15 minutes until it succeeds. A run that cannot see the notice on both /incidents and
+# 15 minutes until it succeeds. A run that cannot see the notice on /incidents, /methodology and
 # /api/v1/methodology writes nothing. The one successful run writes the write-once record
-# notices/{version}.readback.json and the two response bodies it hashes, stamps the record with
+# notices/{version}.readback.json and the three response bodies it hashes, stamps the record with
 # OpenTimestamps, and appends them to the attestations branch. Later runs only upgrade the record's
 # proof until it reaches a Bitcoin block (whose time is B); a cheap first job skips everything once
 # it has, and before the notice instant. No job holds a storage or deployment secret.
@@ -26,7 +26,7 @@ env:
   VERSION: '2.0.0'
   # The release's noticePublishedAt (src/lib/index/releases.ts; a test keeps the two equal), empty
   # while it is unset. Only the cheap gate reads it; the CLI checks the registry itself.
-  NOTICE_AT: ''
+  NOTICE_AT: '2026-11-29T00:00:00.000Z'
 
 jobs:
   gate:
@@ -153,12 +153,12 @@ jobs:
         id: changes
         run: |
           name="notices/$VERSION.readback.json"
-          bodies=("notices/$VERSION.readback.incidents.html" "notices/$VERSION.readback.methodology.json")
+          bodies=("notices/$VERSION.readback.incidents.html" "notices/$VERSION.readback.methodology.html" "notices/$VERSION.readback.methodology.json")
           mkdir -p outgoing/notices
           changed=()
           while IFS= read -r line; do
             path="${line:3}"
-            if [[ "$path" == "$name" || "$path" == "$name.ots" || "$path" == "${bodies[0]}" || "$path" == "${bodies[1]}" ]]; then
+            if [[ "$path" == "$name" || "$path" == "$name.ots" || " ${bodies[*]} " == *" $path "* ]]; then
               changed+=("$path")
             else
               echo "::error::this run produced $path, which it does not publish"
@@ -172,8 +172,8 @@ jobs:
           fi
           npm run -s check-proofs -- attestations "$name" | tee proofs.log
           grep -qxF "OK $name" proofs.log || { echo "::error::$name: proof did not pass its check"; exit 1; }
-          cp "attestations/$name" "attestations/$name.ots" "attestations/${bodies[0]}" \
-            "attestations/${bodies[1]}" outgoing/notices/
+          cp "attestations/$name" "attestations/$name.ots" outgoing/notices/
+          for body in "${bodies[@]}"; do cp "attestations/$body" outgoing/notices/; done
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
@@ -224,7 +224,7 @@ jobs:
           mkdir -p notices
           # The record and its bodies are written once and never rewritten; the proof beside the
           # record may only be added or upgraded.
-          for file in "$name" "notices/$VERSION.readback.incidents.html" "notices/$VERSION.readback.methodology.json"; do
+          for file in "$name" "notices/$VERSION.readback.incidents.html" "notices/$VERSION.readback.methodology.html" "notices/$VERSION.readback.methodology.json"; do
             if [[ -e "$file" ]]; then
               cmp -s "../incoming/$file" "$file" || { echo "::error::$file would be rewritten"; exit 1; }
             else

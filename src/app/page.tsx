@@ -17,6 +17,7 @@ import {
 } from '@/components/index-data';
 import { IndicativeIncomplete } from '@/components/indicative-incomplete';
 import { TransitionNotice } from '@/components/transition';
+import { UpcomingNotice } from '@/components/upcoming-notice';
 import {
 	Figure,
 	Instant,
@@ -48,6 +49,7 @@ export default async function HomePage() {
 				title={site.name}
 				lede={`Airport-minutes under FAA ground stops and ground delay programs across ${parameters.panel.length} US hub airports, per ${dayName(parameters)}. Methodology v${parameters.version}.`}
 			/>
+			<UpcomingNotice now={new Date(current.asOf)} />
 			<IndexChart history={chartHistory} current={current} api={CHART_API} />
 			{current.status === 'transition' ? (
 				<TransitionNotice current={current} />

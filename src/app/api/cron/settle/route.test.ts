@@ -273,7 +273,7 @@ describe('settle route', () => {
 		]);
 		const named = await runAt('2026-11-25T00:30:00Z', `?date=${DAY}`);
 		expect(named.status).toBe(200);
-		expect(await named.json()).toMatchObject({ date: DAY, status: 'settled', indicative: [] });
+		expect(await named.json()).toMatchObject({ date: DAY, status: 'settled' });
 	});
 
 	it('refuses a day before the first release instead of failing', async () => {

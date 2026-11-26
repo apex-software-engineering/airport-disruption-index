@@ -17,7 +17,7 @@ import { getApi } from './lib/public-api';
 
 const DEFAULT_BASE_URL = 'https://airports.apexsofteng.com';
 // `--indicative` always works (preview rehearsal); it is advertised once the series is published.
-const USAGE = `usage: npm run reproduce -- ${indicativeSeriesPublished() ? '[--indicative] ' : ''}<roundId|YYYY-MM-DD> [--base-url URL]`;
+const USAGE = `usage: npm run reproduce -- ${indicativeSeriesPublished(new Date()) ? '[--indicative] ' : ''}<roundId|YYYY-MM-DD> [--base-url URL]`;
 
 function parseArgs(
 	argv: string[],

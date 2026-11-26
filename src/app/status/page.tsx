@@ -22,6 +22,7 @@ import {
 	DayLabel,
 } from '@/components/ui';
 import { TransitionNotice } from '@/components/transition';
+import { UpcomingNotice } from '@/components/upcoming-notice';
 import type { RoundReceipt } from '@/lib/index/schemas';
 import { roundUrl } from '@/server/views';
 
@@ -45,6 +46,8 @@ export default async function StatusPage() {
 					</>
 				}
 			/>
+
+			<UpcomingNotice now={now} />
 
 			<Section title='Last round'>
 				{receipt === null ? (

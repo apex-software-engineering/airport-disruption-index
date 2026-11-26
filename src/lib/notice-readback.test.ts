@@ -19,6 +19,8 @@ const CLOCK = () => new Date('2026-11-28T15:00:05Z');
 /** The incidents entry as the site renders it: headline split across markup, then the hash. */
 const entry = (headline: string, hash: string) =>
 	`<li><strong>${headline}</strong> The parameter hash changes to <code>${hash}</code>.</li>`;
+/** The methodology page as the site renders it once the notice is out: the v2 rules heading. */
+const RULES = '<h3 id="x">Settlement rules, v2.0.0 (ET days from 2027-01-01)</h3>';
 const SHOWN = entry(
 	`2026-11-28: methodology v2.0.0 announced,\n\teffective ET day <time>2027-01-01</time>.`,
 	V2.parameterHash,
@@ -32,6 +34,7 @@ function site(pages: {
 	redirectedTo?: string;
 	incidentsType?: string;
 	redirectStatus?: number;
+	rules?: string;
 }): Get {
 	const [incidentsDate, methodologyDate] = pages.dates ?? [
 		'Sat, 28 Nov 2026 15:00:05 GMT',
@@ -60,6 +63,11 @@ function site(pages: {
 			}
 			return response;
 		}
+		if (url === `${SITE}/methodology`) {
+			return new Response(pages.rules ?? RULES, {
+				headers: { ...headers, Date: incidentsDate, 'Content-Type': 'text/html; charset=utf-8' },
+			});
+		}
 		if (url === `${SITE}/api/v1/methodology`) {
 			return Response.json(
 				{ version: '1.0.0', upcoming: pages.upcoming ?? null },
@@ -74,7 +82,9 @@ const upcoming = { version: '2.0.0', parameterHash: V2.parameterHash };
 
 describe('the notice readback', () => {
 	it('names the release, its version and its first ET day', () => {
-		expect(noticeHeadline(V2)).toBe('methodology v2.0.0 announced, effective ET day 2027-01-01');
+		expect(noticeHeadline(V2)).toBe(
+			'2026-11-28: methodology v2.0.0 announced, effective ET day 2027-01-01',
+		);
 		const v1 = release(METHODOLOGY_V1, '2026-11-17');
 		expect(() => noticeHeadline(v1)).toThrow('1.0.0 has UTC days');
 	});
@@ -119,6 +129,11 @@ describe('the notice readback', () => {
 					date: 'Sat, 28 Nov 2026 15:00:05 GMT',
 					deployedCommit: COMMIT,
 					body: '2.0.0.readback.incidents.html',
+				},
+				{
+					url: `${SITE}/methodology`,
+					date: 'Sat, 28 Nov 2026 15:00:05 GMT',
+					body: '2.0.0.readback.methodology.html',
 				},
 				{
 					url: `${SITE}/api/v1/methodology`,
@@ -294,6 +309,31 @@ describe('the notice readback', () => {
 				kind: 'recorded',
 				record: { noticeAt: '2026-11-28T15:00:05.000Z' },
 			});
+		});
+
+		it('requires the methodology page to show the release’s rules (Opus #39 r1, finding 2)', async () => {
+			expect(
+				await readBackNotice(
+					SITE,
+					V2,
+					RUN,
+					CLOCK,
+					site({ incidents: SHOWN, upcoming, rules: '<p>v1</p>' }),
+				),
+			).toEqual({
+				kind: 'not_public',
+				reasons: [`${SITE}/methodology does not show "Settlement rules, v2.0.0"`],
+			});
+		});
+
+		it('requires the entry’s date to be the notice instant’s UTC date (Opus #39 r1, finding 1)', async () => {
+			const misdated = entry(
+				'2026-11-27: methodology v2.0.0 announced, effective ET day 2027-01-01',
+				V2.parameterHash,
+			);
+			expect(
+				await readBackNotice(SITE, V2, RUN, CLOCK, site({ incidents: misdated, upcoming })),
+			).toMatchObject({ kind: 'not_public' });
 		});
 
 		it('refuses a redirect response itself, without following it (finding 5)', async () => {

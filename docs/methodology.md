@@ -1,4 +1,13 @@
+<!-- before-notice 2.0.0 -->
+
 # Airport Disruption Index — methodology v1.0.0
+
+<!-- /before-notice -->
+<!-- notice 2.0.0 -->
+
+# Airport Disruption Index — methodology
+
+<!-- /notice -->
 
 The Airport Disruption Index (ADI) counts **airport-minutes under an active FAA ground stop (GS) or
 ground delay program (GDP)** across a fixed panel of 20 US hub airports, per UTC day. It is built to
@@ -7,6 +16,30 @@ source data.
 
 The machine-readable parameters, with their hash, are served at `GET /api/v1/methodology`. They are
 generated from `src/lib/index/methodology.ts`, the same constant the calculation code reads.
+
+<!-- notice 2.0.0 -->
+
+**Versions.** v1.0.0 governs the UTC days from 2026-11-17, through 2026-12-31 if v2.0.0 takes effect
+as scheduled. v2.0.0, announced on the [incident log](#incident-log), is scheduled to govern the US
+Eastern (America/New_York) days from 2027-01-01, under the conditions its notice states. It changes
+only where a day begins and ends (see [Version history](#version-history)). The sections below
+describe v1.0.0 as it runs today; [Settlement rules](#settlement-rules) holds each version's rules,
+and `/api/v1/days/{date}` states the version of every day.
+
+## Version history
+
+- **v2.0.0, scheduled for ET day 2027-01-01 (conditions on the incident log), announced
+  2026-11-29.** Day boundary UTC → America/New_York. Slots per day 288 → 276, 288 or 300. Coverage
+  thresholds as percentages of the day's slots. Deadlines unchanged as durations from the day's end.
+  Takes effect at 2027-01-01T00:00Z under v1.0.0 rule 4, with the first settlement day starting at
+  05:00Z (00:00 EST). Settlement values clarified: only the panel totals are settlement values.
+  Parameter hash `a9fa10889b35417090d909d4f60d9cb9b429a9703d1b626c1c0a95182b7a76e6`. The instant the
+  notice became public, recorded by its readback, is added to the incident log entry by the
+  follow-up registry change.
+- **v1.0.0, UTC days 2026-11-17 to 2026-12-31.** As published. Parameter hash
+  `e9ef6e94b84699bffefa850b78138355bb427563f6ae42a28567e0ec4303c363`.
+
+<!-- /notice -->
 
 ## What is published
 
@@ -187,6 +220,104 @@ as a misconfigured deployment. They are never used to apply a later methodology 
 may issue one, and until when, is under [Settlement rules](#settlement-rules).
 
 ## Settlement rules
+
+<!-- notice 2.0.0 -->
+
+A day is governed by the rules of the methodology version that owns it (`/api/v1/days/{date}` states
+the version).
+
+### Settlement rules, v2.0.0 (ET days from 2027-01-01)
+
+These rules decide what a contract that cites a v2.0.0 day settles on. "Rule n" below always means
+rule n of this list. Where a rule and the rest of the methodology disagree, the rule wins.
+
+1. **Only `final` prints are settlement-eligible.** A `degraded` print and a `suspended` print are
+   published, hashed and archived like any other, but neither is a settlement value. A `degraded`
+   value is shown for information only. The settlement values of a `final` print are its panel
+   totals, `value` (ADI) and `groundStopValue` (ADI-GS). Per-airport minutes and the hourly series
+   are informational.
+2. **The print is revision 1 of `GET /api/v1/days/{date}`**, which must have
+   `standing: 'settlement'`, unless a correction replaces it under rule 8. Nothing else (the running
+   value, `/api/v1/history`, the indicative series, the site) is a settlement value.
+3. **Gaps in the data can move the value either way, by a bounded amount.** A slot with no valid
+   round carries the last observed state for at most 2 slots (10 minutes), then contributes 0. A
+   carried slot can overcount or undercount by at most 10 airport-minutes per airport per gap. A
+   `missing` slot only ever undercounts. A `final` day needs `valid × 100 ≥ 95 × slots`, so it can
+   lack at most **13** valid rounds on a 276-slot day, **14** on a 288-slot day and **15** on a
+   300-slot day (see the DST annex). Nothing is estimated or backfilled.
+4. **One methodology per day.** A new methodology version takes effect only at 00:00
+   America/New_York of a day, and is announced on the incident log at least 30 days before. The
+   announcement records the instant it became public. A postponement or withdrawal is announced at
+   least 14 days before the announced effective instant, and a new effective day needs a fresh 30
+   days. Each version stays in the code with the days it governs. A day is computed only under the
+   version that owns it, and a round counts only if it records exactly that version and parameter
+   hash. Otherwise the day prints `suspended` with the reason `mixed methodology` and the number of
+   rounds found under each other version. Such rounds are not counted in the running value either,
+   and `/api/v1/current` lists them in `foreignMethodologies`. (v2.0.0 itself took effect at
+   2027-01-01T00:00Z under v1 rule 4. The instants from then to 05:00Z, the start of its first
+   settlement day, belong to no settlement day.)
+5. **Feed data the index cannot read never settles.** Redirects are not followed, so a moved feed
+   makes rounds invalid (`network_error` or `http_status`). A changed GS or GDP list fails the round
+   (`parse_error`), and so does an element at the root the feed has never carried or a
+   counted-program block that does not hold exactly its list (`unrecognized_structure`). An invalid
+   round counts as not received: it only lowers coverage, and the coverage thresholds alone decide
+   the status. A few rejected rounds therefore leave a day `final` (up to 13, 14 or 15 by the day's
+   slot count, rule 3), and more make it `degraded` or `suspended`. Restoring collection is a
+   source-adapter fix or a methodology change, and neither ever applies to a day already printed.
+6. **New list types are recorded and flagged, never counted.** A `Delay_type` block whose name v2
+   does not count, holding a list v2 does not know, is recorded in the receipt as `unrecognized`.
+   The round stays valid, and any such list seen in today's valid rounds is listed in
+   `unrecognizedLists` in `/api/v1/current` and on `/status`. A block named for a counted program
+   holding anything but exactly its own list makes the round invalid under rule 5. If the FAA starts
+   reporting ground stops or ground delay programs under a new name and list, v2 undercounts until a
+   methodology change counts it.
+7. **Publication deadline and retries.** The print for day D is due **90 minutes after D ends** (D+1
+   01:30 ET, see the DST annex). The settle job runs at the settlement cutoff (30 minutes after D
+   ends, D+1 00:30 ET) and retries 15 and 30 minutes later. A run that finds no print reads every
+   in-window receipt of the day and checks it against its `receiptHash`. A receipt that cannot be
+   read or verified stops that run without printing anything, and the next run tries again. A run
+   that finds a print already stored returns it and repairs the history index. If no print exists at
+   the deadline, the operator opens an incident. **A late print is still the print.**
+8. **Corrections.** Only the operator issues a correction print (revision 2 or later), rebuilt from
+   the day's stored receipts under the version the superseded print records. A correction for day D
+   may be issued until **24 hours after D's settlement cutoff** (`settlesAt` + 24 h). After that the
+   print stands, unless the operator issues a correction with a written justification, recorded in
+   `windowOverride`. Every correction is listed on the incident log, and every revision stays
+   published. A correction never applies a later methodology to a past day.
+
+v1 rule 4 governs this announcement and the effective instant. v1 rule 8 applies only as a
+prohibition: no v1 day is reprinted under v2.
+
+#### DST annex (normative for v2.0.0)
+
+1. **Days follow America/New_York.** Day D is `[D 00:00, D+1 00:00)` in the IANA zone
+   `America/New_York`, under the US DST rules in force for that date.
+2. **Slot counts.** An ordinary day is 24 h, **288** slots. The spring-forward day (second Sunday of
+   March) is 23 h, **276** slots. The fall-back day (first Sunday of November) is 25 h, **300**
+   slots.
+3. **Slots stay 5-minute, UTC-aligned.** A slot is `[t, t + 5 min)` with `t` a multiple of 5 minutes
+   since the Unix epoch. Round ids are the UTC slot start. ET midnight is always a whole UTC hour,
+   so a day is always a whole number of slots.
+4. **Sample days** (exact UTC bounds, end exclusive):
+
+   | ET day       | Kind                       | Starts (UTC)                       | Ends (UTC)                         | Length | Slots   |
+   | ------------ | -------------------------- | ---------------------------------- | ---------------------------------- | ------ | ------- |
+   | `2027-03-14` | spring forward             | `2027-03-14T05:00:00Z` (00:00 EST) | `2027-03-15T04:00:00Z` (00:00 EDT) | 23 h   | **276** |
+   | `2026-11-01` | fall back (worked example) | `2026-11-01T04:00:00Z` (00:00 EDT) | `2026-11-02T05:00:00Z` (00:00 EST) | 25 h   | **300** |
+   | `2027-11-07` | fall back (first under v2) | `2027-11-07T04:00:00Z` (00:00 EDT) | `2027-11-08T05:00:00Z` (00:00 EST) | 25 h   | **300** |
+   | `2027-01-01` | ordinary (EST)             | `2027-01-01T05:00:00Z` (00:00 EST) | `2027-01-02T05:00:00Z` (00:00 EST) | 24 h   | **288** |
+
+5. **Coverage thresholds are percentages of that day's slot count.** Status is decided in integers
+   with no rounding: `final` iff `valid × 100 ≥ 95 × slots`; else `degraded` iff
+   `valid × 100 ≥ 80 × slots`; else `suspended`. The minimum counts are 263/221 (276 slots), 274/231
+   (288) and 285/240 (300). `coverage.percent = round(valid / slots × 100, 2)` is for display only.
+6. **Deadlines are durations, on instants:** `settlesAt` = end + 30 min; `publishBy` = end + 90 min;
+   corrections until `settlesAt` + 24 h; r1 attestation cutoff = end + 24 h; correction attestation
+   cutoff = `issuedAt` + 48 h. On a fall-back night, `publishBy` is the first 01:30 ET (EDT).
+
+### Settlement rules, v1.0.0 (UTC days 2026-11-17 to 2026-12-31)
+
+<!-- /notice -->
 
 These rules decide what a contract that cites the index settles on. Where a rule and the rest of
 this document disagree, the rule wins and the disagreement is a documentation bug.
@@ -439,6 +570,8 @@ repo. Each methodology version is tagged at the commit that released it (`v1.0.0
 
 ## Versioning
 
+<!-- before-notice 2.0.0 -->
+
 Any change to a parameter, to the panel, or to how events become airport-minutes is a new
 methodology version with a new parameter hash. A version takes effect at a UTC day boundary only
 (see [Settlement rules](#settlement-rules), rule 4). Every released version stays in the code with
@@ -448,6 +581,20 @@ parameters. A source-adapter fix is not a methodology version (see
 that can move the value without any change in disruption (for example a different panel) is a
 **level break**. History is never rescaled or chain-linked, and a print always carries the version
 it was computed under.
+<!-- /before-notice -->
+<!-- notice 2.0.0 -->
+
+Any change to a parameter, to the panel, or to how events become airport-minutes is a new
+methodology version with a new parameter hash. A version takes effect only at a day boundary: 00:00Z
+under v1.0.0 rule 4, 00:00 America/New_York under v2.0.0 rule 4 (see
+[Settlement rules](#settlement-rules)). Every released version stays in the code with the day it
+takes effect, so older days keep settling, validating and reproducing under their own parameters. A
+source-adapter fix is not a methodology version (see
+[Changes to the source or the methodology](#changes-to-the-source-or-the-methodology)). A change
+that can move the value without any change in disruption (for example a different panel) is a
+**level break**. History is never rescaled or chain-linked, and a print always carries the version
+it was computed under.
+<!-- /notice -->
 
 ## Operations
 
@@ -460,6 +607,10 @@ These notes bind whoever deploys the index.
   correction-aware print reader (`correction.issuedAt` and `correction.windowOverride` in
   `src/lib/index/schemas.ts`). An older reader drops those fields when it parses the print, so it
   would serve a correction whose contents no longer match its `printHash`.
+- **Never roll back past a published notice.** From a release's `noticePublishedAt` on, every
+  rollback target must carry that notice: the incidents entry, the version-scoped rules, the
+  `upcoming` block and the indicative series. A deployment from before it would withdraw the notice
+  from the site without a withdrawal entry.
 - **Never remove a release or an adapter.** Every entry in `src/lib/index/releases.ts` and
   `src/lib/index/adapters.ts` stays for as long as any receipt or print cites it. An adapter
   revision is frozen once any production receipt records it: a later fix is a new revision. Preview
@@ -482,10 +633,9 @@ These notes bind whoever deploys the index.
    until v1's last day has printed, and reproducing under v1 forever.
 2. Deploy before the effective day, so no collector runs v1-only code past the cutover (rounds it
    writes would make the first v2 day `suspended`).
-3. Expect cached responses to lag the 00:00Z cutover: `/api/v1/methodology` caches for up to an hour
-   at the edge, the `/methodology` page re-renders hourly, and `/api/v1/current` can be up to five
-   minutes stale. Purge the edge cache just after 00:00Z, or say in the announcement that these may
-   show the previous version for up to an hour.
+3. Expect cached responses to lag the 00:00Z cutover by up to five minutes: the edge can serve a
+   copy of `/api/v1/methodology` or `/api/v1/current` up to five minutes old (60 s fresh, then stale
+   while it refreshes); the `/methodology` page renders on every request.
 4. After the first v2 day prints, run `npm run reproduce` on it and on the last v1 day; both must
    print `MATCH`.
 

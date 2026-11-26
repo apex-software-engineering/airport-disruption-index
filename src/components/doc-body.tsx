@@ -46,7 +46,10 @@ export function docToReact(html: string): ReactNode {
 	});
 }
 
-/** A docs/*.md file rendered as the page body. The markdown is ours, from the repo. */
-export async function DocBody({ name }: { name: DocName }) {
-	return <article className='prose-doc'>{docToReact(await renderDoc(name))}</article>;
+/**
+ * A docs/*.md file rendered as the page body at `now`, the page's one render instant, so a page
+ * never shows a notice's passages in one state and its banner in another. The markdown is ours.
+ */
+export async function DocBody({ name, now }: { name: DocName; now: Date }) {
+	return <article className='prose-doc'>{docToReact(await renderDoc(name, now))}</article>;
 }
