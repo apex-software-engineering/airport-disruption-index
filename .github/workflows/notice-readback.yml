@@ -1,8 +1,9 @@
 name: Notice readback
 
 # Records N, the instant a methodology notice is first shown to be public (design
-# docs/design/v2-eastern-day.md, section 2). Run by hand after the step-1 notice deploys, and every
-# 15 minutes until it succeeds. A run that cannot see the notice on /incidents, /methodology and
+# docs/design/v2-eastern-day.md, section 2). Run by hand. Its 15-minute schedule, which ran it from
+# the step-1 notice until it succeeded, was removed by cutover step 2 once the proof reached a
+# block; a manual run still upgrades or re-stamps the proof. A run that cannot see the notice on /incidents, /methodology and
 # /api/v1/methodology writes nothing. The one successful run writes the write-once record
 # notices/{version}.readback.json and the three response bodies it hashes, stamps the record with
 # OpenTimestamps, and appends them to the attestations branch. Later runs only upgrade the record's
@@ -10,8 +11,6 @@ name: Notice readback
 # it has, and before the notice instant. No job holds a storage or deployment secret.
 
 on:
-  schedule:
-    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 permissions: {}
@@ -106,7 +105,6 @@ jobs:
         id: readback
         env:
           GH_TOKEN: ${{ github.token }}
-          EVENT: ${{ github.event_name }}
         run: |
           record="attestations/notices/$VERSION.readback.json"
           existed=false
@@ -115,10 +113,6 @@ jobs:
           status=0
           npm run -s notice-readback -- "$VERSION" --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT" --run-started-at "$started" --dir attestations || status=$?
-          if [[ $status == 3 && "$EVENT" == schedule ]]; then
-            echo "::notice::the $VERSION notice is not public yet; the next scheduled run tries again"
-            exit 0
-          fi
           if [[ $status == 3 ]]; then
             echo "::error::the $VERSION notice is not public yet; nothing was written"
             exit 1
