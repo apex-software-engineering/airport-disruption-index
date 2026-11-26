@@ -12,7 +12,12 @@ import { METHODOLOGY_V2, RELEASES, release } from '@/lib/index/releases';
 import { readHistory, readPrints, recordRound } from '@/server/archive';
 import { FileStore } from '@/server/storage';
 
-import { ATTEMPT_DEADLINE_MS, GET, maxDuration } from './route';
+import { ATTEMPT_DEADLINE_MS, runSettle } from '@/server/settle-run';
+
+import { GET, maxDuration } from './route';
+
+/** A short real deadline for the stall tests: the day that does not stall finishes well within it. */
+const STALL_DEADLINE_MS = 1000;
 
 const SECRET = 'test-cron-secret';
 const DAY = '2026-11-17';
@@ -160,43 +165,21 @@ describe('settle route', () => {
 		await recordAt(`${DAY}T10:00:03Z`);
 		// Every read of 2026-11-17's receipts hangs, as a stalled storage request would.
 		const read = FileStore.prototype.read;
-		const stalled = vi.spyOn(FileStore.prototype, 'read').mockImplementation(function (
-			this: FileStore,
-			key,
-		) {
+		vi.spyOn(FileStore.prototype, 'read').mockImplementation(function (this: FileStore, key) {
 			return key.startsWith(`rounds/${DAY}/`) ? new Promise(() => {}) : read.call(this, key);
 		});
-		// 2026-11-18's settlement ends by writing the history; the deadline passes only after that.
-		let historyWritten = () => {};
-		const otherSettled = new Promise<void>((resolve) => (historyWritten = resolve));
-		const write = FileStore.prototype.write;
-		const watched = vi.spyOn(FileStore.prototype, 'write').mockImplementation(async function (
-			this: FileStore,
-			...args
-		) {
-			const result = await write.apply(this, args);
-			if (args[0] === 'prints/history.json') historyWritten();
-			return result;
-		});
-		vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
-		vi.setSystemTime(new Date('2026-11-19T00:30:00Z'));
-		const pending = GET(
-			new Request('http://test/api/cron/settle', {
-				headers: { authorization: `Bearer ${SECRET}` },
-			}),
+		vi.useRealTimers();
+		const run = await runSettle(
+			new FileStore(root),
+			new Date('2026-11-19T00:30:00Z'),
+			[DAY, '2026-11-18'],
+			STALL_DEADLINE_MS,
 		);
-		await otherSettled;
-		for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setImmediate(resolve));
-		await vi.advanceTimersByTimeAsync(ATTEMPT_DEADLINE_MS);
-		const response = await pending;
-		stalled.mockRestore();
-		watched.mockRestore();
-		expect(response.status).toBe(500);
-		expect(runSchema.parse(await response.json()).settled).toEqual([
+		expect(run.settled).toEqual([
 			expect.objectContaining({
 				date: DAY,
 				status: 'failed',
-				reason: expect.stringMatching(/did not finish within/),
+				reason: `settling ${DAY} did not finish within 1 s`,
 			}),
 			expect.objectContaining({ date: '2026-11-18', status: 'settled' }),
 		]);
@@ -206,43 +189,25 @@ describe('settle route', () => {
 		await recordAt(`${DAY}T10:00:03Z`);
 		// Listing print keys is only the diagnostic lookup's; settling never lists them.
 		const list = FileStore.prototype.list;
-		const stalled = vi.spyOn(FileStore.prototype, 'list').mockImplementation(function (
-			this: FileStore,
-			prefix,
-		) {
+		vi.spyOn(FileStore.prototype, 'list').mockImplementation(function (this: FileStore, prefix) {
 			return prefix.startsWith('prints/') ? new Promise(() => {}) : list.call(this, prefix);
 		});
-		let printWritten = () => {};
-		const settled = new Promise<void>((resolve) => (printWritten = resolve));
-		const write = FileStore.prototype.write;
-		const watched = vi.spyOn(FileStore.prototype, 'write').mockImplementation(async function (
-			this: FileStore,
-			...args
-		) {
-			const result = await write.apply(this, args);
-			if (args[0] === 'prints/history.json') printWritten();
-			return result;
-		});
-		vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
-		vi.setSystemTime(new Date('2026-11-18T00:30:00Z'));
-		const pending = GET(
-			new Request('http://test/api/cron/settle', {
-				headers: { authorization: `Bearer ${SECRET}` },
-			}),
+		vi.useRealTimers();
+		const run = await runSettle(
+			new FileStore(root),
+			new Date('2026-11-18T00:30:00Z'),
+			[DAY],
+			STALL_DEADLINE_MS,
 		);
-		await settled;
-		for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setImmediate(resolve));
-		await vi.advanceTimersByTimeAsync(ATTEMPT_DEADLINE_MS);
-		const response = await pending;
-		stalled.mockRestore();
-		watched.mockRestore();
-		expect(runSchema.parse(await response.json()).settled).toEqual([
-			expect.objectContaining({
-				date: DAY,
-				status: 'failed',
-				reason: expect.stringMatching(/did not finish within/),
-			}),
+		expect(run.settled).toEqual([
+			{ date: DAY, status: 'failed', reason: `settling ${DAY} did not finish within 1 s` },
 		]);
+		// The settlement itself completed; only the bounded lookup was abandoned.
+		expect(await readPrints(new FileStore(root), DAY)).toHaveLength(1);
+	});
+
+	it('leaves the run 30 s within maxDuration to answer after every attempt’s deadline', () => {
+		expect(ATTEMPT_DEADLINE_MS + 30_000).toBeLessThanOrEqual(maxDuration * 1000);
 	});
 
 	it('settles two due v1 days at once into one history (Sol 3b r2, finding 2)', async () => {
