@@ -477,6 +477,8 @@ that day and compares; a `suspended` mixed-methodology day reproduces like any o
 (unreachable, not found, or published under a methodology version or feed adapter this checkout does
 not include; check out a later commit, or the tag for that version, e.g. `git checkout v1.0.0`).
 
+<!-- notice 2.0.0 -->
+
 An indicative ET day, once its series is published, is proved both ways against the v1 attestations
 (with the `attestations` branch checked out as in [Attestations](#attestations)):
 `npm run reproduce -- --indicative <date> --dir attestations`. It rebuilds the frozen print from its
@@ -496,6 +498,8 @@ instant is due 12 hours after that instant instead: the settle runs look back on
 the operator backfills the earlier ones right after the instant, with
 `npm run indicative -- --from <first indicative day>` (it refuses production before the instant),
 within those 12 hours. A later or postponed notice moves the allowance with its instant.
+
+<!-- /notice -->
 
 ### Attestations
 
