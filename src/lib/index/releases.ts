@@ -113,8 +113,13 @@ export function release(
 	};
 }
 
-/** v1 covers every day from the first live capture of the feed; v2 is registered, not announced. */
+/**
+ * v1 covers every day from the first live capture of the feed. v2's notice (cutover step 1,
+ * docs/incidents.md) is published at 2026-11-29T00:00Z: from then its indicative series, the
+ * `upcoming` block, the banner and the notice's doc passages are public. It is not announced
+ * (`announcedAt` null until the readback's N is recorded), so it governs no day yet.
+ */
 export const RELEASES: readonly Methodology[] = [
 	release(METHODOLOGY_V1, '2026-11-17'),
-	release(METHODOLOGY_V2, '2027-01-01'),
+	release(METHODOLOGY_V2, '2027-01-01', { noticePublishedAt: '2026-11-29T00:00:00.000Z' }),
 ];

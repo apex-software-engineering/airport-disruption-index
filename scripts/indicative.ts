@@ -53,7 +53,7 @@ async function main(): Promise<number> {
 		return 2;
 	}
 	// One resolved target decides both whether to write and what to open.
-	const refusal = indicativeWriteRefusal(target.target, indicativeSeriesPublished());
+	const refusal = indicativeWriteRefusal(target.target, indicativeSeriesPublished(new Date()));
 	if (refusal !== null) {
 		console.error(refusal);
 		return 2;

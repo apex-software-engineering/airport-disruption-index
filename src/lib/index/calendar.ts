@@ -7,6 +7,7 @@
 import {
 	activeReleases,
 	governs,
+	isNoticePublished,
 	SETTLEMENT_CUTOFF_MINUTES,
 	settlementReleaseFor,
 	settlementReleaseOrNull,
@@ -95,6 +96,16 @@ export function dayAt(instant: Date): DayAt {
 export function effectiveAt(release: Methodology): Date {
 	const predecessor = RELEASES[RELEASES.indexOf(release) - 1] ?? release;
 	return dayWindow(predecessor, release.effectiveFrom).start;
+}
+
+/**
+ * The release whose notice is published but which is not in effect at `now`: the registered
+ * successor of the release collecting then, unless withdrawn. Null outside a notice period.
+ */
+export function upcomingRelease(now: Date): Methodology | null {
+	const next = RELEASES[RELEASES.indexOf(collectingRelease(now)) + 1];
+	if (next === undefined || !isNoticePublished(next, now) || next.withdrawn) return null;
+	return effectiveAt(next) > now ? next : null;
 }
 
 /** The release in effect at `instant`, which every round fetched then is collected under. */

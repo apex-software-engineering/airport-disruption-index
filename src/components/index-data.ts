@@ -51,7 +51,7 @@ export async function readSiteData(now: Date): Promise<{
 	const [current, historyIndex, indicative] = await Promise.all([
 		currentView(store, now),
 		readHistory(store, firstSettlementDay(), yesterday),
-		indicativeSeriesPublished()
+		indicativeSeriesPublished(now)
 			? indicativeHistoryView(
 					store,
 					from > FIRST_INDICATIVE_DAY ? from : FIRST_INDICATIVE_DAY,

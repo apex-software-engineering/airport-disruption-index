@@ -46,7 +46,7 @@ export function docToReact(html: string): ReactNode {
 	});
 }
 
-/** A docs/*.md file rendered as the page body. The markdown is ours, from the repo. */
+/** A docs/*.md file rendered as the page body, as of now. The markdown is ours, from the repo. */
 export async function DocBody({ name }: { name: DocName }) {
-	return <article className='prose-doc'>{docToReact(await renderDoc(name))}</article>;
+	return <article className='prose-doc'>{docToReact(await renderDoc(name, new Date()))}</article>;
 }

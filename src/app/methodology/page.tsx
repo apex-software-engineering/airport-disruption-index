@@ -3,21 +3,27 @@ import type { Metadata } from 'next';
 import { dayName } from '@/components/day-name';
 import { DocBody } from '@/components/doc-body';
 import { Facts, Mono, Section, Table } from '@/components/ui';
+import { UpcomingNotice } from '@/components/upcoming-notice';
 import { CURRENT_ADAPTER } from '@/lib/index/adapters';
 import { collectingRelease } from '@/lib/index/calendar';
 import type { MethodologyParameters } from '@/lib/index/methodology';
 
 export const metadata: Metadata = { title: 'Methodology' };
 
-/** Re-rendered hourly, so the parameters shown follow a release's effective day. */
-export const revalidate = 3600;
+/**
+ * Re-rendered every minute, so the parameters shown follow a release's effective day and a
+ * notice's passages appear with the rest of the notice (docs gateNotices).
+ */
+export const revalidate = 60;
 
 /** The prose is docs/methodology.md; the parameters block is the versioned module itself. */
 export default function MethodologyPage() {
-	const { parameters, parameterHash } = collectingRelease(new Date());
+	const now = new Date();
+	const { parameters, parameterHash } = collectingRelease(now);
 	const { carry, coverage, settlement } = parameters;
 	return (
 		<>
+			<UpcomingNotice now={now} />
 			<DocBody name='methodology' />
 			<Section id='parameters' title='Parameters in force'>
 				<p className='text-ink-muted mb-4 text-sm'>

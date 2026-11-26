@@ -26,7 +26,7 @@ env:
   VERSION: '2.0.0'
   # The release's noticePublishedAt (src/lib/index/releases.ts; a test keeps the two equal), empty
   # while it is unset. Only the cheap gate reads it; the CLI checks the registry itself.
-  NOTICE_AT: ''
+  NOTICE_AT: '2026-11-29T00:00:00.000Z'
 
 jobs:
   gate:

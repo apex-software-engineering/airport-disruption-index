@@ -2,11 +2,15 @@
  * The repo's docs/*.md files are the single source of truth for the methodology, sources,
  * incident-log and legal prose; the site renders them as they are. Cross-links between docs become site
  * routes, and headings get GitHub-style ids so `methodology.md#source` lands on the same section.
+ * A methodology notice's passages are gated to its instant (`gateNotices`).
  */
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { Marked, type Tokens } from 'marked';
+
+import { isNoticePublished } from '@/lib/index/methodology';
+import { RELEASES } from '@/lib/index/releases';
 
 /** Each rendered doc and the route that renders it. */
 export const DOC_ROUTES = {
@@ -68,6 +72,28 @@ export async function readDoc(name: DocName): Promise<string> {
 	return readFile(path.join(DOCS_DIR, `${name}.md`), 'utf8');
 }
 
-export async function renderDoc(name: DocName): Promise<string> {
-	return marked.parse(await readDoc(name), { async: true });
+/**
+ * A notice's passages, marked in the markdown with HTML comments (invisible on GitHub), appear on
+ * the site together at the release's `noticePublishedAt`, with everything else the notice gates:
+ * `<!-- notice 2.0.0 -->…<!-- /notice -->` from that instant, and
+ * `<!-- before-notice 2.0.0 -->…<!-- /before-notice -->` until it. A marker naming no registered
+ * release, or left unclosed, is an error, never silently shown or hidden.
+ */
+export function gateNotices(markdown: string, now: Date): string {
+	const gated = markdown.replace(
+		/<!-- (notice|before-notice) (\S+) -->\n([\s\S]*?)<!-- \/\1 -->\n?/g,
+		(_, kind: string, version: string, passage: string) => {
+			const release = RELEASES.find((candidate) => candidate.parameters.version === version);
+			if (release === undefined) throw new Error(`docs mark a notice of ${version}, no release`);
+			return isNoticePublished(release, now) === (kind === 'notice') ? passage : '';
+		},
+	);
+	if (/<!-- \/?(notice|before-notice)\b/.test(gated))
+		throw new Error('docs leave a notice marker unclosed or malformed');
+	return gated;
+}
+
+/** A doc as the site renders it at `now`. */
+export async function renderDoc(name: DocName, now: Date): Promise<string> {
+	return marked.parse(gateNotices(await readDoc(name), now), { async: true });
 }

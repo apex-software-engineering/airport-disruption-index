@@ -27,7 +27,7 @@ vi.mock('@/lib/index/releases', async (importOriginal) => {
 			actual.release(actual.METHODOLOGY_V1, '2026-11-17'),
 			actual.release(actual.METHODOLOGY_V2, '2027-01-01', {
 				withdrawn: true,
-				noticePublishedAt: '2026-11-25T15:00:00.000Z',
+				noticePublishedAt: '2026-11-01T00:00:00.000Z',
 			}),
 		],
 	};
