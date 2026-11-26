@@ -106,7 +106,10 @@ describe('freezing an indicative ET day', () => {
 		await collectAt(store, '2026-11-20T12:00:03Z'); // a write after freezing changes nothing
 		const second = await freezeIndicativeDay(store, DAY, new Date('2026-11-25T00:00:00Z'));
 		expect(second).toEqual({ status: 'already_frozen', print: first.print });
-		expect(await readIndicativePrints(store, DAY, DAY)).toEqual([first.print]);
+		expect(await readIndicativePrints(store, DAY, DAY)).toEqual({
+			prints: [first.print],
+			misfiled: null,
+		});
 	});
 
 	it('never reads a receipt outside the window, and stops on an unreadable one inside it', async () => {
@@ -204,9 +207,12 @@ describe('freezing an indicative ET day', () => {
 			'application/json',
 			{ kind: 'if-absent' },
 		);
-		await expect(readIndicativePrint(store, '2026-11-21')).rejects.toThrow(
-			'indicative/2.0.0/2026-11-21.json holds the indicative print of 2026-11-20 under 2.0.0',
-		);
+		expect(await readIndicativePrint(store, '2026-11-21')).toBeNull();
+		expect(await indicativeDayView(store, '2026-11-21')).toEqual({
+			status: 'misfiled',
+			date: '2026-11-21',
+			misfiled: { problem: 'misfiled_indicative', objects: ['indicative/2.0.0/2026-11-21.json'] },
+		});
 	});
 
 	it('has no indicative day before the series or from v2’s first day', async () => {
@@ -334,5 +340,45 @@ describe('the settle run and reproduction', () => {
 		expect(await reproduceIndicative('2026-11-21', 'http://test', routeGet)).toMatchObject({
 			kind: 'cannot_verify',
 		});
+	});
+});
+
+describe('stored indicative objects that are not their day’s print (#34, item 3)', () => {
+	const GARBAGE = new TextEncoder().encode('{"not": "a print"');
+	const KEY_21 = 'indicative/2.0.0/2026-11-21.json';
+
+	it('lists the frozen days past a malformed object, and reports it', async () => {
+		await collectAround();
+		await freezeIndicativeDay(store, DAY, AFTER_FREEZE);
+		await store.write(KEY_21, GARBAGE, 'application/json', { kind: 'if-absent' });
+		const response = await indicativeHistoryRoute(
+			new Request('http://test/api/v1/indicative/history?from=2026-11-20&to=2026-11-21'),
+		);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({
+			days: [expect.objectContaining({ date: DAY })],
+			misfiled: { problem: 'misfiled_indicative', objects: [KEY_21] },
+		});
+	});
+
+	it('answers a day whose key holds something else with 404 naming it, never 500', async () => {
+		await store.write(KEY_21, GARBAGE, 'application/json', { kind: 'if-absent' });
+		const response = await indicativeDayRoute(
+			new Request('http://test/api/v1/indicative/days/2026-11-21'),
+			{ params: Promise.resolve({ date: '2026-11-21' }) },
+		);
+		expect(response.status).toBe(404);
+		expect(await response.json()).toEqual({
+			date: '2026-11-21',
+			misfiled: { problem: 'misfiled_indicative', objects: [KEY_21] },
+		});
+	});
+
+	it('refuses to freeze over a key that holds something else, and leaves it', async () => {
+		await store.write(KEY_21, GARBAGE, 'application/json', { kind: 'if-absent' });
+		await expect(
+			freezeIndicativeDay(store, '2026-11-21', new Date('2026-11-22T05:30:00Z')),
+		).rejects.toThrow(`${KEY_21} is not JSON`);
+		expect((await store.read(KEY_21))?.body).toEqual(GARBAGE);
 	});
 });

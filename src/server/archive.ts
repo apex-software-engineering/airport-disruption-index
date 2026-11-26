@@ -529,16 +529,38 @@ async function readRevisions(
 			const reason = classified.kind === 'misfiled' ? classified.reason : `${key} is a history`;
 			return { prints, blocked: { key, reason } };
 		}
+		// A correction belongs to the chain only if it supersedes the revision before it (#34).
+		const previous = prints.at(-1);
+		if (
+			previous !== undefined &&
+			classified.print.correction?.supersedesPrintHash !== previous.printHash
+		) {
+			const reason = `${key} does not supersede r${previous.revision} (${previous.printHash})`;
+			return { prints, blocked: { key, reason } };
+		}
 		prints.push(classified.print);
 	}
 }
 
 /**
- * All revisions of a day's print, oldest first: the last valid revision is the one served, and
- * an object past it that is not the next revision is reported by `misfiledPrints`.
+ * All revisions of a day's print, oldest first: one chain from r1, each correction superseding
+ * the revision before it. The last is the one served; every other key under the day's root is
+ * reported by `misfiledPrints`.
  */
 export async function readPrints(store: ObjectStore, date: string): Promise<DailyPrint[]> {
 	return (await readRevisions(store, date)).prints;
+}
+
+/** The keys under `date`'s own print root that are not its served revisions `prints`. */
+async function keysOutsideChain(
+	store: ObjectStore,
+	date: string,
+	prints: readonly DailyPrint[],
+): Promise<string[]> {
+	const root = canonicalRoot(date);
+	if (root === null) return [];
+	const served = new Set(prints.map((print) => keys.print(root, date, print.revision)));
+	return (await store.list(`${root}${date}/`)).filter((key) => !served.has(key));
 }
 
 /** Objects for a date that no reader serves, reported under the design's problem code. */
@@ -553,8 +575,9 @@ function misfiledFor(object: PrintObject, date: string): boolean {
 
 /**
  * What no reader serves for `date`: print objects under a root other than the one its release
- * owns, objects under that root that do not classify as its prints, and any history that is not
- * one or lists the date under a root that does not own it. Reported so the monitor can alert;
+ * owns, objects under that root outside the day's chain of revisions (not a print, past a gap, or
+ * not superseding the revision before), and any history that is not one or lists the date under a
+ * root that does not own it. Reported so the monitor can alert;
  * null when there are none.
  */
 export async function misfiledPrints(
@@ -564,18 +587,17 @@ export async function misfiledPrints(
 	const canonical = canonicalRoot(date);
 	const found = await Promise.all(
 		PRINT_ROOTS.map(async (root) => {
-			const listed = await store.list(`${root}${date}/`);
 			const historyKey = keys.history(root);
-			const classified = await readInBatches(
-				root === canonical ? [...listed, historyKey] : [historyKey],
-				async (key) => {
-					const object = await store.read(key);
-					return object !== null && misfiledFor(classifyPrintObject(key, object.body), date)
-						? [key]
-						: [];
-				},
-			);
-			return root === canonical ? classified.flat() : [...listed, ...classified.flat()];
+			const history = await store.read(historyKey);
+			const historyMisfiled =
+				history !== null && misfiledFor(classifyPrintObject(historyKey, history.body), date)
+					? [historyKey]
+					: [];
+			const prints =
+				root === canonical
+					? await keysOutsideChain(store, date, (await readRevisions(store, date)).prints)
+					: await store.list(`${root}${date}/`);
+			return [...prints, ...historyMisfiled];
 		}),
 	);
 	const objects = found.flat();
@@ -721,6 +743,13 @@ export async function correctDay(
 		throw new Error(`${date} has not settled, so it has nothing to correct`);
 	if (blocked !== null) {
 		throw new Error(`${blocked.reason}, so ${date} cannot take a correction; nothing was changed`);
+	}
+	// A key past the chain (after a gap) would become the served print once the gap is filled.
+	const outside = await keysOutsideChain(store, date, revisions);
+	if (outside.length > 0) {
+		throw new Error(
+			`${outside.join(', ')} ${outside.length === 1 ? 'is' : 'are'} outside the revisions of ${date}, so it cannot take a correction; nothing was changed`,
+		);
 	}
 	if (latest.printHash !== request.supersedesPrintHash) {
 		const superseded = revisions.find((p) => p.printHash === request.supersedesPrintHash);

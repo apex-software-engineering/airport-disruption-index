@@ -17,6 +17,7 @@ import { RELEASES } from '@/lib/index/releases';
 import { routeGet } from '@/test/api';
 import { collectAt as collectStoreRound } from '@/test/collect';
 
+import { correctDay, settleDay } from './archive';
 import { FileStore } from './storage';
 import { correctionsView } from './views';
 
@@ -275,5 +276,64 @@ describe('a day index that does not decode is rebuilt, never thrown on (#34, ite
 		expect(await next.json()).toMatchObject({ date: E, coverage: { validRounds: 3 } });
 		expect(write).toHaveBeenCalledTimes(1);
 		vi.restoreAllMocks();
+	});
+});
+
+describe('a day serves one chain of revisions, each superseding the last (#34, item 2)', () => {
+	/** A correction of E at `revision` that names `supersedes` as the print it replaces. */
+	const correctionOfE = (revision: number, supersedes: string) =>
+		buildPrint(settlementDay(E), [], {
+			revision,
+			correction: {
+				supersedesPrintHash: supersedes,
+				reason: 'planted',
+				issuedAt: '2027-01-02T10:00:00.000Z',
+				windowOverride: null,
+			},
+		});
+
+	async function settledE() {
+		await collectAt('2027-01-01T05:00:03Z');
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2027-01-02T05:30:00Z'));
+		const { print } = await settleDay(store, E);
+		vi.useRealTimers();
+		return print;
+	}
+
+	it('reports a revision past a gap instead of leaving it unseen', async () => {
+		const r1 = await settledE();
+		await put(`prints/et/${E}/r3.json`, encode(correctionOfE(3, r1.printHash)));
+		const day = await get(`/api/v1/days/${E}`);
+		expect(await day.json()).toMatchObject({
+			status: 'settled',
+			print: { revision: 1 },
+			misfiled: { problem: 'misfiled_print', objects: [`prints/et/${E}/r3.json`] },
+		});
+	});
+
+	it('never serves a correction that does not supersede the revision before it', async () => {
+		await settledE();
+		await put(`prints/et/${E}/r2.json`, encode(correctionOfE(2, '0'.repeat(64))));
+		const day = await get(`/api/v1/days/${E}`);
+		expect(await day.json()).toMatchObject({
+			status: 'settled',
+			print: { revision: 1 },
+			misfiled: { objects: [`prints/et/${E}/r2.json`] },
+		});
+	});
+
+	it('refuses a correction while any revision key outside the chain exists', async () => {
+		const r1 = await settledE();
+		await put(`prints/et/${E}/r3.json`, encode(correctionOfE(3, r1.printHash)));
+		await expect(
+			correctDay(
+				store,
+				E,
+				{ supersedesPrintHash: r1.printHash, reason: 'operator', windowOverride: null },
+				() => new Date('2027-01-02T12:00:00Z'),
+			),
+		).rejects.toThrow(`prints/et/${E}/r3.json is outside the revisions of ${E}`);
+		expect(await store.read(`prints/et/${E}/r2.json`)).toBeNull();
 	});
 });

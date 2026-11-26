@@ -100,6 +100,9 @@ describe('the indicative series before its notice', () => {
 			],
 			indicative: [],
 		});
-		expect(await readIndicativePrints(store, '2026-11-20', '2026-11-30')).toEqual([]);
+		expect(await readIndicativePrints(store, '2026-11-20', '2026-11-30')).toEqual({
+			prints: [],
+			misfiled: null,
+		});
 	});
 });

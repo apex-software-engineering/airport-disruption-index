@@ -44,7 +44,11 @@ import {
 	readHistory,
 	readPrints,
 } from './archive';
-import { readIndicativePrint, readIndicativePrints } from './indicative-archive';
+import {
+	type MisfiledIndicative,
+	readIndicativeDay,
+	readIndicativePrints,
+} from './indicative-archive';
 import { CACHE } from './http';
 import type { ObjectStore } from './storage';
 
@@ -291,7 +295,9 @@ export type IndicativeDayView =
 	 * No indicative day: before the series starts, after it ends (then see the settlement print),
 	 * or never frozen before its release was withdrawn.
 	 */
-	| { status: 'none'; date: string; reason: 'before_series' | 'series_ended' | 'withdrawn' };
+	| { status: 'none'; date: string; reason: 'before_series' | 'series_ended' | 'withdrawn' }
+	/** Its key holds something that is not its print: never served, reported (#34). */
+	| { status: 'misfiled'; date: string; misfiled: MisfiledIndicative };
 
 /** An indicative ET day: its frozen print, when it will freeze, or why it has none. */
 export async function indicativeDayView(
@@ -307,8 +313,17 @@ export async function indicativeDayView(
 		};
 	}
 	const envelope = indicativeEnvelope(release);
-	const print = await readIndicativePrint(store, date);
-	if (print !== null) return { status: 'frozen', body: { ...envelope, date, print } };
+	const stored = await readIndicativeDay(store, date);
+	if (stored.kind === 'frozen') {
+		return { status: 'frozen', body: { ...envelope, date, print: stored.print } };
+	}
+	if (stored.kind === 'misfiled') {
+		return {
+			status: 'misfiled',
+			date,
+			misfiled: { problem: 'misfiled_indicative', objects: [stored.key] },
+		};
+	}
 	// A withdrawn release freezes nothing more: only its published prints stay.
 	if (release.withdrawn) return { status: 'none', date, reason: 'withdrawn' };
 	const window = dayWindow(release, date);
@@ -326,12 +341,14 @@ export async function indicativeDayView(
 
 /** Frozen indicative days in [from, to], with the series' zone and standing on every entry. */
 export async function indicativeHistoryView(store: ObjectStore, from: string, to: string) {
-	const prints = await readIndicativePrints(store, from, to);
+	const { prints, misfiled } = await readIndicativePrints(store, from, to);
 	return {
 		series: INDICATIVE_SERIES,
 		standing: 'indicative' as const,
 		from,
 		to,
+		/** Stored objects in the range that are not their day's print: never listed, reported. */
+		...(misfiled === null ? {} : { misfiled }),
 		days: prints.map((print) => {
 			const settled = print.result.status === 'suspended' ? null : print.result;
 			const release = methodologyOf(print.methodologyVersion, print.parameterHash);
