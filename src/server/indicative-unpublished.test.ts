@@ -91,9 +91,13 @@ describe('the indicative series before its notice', () => {
 			}),
 		);
 		expect(response.status).toBe(200);
-		expect(await response.json()).toMatchObject({
-			status: 'settled',
-			date: '2026-11-22',
+		expect(await response.json()).toEqual({
+			status: 'ran',
+			// 2026-11-21 is in the 48-hour lookback too.
+			settled: [
+				expect.objectContaining({ date: '2026-11-21' }),
+				expect.objectContaining({ date: '2026-11-22', status: 'settled' }),
+			],
 			indicative: [],
 		});
 		expect(await readIndicativePrints(store, '2026-11-20', '2026-11-30')).toEqual([]);

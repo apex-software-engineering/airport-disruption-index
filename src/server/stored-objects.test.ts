@@ -85,6 +85,7 @@ describe('settle classifies the occupied r1 key before reading anything else (fi
 			status: 'blocked',
 			date: E,
 			misfiled: { problem: 'misfiled_print', objects: [`prints/et/${E}/r1.json`] },
+			indicative: [],
 		});
 	});
 
@@ -171,9 +172,12 @@ describe('a receipt counts only at its own key, in its own partition (finding 3)
 			path.join(root, 'rounds/2027-01-01/2027-01-01T05:00Z.json'),
 			path.join(root, 'rounds/2027-01-01/2027-01-01T06:00Z.json'),
 		);
-		await expect(settle(E, '2027-01-02T05:30:00Z')).rejects.toThrow(
-			'rounds/2027-01-01/2027-01-01T06:00Z.json holds round 2027-01-01T05:00Z',
-		);
+		const response = await settle(E, '2027-01-02T05:30:00Z');
+		expect(response.status).toBe(500);
+		expect(await response.json()).toMatchObject({
+			status: 'failed',
+			reason: 'rounds/2027-01-01/2027-01-01T06:00Z.json holds round 2027-01-01T05:00Z',
+		});
 	});
 
 	it('keeps /current up when a round summary is copied into another partition’s index', async () => {
@@ -220,5 +224,25 @@ describe('history reads only the roots that own the requested dates (finding 4)'
 		const rebuilt = await (await get(`/api/v1/history?from=${E}&to=2027-01-02`)).json();
 		expect(rebuilt).not.toHaveProperty('misfiled');
 		expect(rebuilt.days.map((day: { date: string }) => day.date)).toEqual([E, '2027-01-02']);
+	});
+});
+
+describe('a day index that does not decode is rebuilt, never thrown on (#34, item 1)', () => {
+	it('keeps /current up during an ET day when the previous partition’s index is malformed', async () => {
+		await collectAt('2027-01-01T05:00:03Z');
+		await collectAt('2027-01-02T02:55:03Z');
+		await writeFile(path.join(root, 'days/2027-01-01.json'), GARBAGE);
+		await collectAt('2027-01-02T03:00:03Z');
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2027-01-02T03:01:00Z'));
+		const current = await get('/api/v1/current');
+		expect(current.status).toBe(200);
+		expect(await current.json()).toMatchObject({ date: E, coverage: { validRounds: 3 } });
+		// Rebuilt in place from the partition's receipts.
+		const index = await store.read('days/2027-01-01.json');
+		expect(JSON.parse(new TextDecoder().decode(index?.body))).toMatchObject({
+			date: '2027-01-01',
+			rounds: [expect.objectContaining({ roundId: '2027-01-01T05:00Z' })],
+		});
 	});
 });

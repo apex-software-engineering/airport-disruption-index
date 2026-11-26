@@ -9,6 +9,7 @@ import {
 	governs,
 	SETTLEMENT_CUTOFF_MINUTES,
 	settlementReleaseFor,
+	settlementReleaseOrNull,
 	SLOT_MINUTES,
 	type DayLabel,
 	type DayTimeZone,
@@ -145,6 +146,29 @@ const PUBLICATION_DEADLINE_MINUTES_AFTER_DAY_END = 90;
 /** When the print for a day is due (v1: D+1 01:30Z). A print published later is still the print. */
 export function publishBy(window: DayWindow): Date {
 	return new Date(window.end.getTime() + PUBLICATION_DEADLINE_MINUTES_AFTER_DAY_END * MINUTE_MS);
+}
+
+/** How far back a default settle run looks: two days, so one missed day of runs is recovered. */
+export const SETTLE_LOOKBACK_MS = 48 * HOUR_MS;
+
+/**
+ * The settlement days whose cutoff passed in (now − SETTLE_LOOKBACK_MS, now], oldest first, UTC-
+ * and zone-labelled alike: what a settle run attempts when no date is named. A label no release
+ * owns has no cutoff, and the transition interval has no label, so neither is ever listed.
+ */
+export function dueSettlementDays(now: Date): SettlementDay[] {
+	const today = utcDateOf(now);
+	// Every label whose cutoff can fall in the lookback: a day ends at most 2 days after its UTC date.
+	return [-3, -2, -1].flatMap((offset) => {
+		const label = addDays(today, offset);
+		const release = settlementReleaseOrNull(label);
+		if (release === null) return [];
+		const window = dayWindow(release, label);
+		const cutoff = settlesAt(window).getTime();
+		return cutoff <= now.getTime() && cutoff > now.getTime() - SETTLE_LOOKBACK_MS
+			? [{ release, window }]
+			: [];
+	});
 }
 
 /** How long after the settlement cutoff a correction may be issued without an override. */

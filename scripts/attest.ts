@@ -6,13 +6,17 @@
  *
  *   npm run attest -- <YYYY-MM-DD> [--days 1] [--dir attestations] [--base-url URL]
  *
+ * A day not yet settled before its own `publishBy` (read from the API, so ET days and both DST
+ * nights need no clock maths here) is skipped as not yet published; one still unsettled at or after
+ * it is overdue, and fails.
+ *
  * Then every proof in the directory, of any date, is checked offline: invalid proofs are reported
  * apart from pending ones. Exit 0 when every day in the window is attested and matches (a pending
- * proof is fine) and no proof is invalid; 1 otherwise: a day unsettled, mismatched or unreachable,
- * or a proof that is invalid.
+ * proof is fine) or not yet due, and no proof is invalid; 1 otherwise: a day overdue, mismatched
+ * or unreachable, or a proof that is invalid.
  */
 import { buildAttestation } from '@/lib/index/attestation';
-import { reproduceFetchedDay } from '@/lib/reproduce';
+import { fetchPublication, reproduceFetchedDay } from '@/lib/reproduce';
 import { addDays, type UtcDate } from '@/lib/index/time';
 
 import {
@@ -47,6 +51,13 @@ async function attestDay(
 	checkout: BranchCheckout,
 	date: UtcDate,
 ): Promise<{ outcome: string; written: string | null }> {
+	const publication = await fetchPublication(baseUrl, date, new Date(), getApi);
+	if (publication.kind === 'not_yet_due') {
+		return { outcome: `not yet published (due by ${publication.publishBy})`, written: null };
+	}
+	if (publication.kind === 'overdue') {
+		throw new CannotVerify(`not settled, and its print was due by ${publication.publishBy}`);
+	}
 	// One response for everything: the pins are checked against it, and it is what gets attested.
 	const day = await fetchDay(baseUrl, date);
 	try {

@@ -7,12 +7,17 @@ name: Attest
 
 on:
   schedule:
-    # 01:45Z: after yesterday's print settles (00:30Z) and its 01:30Z settlement deadline.
+    # 01:45Z: after a v1 UTC day settles (00:30Z) and its 01:30Z publication deadline. Kept until
+    # 2026-12-31 is attested, then removed in the post-cutover PR.
     - cron: '45 1 * * *'
+    # ET days: 05:45Z is after 01:30 EDT, 06:45Z after 01:30 EST. Each date is gated on its own
+    # publishBy (scripts/attest.ts), so the run that is early for a date skips it.
+    - cron: '45 5 * * *'
+    - cron: '45 6 * * *'
   workflow_dispatch:
     inputs:
       date:
-        description: 'Settled UTC day to attest, YYYY-MM-DD'
+        description: 'Settlement day to attest (its label), YYYY-MM-DD'
         required: true
         type: string
 
@@ -63,10 +68,13 @@ jobs:
       - name: Install the OpenTimestamps client
         run: pipx install opentimestamps-client==0.8.0
 
+      # The run's reference date is the day before its creation date: the UTC date for the legacy
+      # 01:45Z trigger, the ET date for the ET triggers. Re-runs keep the run's creation time.
       - name: Choose the days
         id: days
         env:
           INPUT_DATE: ${{ inputs.date }}
+          SCHEDULE: ${{ github.event.schedule }}
           GH_TOKEN: ${{ github.token }}
         run: |
           if [[ -n "$INPUT_DATE" ]]; then
@@ -74,7 +82,12 @@ jobs:
             days=1
           else
             created="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at)"
-            through="$(date -u -d "${created:0:10} -1 day" +%F)"
+            if [[ "$SCHEDULE" == '45 1 * * *' ]]; then
+              created_date="$(date -u -d "$created" +%F)"
+            else
+              created_date="$(TZ=America/New_York date -d "$created" +%F)"
+            fi
+            through="$(date -u -d "$created_date -1 day" +%F)"
             days="$RECONCILE_DAYS"
           fi
           if [[ ! "$through" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then

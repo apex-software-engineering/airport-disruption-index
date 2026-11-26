@@ -11,10 +11,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GET as settleRoute } from '@/app/api/cron/settle/route';
 import { GET as getDay } from '@/app/api/v1/days/[date]/route';
-import { collectingRelease, dayAt, dayWindow, settlementDay } from '@/lib/index/calendar';
+import {
+	collectingRelease,
+	dayAt,
+	dayWindow,
+	dueSettlementDays,
+	settlementDay,
+} from '@/lib/index/calendar';
 import { settlementReleaseFor } from '@/lib/index/methodology';
 import { buildPrint, historyEntryOf } from '@/lib/index/print';
-import { reproduce } from '@/lib/reproduce';
+import { fetchPublication, reproduce } from '@/lib/reproduce';
 import { routeGet } from '@/test/api';
 import { RELEASES } from '@/lib/index/releases';
 import { addDays } from '@/lib/index/time';
@@ -263,7 +269,7 @@ describe('settlement labels across the cutover', () => {
 			}),
 		);
 		expect(settle.status).toBe(409);
-		expect(await settle.json()).toEqual({ status: 'blocked', date: E, misfiled });
+		expect(await settle.json()).toEqual({ status: 'blocked', date: E, misfiled, indicative: [] });
 		// The misfiled object is left in place, and nothing is served for E.
 		expect(await readPrints(store, E)).toEqual([]);
 	});
@@ -510,5 +516,64 @@ describe('the running value across the cutover', () => {
 			methodologyVersion: '1.0.0',
 			coverage: { slotsPerDay: 288, validRounds: 1 },
 		});
+	});
+});
+
+describe('default settle runs across the cutover and both DST nights', () => {
+	const due = (at: string) => dueSettlementDays(new Date(at)).map(({ window }) => window.date);
+
+	it.each([
+		// The transition interval: v1's last day only, and never a label for the gap.
+		['2027-01-01T00:30:00Z', ['2026-12-30', '2026-12-31']],
+		['2027-01-01T04:30:00Z', ['2026-12-30', '2026-12-31']],
+		['2027-01-02T05:29:00Z', ['2026-12-31']],
+		// The first ET day settles at 00:30 EST.
+		['2027-01-02T05:30:00Z', ['2026-12-31', E]],
+		// Spring forward: 2027-03-14 is 23 hours and settles at 00:30 EDT.
+		['2027-03-15T04:30:00Z', ['2027-03-12', '2027-03-13', '2027-03-14']],
+		// Fall back: 2027-11-07 is 25 hours and settles at 00:30 EST, an hour after 11-06's time.
+		['2027-11-08T04:30:00Z', ['2027-11-06']],
+		['2027-11-08T05:30:00Z', ['2027-11-06', '2027-11-07']],
+	])('at %s lists %j', (at, expected) => {
+		expect(due(at)).toEqual(expected);
+	});
+
+	it('settles v1’s last day and the first ET day in one run on the cutover night', async () => {
+		await collectAroundE();
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2027-01-02T05:30:00Z'));
+		const response = await settleRoute(
+			new Request('http://test/api/cron/settle', {
+				headers: { authorization: 'Bearer test-cron-secret' },
+			}),
+		);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({
+			status: 'ran',
+			settled: [
+				{ date: '2026-12-31', status: 'settled' },
+				{ date: E, status: 'settled', result: 'suspended' },
+			],
+		});
+		expect(await dayView(store, E)).toMatchObject({
+			status: 'settled',
+			print: { schema: 'adi.daily-print/2', methodologyVersion: '2.0.0' },
+		});
+	});
+});
+
+describe('the attest gate reads each day’s own publishBy', () => {
+	it('skips E before 06:30Z (01:30 EST), fails it as overdue from then, and attests it once settled', async () => {
+		const at = (instant: string) => fetchPublication('http://test', E, new Date(instant), routeGet);
+		expect(await at('2027-01-02T05:45:00Z')).toEqual({
+			kind: 'not_yet_due',
+			publishBy: '2027-01-02T06:30:00.000Z',
+		});
+		expect(await at('2027-01-02T06:30:00Z')).toEqual({
+			kind: 'overdue',
+			publishBy: '2027-01-02T06:30:00.000Z',
+		});
+		await settleDay(store, E);
+		expect(await at('2027-01-02T06:45:00Z')).toEqual({ kind: 'settled' });
 	});
 });

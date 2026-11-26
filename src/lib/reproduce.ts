@@ -176,6 +176,34 @@ export async function fetchSettledDay(
 	return { print, revisions, deployedCommit: deployedCommitOf(response) };
 }
 
+/** Whether a day's print is out, or, while it is not, whether its publication deadline passed. */
+export type Publication =
+	{ kind: 'settled' } | { kind: 'not_yet_due' | 'overdue'; publishBy: string };
+
+const unsettledSchema = z.object({ status: z.literal('unsettled'), publishBy: z.iso.datetime() });
+
+/**
+ * A day's publication state at `now`, from `/api/v1/days/{date}`: an unsettled day answers 404
+ * with its `publishBy`. Anything else that is not a settled day cannot be judged.
+ */
+export async function fetchPublication(
+	baseUrl: string,
+	date: UtcDate,
+	now: Date,
+	get: Get,
+): Promise<Publication> {
+	const url = `${baseUrl}/api/v1/days/${date}`;
+	const response = await get(url).catch((error: unknown) => {
+		throw new CannotVerify(`GET ${url} failed: ${String(error)}`);
+	});
+	if (response.ok) return { kind: 'settled' };
+	const unsettled = unsettledSchema.safeParse(await response.json().catch(() => null));
+	if (response.status !== 404 || !unsettled.success)
+		throw new CannotVerify(`GET ${url}: HTTP ${response.status}`);
+	const { publishBy } = unsettled.data;
+	return { kind: now < new Date(publishBy) ? 'not_yet_due' : 'overdue', publishBy };
+}
+
 function deployedCommitOf(response: Response): string | null {
 	const header = response.headers.get(DEPLOYED_COMMIT_HEADER);
 	if (header === null) return null;
