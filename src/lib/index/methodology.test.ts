@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { effectiveAt, noticeBound } from './calendar';
 import { canonicalJson, hashJson, sha256Hex } from './json';
 import {
 	activeReleases,
@@ -54,6 +55,26 @@ describe('methodology registry', () => {
 			if (next === undefined) expect(current.effectiveUntil).toBeNull();
 			else expect(current.effectiveUntil).toBe(addDays(next.effectiveFrom, -1));
 		});
+	});
+
+	it('announces a later release only with its proof time, at least 30 days before it takes effect', () => {
+		RELEASES.slice(1).forEach((later) => {
+			const { announcedAt, announcedProofAt } = later;
+			if (announcedAt === null) {
+				expect(announcedProofAt).toBeNull();
+				return;
+			}
+			if (announcedProofAt === null) throw new Error(`${later.parameters.version} has N without B`);
+			expect(effectiveAt(later).getTime()).toBeGreaterThanOrEqual(
+				noticeBound(new Date(announcedAt), new Date(announcedProofAt)).getTime(),
+			);
+		});
+		expect(
+			noticeBound(new Date('2026-12-02T00:00Z'), new Date('2026-12-01T23:00Z')).toISOString(),
+		).toBe('2027-01-01T00:00:00.000Z');
+		expect(
+			noticeBound(new Date('2026-11-29T00:20Z'), new Date('2026-11-29T01:10Z')).toISOString(),
+		).toBe('2026-12-29T01:10:00.000Z');
 	});
 
 	it('activates a later release only once announced, and never once withdrawn', () => {

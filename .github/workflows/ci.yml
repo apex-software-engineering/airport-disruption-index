@@ -41,6 +41,15 @@ jobs:
       - name: Test
         run: npm test
 
+      # Cutover step 2 (docs/design/v2-eastern-day.md, section 2): once the registry announces v2,
+      # its N and B must be the ones the readback record on the attestations branch proves, with
+      # the 30-day notice. Passes while v2 is not announced.
+      - name: Verify the v2.0.0 notice readback
+        run: |
+          git clone --quiet --single-branch --branch attestations \
+            "https://github.com/$GITHUB_REPOSITORY" attestations
+          npm run -s verify-notice -- 2.0.0
+
       - name: Build
         run: npm run build
 

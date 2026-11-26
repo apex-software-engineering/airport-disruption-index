@@ -138,6 +138,15 @@ visible text. Locally:
 `npm run notice-readback -- 2.0.0 --run-id <id> --run-attempt <n> --run-started-at <ISO> --dir <checkout>`
 (exit 3: not public yet).
 
+**Step 2, the registry change.** Once the record's proof reaches a block, a PR sets the release's
+`announcedAt` to the record's `noticeAt` (N) and `announcedProofAt` to the proof's block time (B),
+and the previous release's `effectiveUntil`. CI runs `npm run verify-notice -- 2.0.0` against a
+checkout of the attestations branch on every change: it passes while the release is not announced,
+and otherwise only when the record and its three bodies are as first committed and match their
+hashes, the record's `Date` checks and N replay, the proof commits to the record and reaches an
+existing block, N and B are the registry's, and the release takes effect at least
+`max(N, B) + 30 days` after them (exit 1 mismatch, 2 could not verify, 4 proof still pending).
+
 ## Monitoring
 
 An external check runs outside Vercel every 5 minutes (a launchd job on a separate host, not part of

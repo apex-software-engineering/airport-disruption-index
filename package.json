@@ -19,6 +19,7 @@
 		"verify-attestation": "tsx scripts/verify-attestation.ts",
 		"check-proofs": "tsx scripts/check-proofs.ts",
 		"notice-readback": "tsx scripts/notice-readback.ts",
+		"verify-notice": "tsx scripts/verify-notice.ts",
 		"test:smoke": "playwright test -c playwright.smoke.config.ts",
 		"test:fixtures": "playwright test -c playwright.fixtures.config.ts"
 	},

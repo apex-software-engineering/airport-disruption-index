@@ -157,16 +157,18 @@ function liveTip(directory: string, branch: string): string | null {
 }
 
 /**
- * Every attestation ever committed for a date, as first committed, with a problem for each later
- * modification or deletion of one. Each commit is diffed against its first parent, so a merge
- * cannot hide a rewrite or a deletion.
+ * Every file under `pathspec` (with a name `accept` takes) ever committed to the publication
+ * branch, as first committed, with a problem for each later modification or deletion of one and
+ * for any merge commit. Each commit is diffed against its first parent, so a merge cannot hide a
+ * rewrite or a deletion. The one reader of the branch's history.
  */
-export function readPins(
+export function firstCommittedFiles(
 	checkout: BranchCheckout,
-	date: UtcDate,
-): { pins: Pin[]; problems: string[] } {
+	pathspec: string,
+	accept: (name: string) => boolean,
+): { files: Map<string, Uint8Array>; problems: string[] } {
 	const { directory } = checkout;
-	if (!requireBranchCheckout(checkout)) return { pins: [], problems: [] };
+	if (!requireBranchCheckout(checkout)) return { files: new Map(), problems: [] };
 	// The branch ruleset requires linear history; a merge commit anywhere means it was bypassed,
 	// and a first-parent walk alone could then miss what the merged side changed.
 	const problems = git(directory, ['rev-list', '--merges', 'HEAD'])
@@ -183,21 +185,38 @@ export function readPins(
 		'--format=commit %H',
 		'--name-status',
 		'--',
-		`${date}.r*.json`,
+		pathspec,
 	]).toString();
-	const pattern = new RegExp(`^${date}\\.r([1-9]\\d*)\\.json$`);
 	const firstAdded = new Map<string, string>();
 	let commit = '';
 	for (const line of log.split('\n')) {
 		if (line.startsWith('commit ')) commit = line.slice('commit '.length);
 		const [status, name] = line.split('\t');
-		if (status === undefined || name === undefined || !pattern.test(name)) continue;
+		if (status === undefined || name === undefined || !accept(name)) continue;
 		if (status === 'A' && !firstAdded.has(name)) firstAdded.set(name, commit);
 		else problems.push(`${name} was ${status === 'D' ? 'deleted' : 'modified'} in ${commit}`);
 	}
-	const pins: Pin[] = [];
+	const files = new Map<string, Uint8Array>();
 	for (const [name, added] of firstAdded) {
-		const bytes = new Uint8Array(git(directory, ['show', `${added}:${name}`]));
+		files.set(name, new Uint8Array(git(directory, ['show', `${added}:${name}`])));
+	}
+	return { files, problems };
+}
+
+/**
+ * Every attestation ever committed for a date, as first committed, with a problem for each later
+ * modification or deletion of one (`firstCommittedFiles`).
+ */
+export function readPins(
+	checkout: BranchCheckout,
+	date: UtcDate,
+): { pins: Pin[]; problems: string[] } {
+	const pattern = new RegExp(`^${date}\\.r([1-9]\\d*)\\.json$`);
+	const { files, problems } = firstCommittedFiles(checkout, `${date}.r*.json`, (name) =>
+		pattern.test(name),
+	);
+	const pins: Pin[] = [];
+	for (const [name, bytes] of files) {
 		const parsed = attestationSchema.safeParse(JSON.parse(new TextDecoder().decode(bytes)));
 		const revision = Number(pattern.exec(name)?.[1]);
 		if (!parsed.success) {

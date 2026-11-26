@@ -112,6 +112,23 @@ const upcomingSchema = z.object({
 export const DATE_AHEAD_MS = 5 * 60_000;
 export const DATE_BEHIND_MS = 60 * 60_000;
 
+/**
+ * Whether a `Date` header (in ms) lies inside a run's observation of its request, from `sentMs`
+ * to `receivedMs`: the readback refuses a response outside it, and the step-2 check replays it from
+ * the record. The header has one-second resolution, so a response may state the second it began in.
+ */
+export function dateWithinObservation(dateMs: number, sentMs: number, receivedMs: number): boolean {
+	return dateMs >= sentMs - DATE_BEHIND_MS - 1000 && dateMs <= receivedMs + DATE_AHEAD_MS;
+}
+
+/** The only site a readback record is ever for: N is when the production notice was public. */
+export const READBACK_ORIGIN = 'https://airports.apexsofteng.com';
+
+/** The three pages a readback reads, in the record's order. */
+function readbackUrls(baseUrl: string): [incidents: string, rules: string, methodology: string] {
+	return [`${baseUrl}/incidents`, `${baseUrl}/methodology`, `${baseUrl}/api/v1/methodology`];
+}
+
 /** A value from a response, quoted, so its text can never read as a log or workflow command. */
 function shown(value: string): string {
 	return JSON.stringify(value);
@@ -119,6 +136,11 @@ function shown(value: string): string {
 
 /** The run doing the readback: its id, its attempt and GitHub's `run_started_at`. */
 export type ReadbackRun = { id: number; attempt: number; startedAt: Date };
+
+/** Where a release's readback record sits on the attestations branch. */
+export function readbackRecordName(version: string): string {
+	return `notices/${version}.readback.json`;
+}
 
 /** The files beside `notices/{version}.readback.json` holding the three response bodies. */
 export function readbackBodyNames(version: string): {
@@ -158,9 +180,10 @@ export async function readBackNotice(
 	get: Get,
 ): Promise<Readback> {
 	const { version } = release.parameters;
-	const incidents = await fetchPublic(`${baseUrl}/incidents`, clock, get);
-	const rules = await fetchPublic(`${baseUrl}/methodology`, clock, get);
-	const methodology = await fetchPublic(`${baseUrl}/api/v1/methodology`, clock, get);
+	const [incidentsUrl, rulesUrl, methodologyUrl] = readbackUrls(baseUrl);
+	const incidents = await fetchPublic(incidentsUrl, clock, get);
+	const rules = await fetchPublic(rulesUrl, clock, get);
+	const methodology = await fetchPublic(methodologyUrl, clock, get);
 	const reasons: string[] = [];
 	// The rendered entry (its dated headline and the release's hash), and the rules it publishes.
 	reasons.push(...pageShows(incidents, [noticeHeadline(release), release.parameterHash]));
@@ -188,12 +211,10 @@ export async function readBackNotice(
 		{ ...rules, name: names.rules },
 		{ ...methodology, name: names.methodology },
 	];
-	const noticeAt = new Date(
-		Math.max(
-			run.startedAt.getTime(),
-			observedAt.getTime(),
-			...responses.map((response) => response.dateMs),
-		),
+	const noticeAt = noticeAtOf(
+		run.startedAt,
+		observedAt,
+		responses.map((response) => response.dateMs),
 	);
 	return {
 		kind: 'recorded',
@@ -220,6 +241,58 @@ export async function readBackNotice(
 		}),
 		bodies: responses.map(({ name, body }) => ({ name, bytes: body })),
 	};
+}
+
+/** N: the latest of the run's start, its observation and the responses' `Date` headers. */
+function noticeAtOf(startedAt: Date, observedAt: Date, datesMs: readonly number[]): Date {
+	return new Date(Math.max(startedAt.getTime(), observedAt.getTime(), ...datesMs));
+}
+
+/**
+ * What is wrong with a readback record for `release`, replayed from the record alone (design §2):
+ * it names the release, it read the production site's three pages in order and kept each body
+ * under its name, each `Date` lies inside the run's observation of its request, and its N is the
+ * latest of those dates, the run's start and its observation. None when it is sound. The bodies
+ * and the proof are checked against the files beside it, by the step-2 verifier.
+ */
+export function readbackRecordProblems(record: NoticeReadback, release: Methodology): string[] {
+	const { version } = release.parameters;
+	const problems: string[] = [];
+	if (record.methodologyVersion !== version || record.parameterHash !== release.parameterHash) {
+		problems.push(
+			`the record is for ${shown(record.methodologyVersion)} with parameter hash ${shown(record.parameterHash)}, not ${version} with ${release.parameterHash}`,
+		);
+	}
+	const urls = readbackUrls(READBACK_ORIGIN);
+	const names = readbackBodyNames(version);
+	const bodies = [names.incidents, names.rules, names.methodology];
+	record.responses.forEach((response, index) => {
+		const where = `response ${index + 1}`;
+		if (response.url !== urls[index])
+			problems.push(`${where} is from ${shown(response.url)}, not ${urls[index]}`);
+		if (response.body !== bodies[index])
+			problems.push(`${where} keeps its body in ${shown(response.body)}, not ${bodies[index]}`);
+		const sent = Date.parse(response.requestedAt);
+		const received = Date.parse(response.receivedAt);
+		if (received < sent)
+			problems.push(`${where} was received (${response.receivedAt}) before it was requested`);
+		if (!dateWithinObservation(Date.parse(response.date), sent, received)) {
+			problems.push(
+				`${where} states Date ${shown(response.date)}, outside the run's observation of it (${response.requestedAt} to ${response.receivedAt})`,
+			);
+		}
+	});
+	const noticeAt = noticeAtOf(
+		new Date(record.run.startedAt),
+		new Date(record.run.observedAt),
+		record.responses.map((response) => Date.parse(response.date)),
+	);
+	if (record.noticeAt !== noticeAt.toISOString()) {
+		problems.push(
+			`the record states N ${record.noticeAt}, but its dates, start and observation give ${noticeAt.toISOString()}`,
+		);
+	}
+	return problems;
 }
 
 /** Why `page` is not an HTML page whose visible text holds every `required` phrase; none if it is. */
@@ -265,8 +338,7 @@ async function fetchPublic(url: string, clock: () => Date, get: Get): Promise<Fe
 	if (date === null || !IMF_FIXDATE.test(date))
 		throw new CannotVerify(`${url} states Date ${shown(String(date))}, which is not an HTTP-date`);
 	const dateMs = Date.parse(date);
-	// The header has one-second resolution, so a response may state the second it began in.
-	if (dateMs < sent - DATE_BEHIND_MS - 1000 || dateMs > received + DATE_AHEAD_MS) {
+	if (!dateWithinObservation(dateMs, sent, received)) {
 		throw new CannotVerify(
 			`${url} states Date ${shown(date)}, outside this run’s observation of it (${new Date(sent).toISOString()} to ${new Date(received).toISOString()}, up to ${DATE_BEHIND_MS / 60_000} min before or ${DATE_AHEAD_MS / 60_000} min after)`,
 		);
@@ -298,8 +370,8 @@ function parseCommit(value: string): string | null {
 	}
 }
 
-/** A response body as JSON, or null when it is not JSON. */
-function jsonOf(body: Uint8Array): unknown {
+/** Bytes as JSON, or null when they are not JSON. */
+export function jsonOf(body: Uint8Array): unknown {
 	try {
 		return JSON.parse(new TextDecoder().decode(body));
 	} catch {
