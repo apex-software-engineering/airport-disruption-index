@@ -147,7 +147,9 @@ describe('settlement labels across the cutover', () => {
 		expect(await store.list(`prints/${E}/`)).toEqual([]);
 		// A partition's index stays owned by collect: an ET settle never rewrites it.
 		expect((await store.read(`days/${E}.json`))?.body).toEqual(indexBefore?.body);
-		expect((await readHistory(store)).days.map((d) => [d.date, d.revision])).toEqual([[E, 1]]);
+		expect(
+			(await readHistory(store, '2026-11-17', '2027-12-31')).days.map((d) => [d.date, d.revision]),
+		).toEqual([[E, 1]]);
 		expect(await store.list('prints/et/history.json')).toEqual(['prints/et/history.json']);
 		// reproduce rebuilds it from the public API.
 		expect(await reproduce(E, 'http://test', routeGet)).toMatchObject({ kind: 'match' });
@@ -174,7 +176,7 @@ describe('settlement labels across the cutover', () => {
 			`prints/et/${E}/r1.json`,
 			`prints/et/${E}/r2.json`,
 		]);
-		expect((await readHistory(store)).days).toEqual([
+		expect((await readHistory(store, '2026-11-17', '2027-12-31')).days).toEqual([
 			expect.objectContaining({ date: E, revision: 2 }),
 		]); // The correction is listed with its day's zone and window, and the day states its version.
 		expect(await correctionsView(store)).toEqual([
@@ -212,7 +214,7 @@ describe('settlement labels across the cutover', () => {
 				objects: [`prints/${E}/r1.json`, `prints/${E}/r2.json`, 'prints/history.json'],
 			},
 		});
-		expect((await readHistory(store)).days).toEqual([]);
+		expect((await readHistory(store, '2026-11-17', '2027-12-31')).days).toEqual([]);
 		expect(await correctionsView(store)).toEqual([]);
 		// The v2 settle is unaffected, and the settle route still reports the stale objects.
 		await collectAroundE();
@@ -235,7 +237,9 @@ describe('settlement labels across the cutover', () => {
 			status: 'settled',
 			print: { schema: 'adi.daily-print/2', methodologyVersion: '2.0.0' },
 		});
-		expect((await readHistory(store)).days.map((d) => d.date)).toEqual([E]);
+		expect((await readHistory(store, '2026-11-17', '2027-12-31')).days.map((d) => d.date)).toEqual([
+			E,
+		]);
 	});
 
 	it('reports a print at another day’s key from both routes, instead of failing', async () => {
@@ -320,7 +324,7 @@ describe('settlement labels across the cutover', () => {
 			{ kind: 'if-absent' },
 		);
 		const misfiled = { problem: 'misfiled_print', objects: ['prints/history.json'] };
-		expect((await readHistory(store)).days).toEqual([]);
+		expect((await readHistory(store, '2026-11-17', '2027-12-31')).days).toEqual([]);
 		expect(await dayView(store, E)).toMatchObject({ status: 'unsettled', misfiled });
 		await collectAroundE();
 		vi.useFakeTimers({ toFake: ['Date'] });

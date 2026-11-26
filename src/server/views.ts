@@ -28,7 +28,6 @@ import {
 import type {
 	Correction,
 	DailyPrint,
-	HistoryIndex,
 	IndicativePrint,
 	RoundReceipt,
 	RoundSummary,
@@ -38,6 +37,7 @@ import { addDays, parseRoundId, utcDateOf, type RoundId, type UtcDate } from '@/
 
 import {
 	misfiledPrints,
+	type HistoryRead,
 	type MisfiledPrints,
 	readCorrectionPrints,
 	readDayIndex,
@@ -129,13 +129,16 @@ function deadlinesOf(window: DayWindow) {
 
 /** The summaries of every stored round whose slot is in `window`, across its partitions. */
 async function readWindowRounds(store: ObjectStore, window: DayWindow): Promise<RoundSummary[]> {
-	const indexes = await Promise.all(partitionsOf(window).map((date) => readDayIndex(store, date)));
-	return indexes
-		.flatMap((index) => index.rounds)
-		.filter((round) => {
+	const read = await Promise.all(
+		partitionsOf(window).map(async (date) => ({ date, index: await readDayIndex(store, date) })),
+	);
+	// A summary counts only in its own partition's index, so a copied one is never a second round.
+	return read.flatMap(({ date, index }) =>
+		index.rounds.filter((round) => {
 			const id = parseRoundId(round.roundId);
-			return id !== null && slotIndexIn(window, id.slotStart) !== null;
-		});
+			return id !== null && id.partition === date && slotIndexIn(window, id.slotStart) !== null;
+		}),
+	);
 }
 
 /** The most recently fetched of `rounds`, as the heartbeat reports it. */
@@ -234,16 +237,18 @@ export async function dayView(store: ObjectStore, date: string): Promise<DayView
 }
 
 export async function historyView(store: ObjectStore, from: UtcDate, to: UtcDate) {
-	return historyWindow(await readHistory(store), from, to);
+	return historyWindow(await readHistory(store, from, to), from, to);
 }
 
-/** The history view of [from, to] from an index already read, so one read serves every window. */
-export function historyWindow({ days }: HistoryIndex, from: UtcDate, to: UtcDate) {
+/** The history view of [from, to] from a history already read over a span that covers it. */
+export function historyWindow({ days, misfiled }: HistoryRead, from: UtcDate, to: UtcDate) {
 	return {
 		from,
 		to,
 		/** In effect on `to` (null before the first release); each print records its own. */
 		methodologyVersion: settlementReleaseOrNull(to)?.parameters.version ?? null,
+		/** A history object in the range that could not be read: its days are missing here. */
+		...(misfiled === null ? {} : { misfiled }),
 		days: days
 			.filter((day) => day.date >= from && day.date <= to)
 			.map((day) => {

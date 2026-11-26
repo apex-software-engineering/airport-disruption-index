@@ -566,7 +566,7 @@ describe('settlement history', () => {
 		);
 		const again = await settleDay(store, '2026-11-17');
 		expect(again).toEqual({ status: 'already_settled', print: corrected });
-		expect((await readHistory(store)).days).toMatchObject([
+		expect((await readHistory(store, '2026-11-17', '2027-12-31')).days).toMatchObject([
 			{ date: '2026-11-17', revision: 2, printHash: corrected.printHash },
 		]);
 		expect(await dayView(store, '2026-11-17')).toMatchObject({
