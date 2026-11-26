@@ -56,6 +56,20 @@ describe('docs rendering', () => {
 		expect(from).not.toContain('methodology v1.0.0</h1>');
 	});
 
+	it('discloses nothing of the indicative series before the instant, by content (#41 r2)', async () => {
+		// The one passage live before the notice that names the series: the rollback rule for it.
+		const ROLLBACK_RULE =
+			'<code>upcoming</code> block and the indicative series. A deployment from before it';
+		for (const name of DOC_NAMES) {
+			const html = (await renderDoc(name, BEFORE)).replaceAll(ROLLBACK_RULE, '');
+			expect(html, name).not.toMatch(/indicative/i);
+			expect(html, name).not.toContain('2.0.0');
+		}
+		const from = await renderDoc('methodology', FROM);
+		expect(from).toContain('npm run reproduce -- --indicative &lt;date&gt; --dir attestations');
+		expect(from).toContain('within those 12 hours');
+	});
+
 	it('refuses nested, stray or mismatched notice markers before hiding anything (Sol #39 r1, finding 4)', () => {
 		for (const malformed of [
 			// An unclosed outer block around a closed inner one: its tail must never leak early.
