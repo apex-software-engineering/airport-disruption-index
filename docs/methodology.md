@@ -494,9 +494,8 @@ indicative day in its 7-day window and fails on a `MISMATCH`.
 An indicative day is due 2 hours after its freeze time. A day that froze before its release's notice
 instant is due 12 hours after that instant instead: the settle runs look back only a few days, so
 the operator backfills the earlier ones right after the instant, with
-`npm run indicative -- --from <first indicative day>` (it refuses production before the instant).
-For v2.0.0 that means running it after 2026-11-29T00:00Z and before 12:00Z; a later or postponed
-notice moves the allowance with its instant.
+`npm run indicative -- --from <first indicative day>` (it refuses production before the instant),
+within those 12 hours. A later or postponed notice moves the allowance with its instant.
 
 ### Attestations
 
