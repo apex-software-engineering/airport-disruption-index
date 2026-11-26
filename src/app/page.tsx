@@ -15,6 +15,7 @@ import {
 	type IndicativeDay,
 	type Provisional,
 } from '@/components/index-data';
+import { IndicativeIncomplete } from '@/components/indicative-incomplete';
 import { TransitionNotice } from '@/components/transition';
 import {
 	Figure,
@@ -31,11 +32,14 @@ import { collectingRelease } from '@/lib/index/calendar';
 import { INDICATIVE_SERIES } from '@/lib/index/indicative';
 import type { MethodologyParameters } from '@/lib/index/methodology';
 import { site } from '@/lib/site';
+import type { MisfiledIndicative } from '@/server/indicative-archive';
 
 export const dynamic = 'force-dynamic';
 
 export default async function HomePage() {
-	const { current, recent, chartHistory, recentIndicative } = await readSiteData(new Date());
+	const { current, recent, chartHistory, indicative, recentIndicative } = await readSiteData(
+		new Date(),
+	);
 	// The methodology in effect at the same instant as the running value.
 	const parameters = collectingRelease(new Date(current.asOf)).parameters;
 	return (
@@ -72,7 +76,9 @@ export default async function HomePage() {
 				</>
 			) : null}
 			<RecentPrints days={recent} parameters={parameters} />
-			{recentIndicative === null ? null : <IndicativePrints days={recentIndicative} />}
+			{indicative === null || recentIndicative === null ? null : (
+				<IndicativePrints days={recentIndicative} misfiled={indicative.misfiled} />
+			)}
 			<WhatItMeasures parameters={parameters} />
 		</>
 	);
@@ -170,7 +176,13 @@ function RecentPrints({
  * The indicative ET series (design §4): labelled with its zone and its standing on every row and
  * heading, so no value here can be read as a settlement value.
  */
-function IndicativePrints({ days }: { days: readonly IndicativeDay[] }) {
+function IndicativePrints({
+	days,
+	misfiled,
+}: {
+	days: readonly IndicativeDay[];
+	misfiled: MisfiledIndicative | undefined;
+}) {
 	return (
 		<Section
 			title={
@@ -184,6 +196,7 @@ function IndicativePrints({ days }: { days: readonly IndicativeDay[] }) {
 				frozen once, 30 minutes after it ends, and never revised.{' '}
 				<a href='/api/v1/indicative/history'>/api/v1/indicative/history</a>
 			</p>
+			<IndicativeIncomplete misfiled={misfiled} />
 			{days.length === 0 ? (
 				<Notice>No indicative day has been frozen in the last {RECENT_PRINT_DAYS} days.</Notice>
 			) : (

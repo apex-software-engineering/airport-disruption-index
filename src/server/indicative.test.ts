@@ -3,7 +3,7 @@
  * production today), an ET day frozen from both UTC partitions after its cutoff, served by the API
  * with its zone and standing, and reproduced from the public API, once the series is published.
  */
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET as settleRoute } from '@/app/api/cron/settle/route';
 import { GET as indicativeDayRoute } from '@/app/api/v1/indicative/days/[date]/route';
 import { GET as indicativeHistoryRoute } from '@/app/api/v1/indicative/history/route';
+import { GET as indicativeRoundRoute } from '@/app/api/v1/indicative/days/[date]/rounds/[id]/route';
 import { INDICATIVE_SERIES } from '@/lib/index/indicative';
 import { reproduceIndicative } from '@/lib/reproduce';
 import { proxy } from '@/proxy';
@@ -106,7 +107,10 @@ describe('freezing an indicative ET day', () => {
 		await collectAt(store, '2026-11-20T12:00:03Z'); // a write after freezing changes nothing
 		const second = await freezeIndicativeDay(store, DAY, new Date('2026-11-25T00:00:00Z'));
 		expect(second).toEqual({ status: 'already_frozen', print: first.print });
-		expect(await readIndicativePrints(store, DAY, DAY)).toEqual([first.print]);
+		expect(await readIndicativePrints(store, DAY, DAY)).toEqual({
+			prints: [first.print],
+			misfiled: null,
+		});
 	});
 
 	it('never reads a receipt outside the window, and stops on an unreadable one inside it', async () => {
@@ -204,9 +208,12 @@ describe('freezing an indicative ET day', () => {
 			'application/json',
 			{ kind: 'if-absent' },
 		);
-		await expect(readIndicativePrint(store, '2026-11-21')).rejects.toThrow(
-			'indicative/2.0.0/2026-11-21.json holds the indicative print of 2026-11-20 under 2.0.0',
-		);
+		expect(await readIndicativePrint(store, '2026-11-21')).toBeNull();
+		expect(await indicativeDayView(store, '2026-11-21')).toEqual({
+			status: 'misfiled',
+			date: '2026-11-21',
+			misfiled: { problem: 'misfiled_indicative', objects: ['indicative/2.0.0/2026-11-21.json'] },
+		});
 	});
 
 	it('has no indicative day before the series or from v2’s first day', async () => {
@@ -333,6 +340,80 @@ describe('the settle run and reproduction', () => {
 		});
 		expect(await reproduceIndicative('2026-11-21', 'http://test', routeGet)).toMatchObject({
 			kind: 'cannot_verify',
+		});
+	});
+});
+
+describe('stored indicative objects that are not their day’s print (#34, item 3)', () => {
+	const GARBAGE = new TextEncoder().encode('{"not": "a print"');
+	const KEY_21 = 'indicative/2.0.0/2026-11-21.json';
+
+	it('lists the frozen days past a malformed object, and reports it', async () => {
+		await collectAround();
+		await freezeIndicativeDay(store, DAY, AFTER_FREEZE);
+		await store.write(KEY_21, GARBAGE, 'application/json', { kind: 'if-absent' });
+		const response = await indicativeHistoryRoute(
+			new Request('http://test/api/v1/indicative/history?from=2026-11-20&to=2026-11-21'),
+		);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({
+			days: [expect.objectContaining({ date: DAY })],
+			misfiled: { problem: 'misfiled_indicative', objects: [KEY_21] },
+		});
+	});
+
+	it('reports a listed key that cannot be read, never drops it silently (Sol #38 r1, finding 5)', async () => {
+		await collectAround();
+		await freezeIndicativeDay(store, DAY, AFTER_FREEZE);
+		const key = 'indicative/2.0.0/2026-11-20.json';
+		const read = FileStore.prototype.read;
+		vi.spyOn(FileStore.prototype, 'read').mockImplementation(function (this: FileStore, k) {
+			return k === key ? Promise.resolve(null) : read.call(this, k);
+		});
+		const response = await indicativeHistoryRoute(
+			new Request('http://test/api/v1/indicative/history?from=2026-11-20&to=2026-11-21'),
+		);
+		vi.restoreAllMocks();
+		expect(await response.json()).toMatchObject({
+			days: [],
+			misfiled: { problem: 'misfiled_indicative', objects: [key] },
+		});
+	});
+
+	it('answers a day whose key holds something else with 404 naming it, never 500', async () => {
+		await store.write(KEY_21, GARBAGE, 'application/json', { kind: 'if-absent' });
+		const response = await indicativeDayRoute(
+			new Request('http://test/api/v1/indicative/days/2026-11-21'),
+			{ params: Promise.resolve({ date: '2026-11-21' }) },
+		);
+		expect(response.status).toBe(404);
+		expect(await response.json()).toEqual({
+			date: '2026-11-21',
+			misfiled: { problem: 'misfiled_indicative', objects: [KEY_21] },
+		});
+	});
+
+	it('refuses to freeze over a key that holds something else, and leaves it', async () => {
+		await store.write(KEY_21, GARBAGE, 'application/json', { kind: 'if-absent' });
+		await expect(
+			freezeIndicativeDay(store, '2026-11-21', new Date('2026-11-22T05:30:00Z')),
+		).rejects.toThrow(`${KEY_21} is not JSON`);
+		expect((await store.read(KEY_21))?.body).toEqual(GARBAGE);
+	});
+
+	it('answers a listed round whose receipt cannot be read with 404 naming it (Sol #38 r1, finding 4)', async () => {
+		await collectAround();
+		await freezeIndicativeDay(store, DAY, AFTER_FREEZE);
+		const id = '2026-11-20T05:00Z';
+		const key = `rounds/2026-11-20/${id}.json`;
+		await writeFile(path.join(root, key), '{');
+		const response = await indicativeRoundRoute(
+			new Request(`http://test/api/v1/indicative/days/${DAY}/rounds/${id}`),
+			{ params: Promise.resolve({ date: DAY, id }) },
+		);
+		expect(response.status).toBe(404);
+		expect(await response.json()).toEqual({
+			error: `${key}, listed by the indicative print of ${DAY}, is not a readable receipt`,
 		});
 	});
 });

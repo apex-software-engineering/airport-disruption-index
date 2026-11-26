@@ -13,7 +13,6 @@ import {
 	activeReleases,
 	governsAnyOf,
 	isUnder,
-	methodologyOf,
 	settlementReleaseOrNull,
 	SLOT_MINUTES,
 	type DayLabel,
@@ -529,16 +528,43 @@ async function readRevisions(
 			const reason = classified.kind === 'misfiled' ? classified.reason : `${key} is a history`;
 			return { prints, blocked: { key, reason } };
 		}
+		// A correction belongs to the chain only if it supersedes the revision before it (#34).
+		const previous = prints.at(-1);
+		if (
+			previous !== undefined &&
+			classified.print.correction?.supersedesPrintHash !== previous.printHash
+		) {
+			const reason = `${key} does not supersede r${previous.revision} (${previous.printHash})`;
+			return { prints, blocked: { key, reason } };
+		}
 		prints.push(classified.print);
 	}
 }
 
 /**
- * All revisions of a day's print, oldest first: the last valid revision is the one served, and
- * an object past it that is not the next revision is reported by `misfiledPrints`.
+ * All revisions of a day's print, oldest first: one chain from r1, each correction superseding
+ * the revision before it. The last is the one served; every other key under the day's root is
+ * reported by `misfiledPrints`.
  */
 export async function readPrints(store: ObjectStore, date: string): Promise<DailyPrint[]> {
 	return (await readRevisions(store, date)).prints;
+}
+
+/**
+ * A day's revisions, with the keys under its own print root that are not among them. The keys
+ * are listed before the chain is read, so a revision appended in between is read into the chain
+ * and never reported outside it: only what was already stored when the check began can be.
+ */
+async function readChain(
+	store: ObjectStore,
+	date: string,
+): Promise<{ prints: DailyPrint[]; blocked: BlockedKey | null; outside: string[] }> {
+	const root = canonicalRoot(date);
+	if (root === null) return { prints: [], blocked: null, outside: [] };
+	const listed = await store.list(`${root}${date}/`);
+	const { prints, blocked } = await readRevisions(store, date);
+	const served = new Set(prints.map((print) => keys.print(root, date, print.revision)));
+	return { prints, blocked, outside: listed.filter((key) => !served.has(key)) };
 }
 
 /** Objects for a date that no reader serves, reported under the design's problem code. */
@@ -553,33 +579,46 @@ function misfiledFor(object: PrintObject, date: string): boolean {
 
 /**
  * What no reader serves for `date`: print objects under a root other than the one its release
- * owns, objects under that root that do not classify as its prints, and any history that is not
- * one or lists the date under a root that does not own it. Reported so the monitor can alert;
+ * owns, objects under that root outside the day's chain of revisions (not a print, past a gap, or
+ * not superseding the revision before), and any history that is not one or lists the date under a
+ * root that does not own it. Reported so the monitor can alert;
  * null when there are none.
  */
 export async function misfiledPrints(
 	store: ObjectStore,
 	date: string,
 ): Promise<MisfiledPrints | null> {
+	return (await readDayPrints(store, date)).misfiled;
+}
+
+/**
+ * A day's served revisions and what no reader serves for it (`misfiledPrints`), from one read of
+ * its chain, so the revisions a response serves and the objects it reports outside them always
+ * agree.
+ */
+export async function readDayPrints(
+	store: ObjectStore,
+	date: string,
+): Promise<{ prints: DailyPrint[]; misfiled: MisfiledPrints | null }> {
 	const canonical = canonicalRoot(date);
+	const chain = await readChain(store, date);
 	const found = await Promise.all(
 		PRINT_ROOTS.map(async (root) => {
-			const listed = await store.list(`${root}${date}/`);
 			const historyKey = keys.history(root);
-			const classified = await readInBatches(
-				root === canonical ? [...listed, historyKey] : [historyKey],
-				async (key) => {
-					const object = await store.read(key);
-					return object !== null && misfiledFor(classifyPrintObject(key, object.body), date)
-						? [key]
-						: [];
-				},
-			);
-			return root === canonical ? classified.flat() : [...listed, ...classified.flat()];
+			const history = await store.read(historyKey);
+			const historyMisfiled =
+				history !== null && misfiledFor(classifyPrintObject(historyKey, history.body), date)
+					? [historyKey]
+					: [];
+			const prints = root === canonical ? chain.outside : await store.list(`${root}${date}/`);
+			return [...prints, ...historyMisfiled];
 		}),
 	);
 	const objects = found.flat();
-	return objects.length === 0 ? null : { problem: 'misfiled_print', objects };
+	return {
+		prints: chain.prints,
+		misfiled: objects.length === 0 ? null : { problem: 'misfiled_print', objects },
+	};
 }
 
 const PRINT_KEY = /^(prints\/(?:[a-z]+\/)?)(\d{4}-\d{2}-\d{2})\/r(\d+)\.json$/;
@@ -643,7 +682,7 @@ export async function settleDay(store: ObjectStore, date: DayLabel): Promise<Set
 	const { prints, blocked } = await readRevisions(store, date);
 	const settled = prints.at(-1);
 	if (settled !== undefined) {
-		await updateHistory(store, settled);
+		await updateHistory(store, date);
 		return { status: 'already_settled', print: settled };
 	}
 	// r1's key holds something that is not this day's print: nothing else is read or written.
@@ -660,14 +699,14 @@ export async function settleDay(store: ObjectStore, date: DayLabel): Promise<Set
 			const raced = await readRevisions(store, date);
 			const winner = raced.prints.at(-1);
 			if (winner !== undefined) {
-				await updateHistory(store, winner);
+				await updateHistory(store, date);
 				return { status: 'already_settled', print: winner };
 			}
 			if (raced.blocked !== null) throw await settlementBlocked(store, date, raced.blocked);
 		}
 		throw new Error(`print ${date} r1 exists but could not be read`);
 	}
-	await updateHistory(store, print);
+	await updateHistory(store, date);
 	return { status: 'settled', print };
 }
 
@@ -715,12 +754,18 @@ export async function correctDay(
 	request: CorrectionRequest,
 	clock: () => Date,
 ): Promise<DailyPrint> {
-	const { prints: revisions, blocked } = await readRevisions(store, date);
+	const { prints: revisions, blocked, outside } = await readChain(store, date);
 	const latest = revisions.at(-1);
 	if (latest === undefined)
 		throw new Error(`${date} has not settled, so it has nothing to correct`);
 	if (blocked !== null) {
 		throw new Error(`${blocked.reason}, so ${date} cannot take a correction; nothing was changed`);
+	}
+	// A key past the chain (after a gap) would become the served print once the gap is filled.
+	if (outside.length > 0) {
+		throw new Error(
+			`${outside.join(', ')} ${outside.length === 1 ? 'is' : 'are'} outside the revisions of ${date}, so it cannot take a correction; nothing was changed. To recover, inspect ${outside.length === 1 ? 'it' : 'them'} and, if not a revision of ${date}, copy ${outside.length === 1 ? 'that object' : 'each object'} to the quarantine prefix with vercel blob copy, so the evidence is kept, then delete the original with vercel blob del (docs/methodology.md, Operations: stray print keys), then correct again`,
+		);
 	}
 	if (latest.printHash !== request.supersedesPrintHash) {
 		const superseded = revisions.find((p) => p.printHash === request.supersedesPrintHash);
@@ -751,7 +796,7 @@ export async function correctDay(
 	});
 	if (written === 'conflict')
 		throw new Error(`${date} r${revision} was written by someone else; nothing was changed`);
-	await updateHistory(store, print).catch((error: unknown) => {
+	await updateHistory(store, date).catch((error: unknown) => {
 		// settleDay points the history at the latest revision, so settling the day again repairs it.
 		throw new Error(
 			`${date} r${revision} is written, but the history index still cites the previous revision (${String(error)}); settle ${date} again to repair it`,
@@ -797,14 +842,15 @@ export async function readHistory(
 }
 
 /**
- * Points a root's history at `print`, never regressing a day's revision. The history is only an
- * index of the root's prints, so one that does not classify is rebuilt from them; entries for
- * dates the root does not own are dropped.
+ * Points `date`'s history entry at the day's served revision, read from its chain inside each
+ * conditional attempt: the chain is the one owner, so a revision outside it (one an older reader
+ * once indexed) is replaced, a concurrent writer never regresses the entry, and a day with no
+ * served revision has none. The history is only an index of the root's prints, so one that does
+ * not classify is rebuilt from them; entries for dates the root does not own are dropped.
  */
-async function updateHistory(store: ObjectStore, print: DailyPrint): Promise<void> {
-	const entry = historyEntryOf(print);
-	const release = methodologyOf(print.methodologyVersion, print.parameterHash);
-	if (release === null) throw new Error(`${print.date} records an unknown methodology`);
+async function updateHistory(store: ObjectStore, date: DayLabel): Promise<void> {
+	const release = settlementReleaseOrNull(date);
+	if (release === null) throw new Error(`no release owns ${date}, so it has no history entry`);
 	const root = printRoot(release);
 	const key = keys.history(root);
 	for (let attempt = 0; attempt < MAX_CONDITIONAL_ATTEMPTS; attempt += 1) {
@@ -816,11 +862,11 @@ async function updateHistory(store: ObjectStore, print: DailyPrint): Promise<voi
 				: classified.kind === 'history'
 					? classified.days
 					: await rebuiltHistory(store, root);
-		const listed = days.find((d) => d.date === entry.date);
-		const next =
-			listed !== undefined && listed.revision > entry.revision
-				? days
-				: [...days.filter((d) => d.date !== entry.date), entry];
+		const served = (await readRevisions(store, date)).prints.at(-1);
+		const next = [
+			...days.filter((d) => d.date !== date),
+			...(served === undefined ? [] : [historyEntryOf(served)]),
+		];
 		const body = encode({
 			...EMPTY_HISTORY,
 			days: next.sort((x, y) => x.date.localeCompare(y.date)),

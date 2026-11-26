@@ -12,11 +12,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET as settleRoute } from '@/app/api/cron/settle/route';
 import { dayWindow, settlementDay } from '@/lib/index/calendar';
 import { indicativeAdmissionFor } from '@/lib/index/indicative';
-import { buildIndicativePrint, buildPrint } from '@/lib/index/print';
+import { buildIndicativePrint, buildPrint, historyEntryOf } from '@/lib/index/print';
 import { RELEASES } from '@/lib/index/releases';
 import { routeGet } from '@/test/api';
 import { collectAt as collectStoreRound } from '@/test/collect';
 
+import { correctDay, settleDay } from './archive';
 import { FileStore } from './storage';
 import { correctionsView } from './views';
 
@@ -275,5 +276,130 @@ describe('a day index that does not decode is rebuilt, never thrown on (#34, ite
 		expect(await next.json()).toMatchObject({ date: E, coverage: { validRounds: 3 } });
 		expect(write).toHaveBeenCalledTimes(1);
 		vi.restoreAllMocks();
+	});
+});
+
+describe('a day serves one chain of revisions, each superseding the last (#34, item 2)', () => {
+	/** A correction of E at `revision` that names `supersedes` as the print it replaces. */
+	const correctionOfE = (revision: number, supersedes: string) =>
+		buildPrint(settlementDay(E), [], {
+			revision,
+			correction: {
+				supersedesPrintHash: supersedes,
+				reason: 'planted',
+				issuedAt: '2027-01-02T10:00:00.000Z',
+				windowOverride: null,
+			},
+		});
+
+	async function settledE() {
+		await collectAt('2027-01-01T05:00:03Z');
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2027-01-02T05:30:00Z'));
+		const { print } = await settleDay(store, E);
+		vi.useRealTimers();
+		return print;
+	}
+
+	it('reports a revision past a gap instead of leaving it unseen', async () => {
+		const r1 = await settledE();
+		await put(`prints/et/${E}/r3.json`, encode(correctionOfE(3, r1.printHash)));
+		const day = await get(`/api/v1/days/${E}`);
+		expect(await day.json()).toMatchObject({
+			status: 'settled',
+			print: { revision: 1 },
+			misfiled: { problem: 'misfiled_print', objects: [`prints/et/${E}/r3.json`] },
+		});
+	});
+
+	it('never serves a correction that does not supersede the revision before it', async () => {
+		await settledE();
+		await put(`prints/et/${E}/r2.json`, encode(correctionOfE(2, '0'.repeat(64))));
+		const day = await get(`/api/v1/days/${E}`);
+		expect(await day.json()).toMatchObject({
+			status: 'settled',
+			print: { revision: 1 },
+			misfiled: { objects: [`prints/et/${E}/r2.json`] },
+		});
+	});
+
+	it('never reports a correction written while the day is being checked (Opus #38 r1, finding 1)', async () => {
+		const r1 = await settledE();
+		// The correction lands between the two reads of the check: just before the listing.
+		const list = FileStore.prototype.list;
+		let written = false;
+		vi.spyOn(FileStore.prototype, 'list').mockImplementation(async function (
+			this: FileStore,
+			prefix,
+		) {
+			if (!written && prefix === `prints/et/${E}/`) {
+				written = true;
+				await put(`prints/et/${E}/r2.json`, encode(correctionOfE(2, r1.printHash)));
+			}
+			return list.call(this, prefix);
+		});
+		const day = await get(`/api/v1/days/${E}`);
+		vi.restoreAllMocks();
+		expect(await day.json()).not.toHaveProperty('misfiled');
+	});
+
+	it('tells a correction that lost a race that someone else wrote it (Opus #38 r1, finding 2)', async () => {
+		const r1 = await settledE();
+		const rival = correctionOfE(2, r1.printHash);
+		// The rival correction lands while this one reads its receipts.
+		const list = FileStore.prototype.list;
+		let written = false;
+		vi.spyOn(FileStore.prototype, 'list').mockImplementation(async function (
+			this: FileStore,
+			prefix,
+		) {
+			if (!written && prefix.startsWith('rounds/')) {
+				written = true;
+				await put(`prints/et/${E}/r2.json`, encode(rival));
+			}
+			return list.call(this, prefix);
+		});
+		await expect(
+			correctDay(
+				store,
+				E,
+				{ supersedesPrintHash: r1.printHash, reason: 'operator', windowOverride: null },
+				() => new Date('2027-01-02T12:00:00Z'),
+			),
+		).rejects.toThrow(`${E} r2 was written by someone else; nothing was changed`);
+		vi.restoreAllMocks();
+		expect(
+			JSON.parse(new TextDecoder().decode((await store.read(`prints/et/${E}/r2.json`))?.body)),
+		).toEqual(rival);
+	});
+
+	it('never lists a rejected revision in /history: a settle points it at the served one (Sol #38 r1, finding 1)', async () => {
+		await settledE();
+		// A wrong-parent r2 that an older reader once indexed: stored, and named by the history.
+		const rejected = correctionOfE(2, '0'.repeat(64));
+		await put(`prints/et/${E}/r2.json`, encode(rejected));
+		await writeFile(
+			path.join(root, 'prints/et/history.json'),
+			JSON.stringify({ schema: 'adi.history/1', days: [historyEntryOf(rejected)] }),
+		);
+		expect((await settle(E, '2027-01-02T12:00:00Z')).status).toBe(200);
+		const history = await (await get(`/api/v1/history?from=${E}&to=${E}`)).json();
+		expect(history.days).toEqual([expect.objectContaining({ date: E, revision: 1 })]);
+	});
+
+	it('refuses a correction while any revision key outside the chain exists', async () => {
+		const r1 = await settledE();
+		await put(`prints/et/${E}/r3.json`, encode(correctionOfE(3, r1.printHash)));
+		await expect(
+			correctDay(
+				store,
+				E,
+				{ supersedesPrintHash: r1.printHash, reason: 'operator', windowOverride: null },
+				() => new Date('2027-01-02T12:00:00Z'),
+			),
+		).rejects.toThrow(
+			`prints/et/${E}/r3.json is outside the revisions of ${E}, so it cannot take a correction; nothing was changed. To recover, inspect it`,
+		);
+		expect(await store.read(`prints/et/${E}/r2.json`)).toBeNull();
 	});
 });

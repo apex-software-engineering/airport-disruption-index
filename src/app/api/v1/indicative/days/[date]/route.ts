@@ -18,6 +18,8 @@ export async function GET(_request: Request, context: { params: Promise<{ date: 
 			return json(view.body, CACHE.immutable);
 		case 'pending':
 			return json(view.body, CACHE.live, 404);
+		case 'misfiled':
+			return json({ date, misfiled: view.misfiled }, CACHE.live, 404);
 		case 'none':
 			switch (view.reason) {
 				case 'before_series':

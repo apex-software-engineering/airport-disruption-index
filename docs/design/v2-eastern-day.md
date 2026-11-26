@@ -925,6 +925,10 @@ prohibition: no v1 day is reprinted under v2.
     local rendering; DST-day charts.
 15. **After cutover** (checklist): reproduce 2026-12-31 and 2027-01-01, both `MATCH`; then remove
     the v1 crons and the 01:45Z attest run.
+16. **Before the notice instant** (checklist): the monitor (`lexabu/personal-configs`
+    `scripts/adi-monitor.sh`) alerts on `misfiled.problem == "misfiled_indicative"` from
+    `/api/v1/indicative/history` and `/api/v1/indicative/days/{date}`, live before v2's
+    `noticePublishedAt` is reached.
 
 ## Decisions for review
 

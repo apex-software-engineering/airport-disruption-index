@@ -464,6 +464,15 @@ These notes bind whoever deploys the index.
   `src/lib/index/adapters.ts` stays for as long as any receipt or print cites it. An adapter
   revision is frozen once any production receipt records it: a later fix is a new revision. Preview
   receipts are not authoritative and do not freeze one.
+- **Stray print keys.** An object under a day's own print root (`prints/{date}/` or
+  `prints/et/{date}/`) that is not one of its revisions (past a gap, not superseding the revision
+  before it, or not a print) is reported as `misfiled_print` and blocks corrections of that day.
+  Only the operator moves it: inspect it and confirm it is none of the revisions
+  `/api/v1/days/{date}` serves; copy that exact key to a quarantine prefix outside every print root
+  (`vercel blob copy prod/<key> prod/quarantine/<key>`), so the evidence is kept, then delete the
+  original (`vercel blob del prod/<key>`), never a served revision; then settle the day again
+  (`/api/cron/settle?date={date}`), which points `/api/v1/history` at the served revision, and log
+  it on the [incident log](#incident-log).
 
 ### v2 rollout checklist
 

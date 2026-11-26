@@ -19,7 +19,13 @@ export async function GET(
 	const { date, id } = await context.params;
 	if (parseUtcDate(date) === null) return problem(400, `invalid date ${date}`);
 	if (parseRoundId(id) === null) return problem(400, `invalid round id ${id}`);
-	const receipt = await readIndicativeRound(storeFromEnv(), date, id);
-	if (receipt === null) return problem(404, `the indicative print of ${date} lists no round ${id}`);
-	return json(receipt, roundCache(receipt));
+	const round = await readIndicativeRound(storeFromEnv(), date, id);
+	switch (round.kind) {
+		case 'not_listed':
+			return problem(404, `the indicative print of ${date} lists no round ${id}`);
+		case 'unservable':
+			return problem(404, round.reason);
+		case 'receipt':
+			return json(round.receipt, roundCache(round.receipt));
+	}
 }
