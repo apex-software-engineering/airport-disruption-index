@@ -1,0 +1,271 @@
+name: Notice readback
+
+# Records N, the instant a methodology notice is first shown to be public (design
+# docs/design/v2-eastern-day.md, section 2). Run by hand after the step-1 notice deploys, and every
+# 15 minutes until it succeeds. A run that cannot see the notice on both /incidents and
+# /api/v1/methodology writes nothing. The one successful run writes the write-once record
+# notices/{version}.readback.json and the two response bodies it hashes, stamps the record with
+# OpenTimestamps, and appends them to the attestations branch. Later runs only upgrade the record's
+# proof until it reaches a Bitcoin block (whose time is B); a cheap first job skips everything once
+# it has, and before the notice instant. No job holds a storage or deployment secret.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: notice-readback
+  cancel-in-progress: false
+
+env:
+  NEXT_TELEMETRY_DISABLED: '1'
+  PUBLICATION_BRANCH: attestations
+  VERSION: '2.0.0'
+  # The release's noticePublishedAt (src/lib/index/releases.ts; a test keeps the two equal), empty
+  # while it is unset. Only the cheap gate reads it; the CLI checks the registry itself.
+  NOTICE_AT: ''
+
+jobs:
+  gate:
+    name: Skip when there is nothing to do
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+    steps:
+      - name: Before the notice instant, or once the proof reaches a Bitcoin block, stop here
+        id: gate
+        run: |
+          if [[ -z "$NOTICE_AT" ]] || (( $(date -u +%s) < $(date -u -d "$NOTICE_AT" +%s) )); then
+            echo "::notice::the $VERSION notice is not published yet (noticePublishedAt ${NOTICE_AT:-unset}); nothing to do"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git clone --quiet --depth 1 --single-branch --branch "$PUBLICATION_BRANCH" \
+            "https://github.com/$GITHUB_REPOSITORY" attestations
+          proof="attestations/notices/$VERSION.readback.json.ots"
+          if [[ -e "$proof" ]]; then
+            # Parsed by the OpenTimestamps client, never matched as bytes: a complete proof has a
+            # Bitcoin block header attestation.
+            pipx install opentimestamps-client==0.8.0 > /dev/null
+            if ots info "$proof" | grep -qE '^[[:space:]]*verify BitcoinBlockHeaderAttestation\('; then
+              echo "::notice::$proof already reaches a Bitcoin block; nothing to do"
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+  readback:
+    name: Read the notice back and stamp the record
+    needs: gate
+    if: ${{ needs.gate.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Reads the run's start time, which N may not precede.
+      actions: read
+    outputs:
+      changed: ${{ steps.changes.outputs.changed }}
+      tip: ${{ steps.branch.outputs.tip }}
+      problem: ${{ steps.readback.outputs.problem }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install the OpenTimestamps client
+        run: pipx install opentimestamps-client==0.8.0
+
+      # The branch must exist: the attest workflow creates it with the first attestation.
+      # The tip this run reads is recorded, so its publish job can refuse to replay a stale proof.
+      - name: Check out the publication branch
+        id: branch
+        run: |
+          git clone --quiet --single-branch --branch "$PUBLICATION_BRANCH" \
+            "https://github.com/$GITHUB_REPOSITORY" attestations
+          echo "tip=$(git -C attestations rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # The CLI runs first on every path: its notice gate comes before anything is read, written or
+      # upgraded, so a run of code whose notice is not published changes nothing. A record that
+      # already exists is never rewritten; this run only upgrades its proof.
+      - name: Read back, or upgrade the proof of the record already written
+        id: readback
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          record="attestations/notices/$VERSION.readback.json"
+          existed=false
+          [[ -e "$record" ]] && existed=true
+          started="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .run_started_at)"
+          status=0
+          npm run -s notice-readback -- "$VERSION" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" --run-started-at "$started" --dir attestations || status=$?
+          if [[ $status == 3 && "$EVENT" == schedule ]]; then
+            echo "::notice::the $VERSION notice is not public yet; the next scheduled run tries again"
+            exit 0
+          fi
+          if [[ $status == 3 ]]; then
+            echo "::error::the $VERSION notice is not public yet; nothing was written"
+            exit 1
+          fi
+          if [[ $status != 0 ]]; then
+            echo "::error::readback did not succeed (exit $status); nothing was written"
+            exit 1
+          fi
+          if [[ $existed == true && -e "$record.ots" ]]; then
+            ots upgrade "$record.ots" || echo "$record.ots: not complete yet (pending or unreachable calendar)"
+            rm -f "$record.ots.bak"
+            # A proof normally reaches a block within hours: one still pending a day after N is
+            # reported, so the run is not one of many quiet green ones.
+            notice_at="$(jq -r .noticeAt "$record")"
+            if ! ots info "$record.ots" | grep -qE '^[[:space:]]*verify BitcoinBlockHeaderAttestation\(' &&
+              (( $(date -u +%s) - $(date -u -d "$notice_at" +%s) > 86400 )); then
+              echo "problem=$record.ots is still pending a day after N ($notice_at); check its calendars" >> "$GITHUB_OUTPUT"
+            fi
+          elif [[ $existed == true ]]; then
+            # The record's proof is missing: stamp the same bytes again (B is then the new, later
+            # block), publish it, and still fail the run so the loss is seen.
+            ots stamp --timeout 30 "$record"
+            ots info "$record.ots"
+            echo "problem=$record had no proof beside it; it was stamped again, so B is the new proof's block" >> "$GITHUB_OUTPUT"
+          else
+            ots stamp --timeout 30 "$record"
+            ots info "$record.ots"
+          fi
+
+      # Only the record and its proof go out, and only once the proof commits to the record.
+      - name: Collect and check changes
+        id: changes
+        run: |
+          name="notices/$VERSION.readback.json"
+          bodies=("notices/$VERSION.readback.incidents.html" "notices/$VERSION.readback.methodology.json")
+          mkdir -p outgoing/notices
+          changed=()
+          while IFS= read -r line; do
+            path="${line:3}"
+            if [[ "$path" == "$name" || "$path" == "$name.ots" || "$path" == "${bodies[0]}" || "$path" == "${bodies[1]}" ]]; then
+              changed+=("$path")
+            else
+              echo "::error::this run produced $path, which it does not publish"
+              exit 1
+            fi
+          done < <(git -C attestations status --porcelain --untracked-files=all)
+          if (( ${#changed[@]} == 0 )); then
+            echo "Nothing new to publish"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          npm run -s check-proofs -- attestations "$name" | tee proofs.log
+          grep -qxF "OK $name" proofs.log || { echo "::error::$name: proof did not pass its check"; exit 1; }
+          cp "attestations/$name" "attestations/$name.ots" "attestations/${bodies[0]}" \
+            "attestations/${bodies[1]}" outgoing/notices/
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.changes.outputs.changed == 'true'
+        with:
+          name: notice-readback
+          path: outgoing/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish to the attestations branch
+    needs: readback
+    if: ${{ needs.readback.result == 'success' && needs.readback.outputs.changed == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Pushes only to the publication branch, which its ruleset keeps append-only.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: notice-readback
+          path: incoming
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.PUBLICATION_BRANCH }}
+          path: publication
+          # Full history, so the tip the readback job read can be compared with the current one.
+          fetch-depth: 0
+
+      # Append-only: the record is added once, with its proof, and is never rewritten; a proof may
+      # only be added or upgraded beside it. An artifact built against an older tip (a re-run of an
+      # earlier job) is refused when notices/ changed since, so it can never replace a newer proof.
+      - name: Publish
+        env:
+          TIP: ${{ needs.readback.outputs.tip }}
+        run: |
+          cd publication
+          if ! git diff --quiet "$TIP" HEAD -- notices/; then
+            echo "::error::notices/ changed since this run read $TIP; its artifact is stale and is not published"
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          name="notices/$VERSION.readback.json"
+          mkdir -p notices
+          # The record and its bodies are written once and never rewritten; the proof beside the
+          # record may only be added or upgraded.
+          for file in "$name" "notices/$VERSION.readback.incidents.html" "notices/$VERSION.readback.methodology.json"; do
+            if [[ -e "$file" ]]; then
+              cmp -s "../incoming/$file" "$file" || { echo "::error::$file would be rewritten"; exit 1; }
+            else
+              cp "../incoming/$file" "$file"
+            fi
+          done
+          if git diff --quiet HEAD -- "$name" && git ls-files --error-unmatch "$name" > /dev/null 2>&1; then
+            message="Upgrade the $VERSION notice readback proof"
+          else
+            message="Record the $VERSION notice readback"
+          fi
+          cp "../incoming/$name.ots" "$name.ots"
+          git add --all
+          if git diff --cached --quiet; then
+            echo "Nothing to publish"
+            exit 0
+          fi
+          git commit --quiet -m "$message" -m "Run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT"
+          git show --stat --oneline HEAD
+          # The attest workflow pushes to the same branch: rebase and retry a lost race, a few times.
+          for attempt in 1 2 3; do
+            git pull --quiet --rebase origin "$PUBLICATION_BRANCH" &&
+              git push origin "HEAD:refs/heads/$PUBLICATION_BRANCH" && exit 0
+            echo "push attempt $attempt lost a race; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::could not push to $PUBLICATION_BRANCH after 3 attempts"
+          exit 1
+
+  # Last, so a recovered proof is published first: a problem the readback job found fails the run.
+  report:
+    name: Fail for a missing or stuck proof
+    needs: [readback, publish]
+    if: ${{ always() && needs.readback.outputs.problem != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Report
+        env:
+          PROBLEM: ${{ needs.readback.outputs.problem }}
+        run: |
+          echo "::error::$PROBLEM"
+          exit 1

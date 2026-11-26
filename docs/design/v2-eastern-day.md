@@ -108,9 +108,17 @@ deployment, after the first has been read back:
    with its parameter hash.
    - **A failed run writes nothing.** The workflow is simply run again.
    - **The one successful run writes a single write-once record**, `notices/2.0.0.readback.json`, to
-     the attestations branch. It holds the run id, GitHub's `run_started_at`, each response's `Date`
-     header and `X-Deployed-Commit`, and the sha256 of each body.
-   - **N = max(the `Date` headers, `run_started_at`).**
+     the attestations branch, with the two response bodies beside it. It holds the run id and
+     attempt, GitHub's `run_started_at`, the runner's own clock once both responses are in
+     (`run.observedAt`), and per response its URL, the runner's clock just before and just after the
+     request (`requestedAt`, `receivedAt`), its `Date` header (an RFC 9110 IMF-fixdate in GMT,
+     refused unless at most 1 hour before (an edge cache's copy) or 5 minutes after those two), its
+     `X-Deployed-Commit`, and the sha256 of its body. The incidents response counts only as an HTML
+     page whose visible text (parsed, entities decoded, hidden elements and attributes ignored)
+     holds the entry's headline and the release's parameter hash; a redirect is refused, never
+     followed.
+   - **N = max(the `Date` headers, `run_started_at`, `run.observedAt`).** An auditor can replay the
+     `Date` check from the record alone.
    - The record is stamped with OpenTimestamps like a print. **B** is the header time of the
      earliest Bitcoin block its proof reaches. If a proof is ever lost, the same bytes are stamped
      again. B is then the new, later block time, which can only push E later.
@@ -124,10 +132,13 @@ deployment, after the first has been read back:
    `announcedAt: N`, `announcedProofAt: B` and v1 `effectiveUntil: E−1`. It adds "public from N
    (readback run `<id>`, `notices/2.0.0.readback.json`)" to the incidents entry. Step-2 CI verifies
    the single record and one inequality, and refuses the PR otherwise:
-   - the record's bytes are as first committed;
+   - the record's bytes are as first committed, and the two body files match the record's hashes;
    - the record's N and the proof's B match the registry;
    - the proof verifies;
    - `effectiveAt(v2) ≥ max(N, B) + 30 × 24 h`.
+
+   The same PR removes the notice-readback workflow's 15-minute schedule: the proof is complete by
+   then, and the workflow stays for a manual run.
 
    **This deployment is the rollback floor** (below). Until it deploys there is no cutover to
    protect.
@@ -974,13 +985,13 @@ Normative for v2. Copied into `docs/methodology.md` at release.
 
 ## Final confirm (Opus) dispositions
 
-| Id  | Disposition                                                                                                                                                                                                                                                                                                                                                                                  |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| O15 | Done. No rule-4 amendment. v2 takes effect at 2027-01-01T00:00Z, the end of v1's last day, as v1 rule 4 requires, and its first settlement day starts at 05:00Z. Gap rounds are tagged v2. All amendment text is removed, and the notice says no rule is amended. The v1 annex carries the final wording from `main`, with no PROVISIONAL markers, and a test enforces that (sections 2, 7). |
-| O16 | Done. One readback record. A failed run writes nothing and is simply rerun. N = max(`Date` headers, `run_started_at`), and B is the proof's block time. The bound is `effectiveAt ≥ max(N, B) + 30 d`, with no B ≥ N check. The readback revisions, the cross-revision max and the CI walk are deleted. Step-2 CI verifies the one record and the inequality (section 2, test 5).            |
-| O17 | Done. `PARTIAL_PENDING` (exit 6) is merged into `PENDING` (exit 4). Because the covered slots are compared first, `PENDING` never hides a mismatch (section 4, test 12).                                                                                                                                                                                                                     |
-| O18 | Done. A `withdrawn` registry flag. `indicativeReleaseFor` returns none for a withdrawn release, ending the series. Published indicative prints stay and still reproduce (sections 2, 7, test 5).                                                                                                                                                                                             |
-| O19 | Done. A missed pin cutoff makes E−1 a `MISMATCH`, which fails the attest runs of 2027-01-01 to 2027-01-07 until E−1 leaves the 7-day window. Operators should expect it, log an incident and rewrite nothing (section 4, test 12).                                                                                                                                                           |
+| Id  | Disposition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| O15 | Done. No rule-4 amendment. v2 takes effect at 2027-01-01T00:00Z, the end of v1's last day, as v1 rule 4 requires, and its first settlement day starts at 05:00Z. Gap rounds are tagged v2. All amendment text is removed, and the notice says no rule is amended. The v1 annex carries the final wording from `main`, with no PROVISIONAL markers, and a test enforces that (sections 2, 7).                                                                                                                       |
+| O16 | Done. One readback record. A failed run writes nothing and is simply rerun. N = max(`Date` headers, `run_started_at`, `run.observedAt`), and B is the proof's block time. The record also keeps `run.attempt`, each response's `requestedAt`/`receivedAt` and its body file (section 2). The bound is `effectiveAt ≥ max(N, B) + 30 d`, with no B ≥ N check. The readback revisions, the cross-revision max and the CI walk are deleted. Step-2 CI verifies the one record and the inequality (section 2, test 5). |
+| O17 | Done. `PARTIAL_PENDING` (exit 6) is merged into `PENDING` (exit 4). Because the covered slots are compared first, `PENDING` never hides a mismatch (section 4, test 12).                                                                                                                                                                                                                                                                                                                                           |
+| O18 | Done. A `withdrawn` registry flag. `indicativeReleaseFor` returns none for a withdrawn release, ending the series. Published indicative prints stay and still reproduce (sections 2, 7, test 5).                                                                                                                                                                                                                                                                                                                   |
+| O19 | Done. A missed pin cutoff makes E−1 a `MISMATCH`, which fails the attest runs of 2027-01-01 to 2027-01-07 until E−1 leaves the 7-day window. Operators should expect it, log an incident and rewrite nothing (section 4, test 12).                                                                                                                                                                                                                                                                                 |
 
 The round 2 to 5 entries below about the readback revision chain (S6), the rule-4 amendment (S14,
 S6) and `PARTIAL_PENDING` (S5) are superseded by O15 to O17.
@@ -1001,14 +1012,14 @@ S6) and `PARTIAL_PENDING` (S5) are superseded by O15 to O17.
 
 ## Round 3 review dispositions
 
-| Id  | Disposition                                                                                                                                                                                                                                                                                                                                           |
-| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S5  | Done. An explicit E−1 branch: verify the single v1 reference, then verify the gap pin (first-committed bytes, derived window, proof before its cutoff), then rerun the full both-ways comparison to `MATCH`. `PARTIAL` without the pin, `PENDING` while a proof is pending (section 4, test 12).                                                      |
-| S6  | Done. N is the first successful public production readback, never Vercel `ready`. A `notice-readback` workflow records the run, the `Date` headers, `X-Deployed-Commit` and the body hashes in an OTS-stamped, write-once `notices/2.0.0.readback.json`. N is the later of `run_started_at` and the `Date` headers, and step 2 copies it (section 2). |
-| S13 | Done. Entry points look up the release and inject `{release, window, admit}`. `printBody` and `aggregateDay` never look one up, enforced by a lint rule. Sections 2 and 4 and test 4 now agree.                                                                                                                                                       |
-| S14 | Done. All eight v2 rules are published in order (1 to 8), with cross-references checked. Rule 2 now points at rule 8 for corrections; the earlier list had been renumbered by the formatter (section 7).                                                                                                                                              |
-| O12 | Done. The indicative bound comes from `upcomingRelease().effectiveFrom`, so it works in step 1 when v1 has no `effectiveUntil`. The gap pin's path and window derive from the activated cutover, and none is written before activation or for a superseded date (sections 2, 4).                                                                      |
-| S7  | Done. PlaneTrack quoted verbatim, "Departures are counted by scheduled day (UTC).", and marked verified (section 0).                                                                                                                                                                                                                                  |
+| Id  | Disposition                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S5  | Done. An explicit E−1 branch: verify the single v1 reference, then verify the gap pin (first-committed bytes, derived window, proof before its cutoff), then rerun the full both-ways comparison to `MATCH`. `PARTIAL` without the pin, `PENDING` while a proof is pending (section 4, test 12).                                                                                                                                             |
+| S6  | Done. N is the first successful public production readback, never Vercel `ready`. A `notice-readback` workflow records the run (id, attempt, start, observation), each response's timing bounds, `Date`, `X-Deployed-Commit` and body hash, with both bodies kept beside it, in an OTS-stamped, write-once `notices/2.0.0.readback.json`. N = max(`run_started_at`, `run.observedAt`, the `Date` headers), and step 2 copies it (section 2). |
+| S13 | Done. Entry points look up the release and inject `{release, window, admit}`. `printBody` and `aggregateDay` never look one up, enforced by a lint rule. Sections 2 and 4 and test 4 now agree.                                                                                                                                                                                                                                              |
+| S14 | Done. All eight v2 rules are published in order (1 to 8), with cross-references checked. Rule 2 now points at rule 8 for corrections; the earlier list had been renumbered by the formatter (section 7).                                                                                                                                                                                                                                     |
+| O12 | Done. The indicative bound comes from `upcomingRelease().effectiveFrom`, so it works in step 1 when v1 has no `effectiveUntil`. The gap pin's path and window derive from the activated cutover, and none is written before activation or for a superseded date (sections 2, 4).                                                                                                                                                             |
+| S7  | Done. PlaneTrack quoted verbatim, "Departures are counted by scheduled day (UTC).", and marked verified (section 0).                                                                                                                                                                                                                                                                                                                         |
 
 ## Round 2 review dispositions
 

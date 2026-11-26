@@ -108,6 +108,14 @@ export function getApi(url: string): Promise<Response> {
 	return request(url, { 'x-vercel-protection-bypass': bypass }, 'error');
 }
 
+/**
+ * GET from the public internet without following a redirect: a 3xx comes back as is, so a request
+ * can never leave the origin it was sent to (the notice readback refuses one).
+ */
+export function getPublicNoRedirect(url: string): Promise<Response> {
+	return request(url, {}, 'manual');
+}
+
 /** GET from a third party, such as a block explorer: never with the bypass secret. */
 export function getPublic(url: string): Promise<Response> {
 	return request(url, {}, 'follow');
