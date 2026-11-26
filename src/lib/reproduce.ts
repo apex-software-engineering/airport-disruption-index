@@ -21,6 +21,7 @@ import {
 	receiptSchema,
 	receiptShapeSchema,
 	type DailyPrint,
+	type IndicativePrint,
 	type RoundReceipt,
 } from '@/lib/index/schemas';
 import { parseRoundId, parseUtcDate, type UtcDate } from '@/lib/index/time';
@@ -83,9 +84,19 @@ export async function reproduceIndicative(
 	baseUrl: string,
 	get: Get,
 ): Promise<ReproduceOutcome> {
+	return (await reproduceIndicativeDay(date, baseUrl, get)).outcome;
+}
+
+/** `reproduceIndicative`, with the print it checked once the API served one. */
+export async function reproduceIndicativeDay(
+	date: UtcDate,
+	baseUrl: string,
+	get: Get,
+): Promise<{ outcome: ReproduceOutcome; print: IndicativePrint | null }> {
 	const log: string[] = [];
 	const api = new PublicApi(baseUrl, get);
-	return outcomeOf(log, async () => {
+	let served: IndicativePrint | null = null;
+	const outcome = await outcomeOf(log, async () => {
 		if (parseUtcDate(date) === null) throw new CannotVerify(`${date} is not a date (2026-11-20)`);
 		const { print } = await api.getRecorded(
 			`/api/v1/indicative/days/${date}`,
@@ -101,6 +112,7 @@ export async function reproduceIndicative(
 		if (print.date !== date) {
 			throw new Mismatch([`asked for indicative day ${date}, got the print of ${print.date}`]);
 		}
+		served = print;
 		const results = await fetchRounds(
 			print.rounds.map((r) => r.roundId),
 			(id) => fetchIndicativeRound(api, date, id, print.admission.accepts),
@@ -116,6 +128,7 @@ export async function reproduceIndicative(
 			),
 		];
 	});
+	return { outcome, print: served };
 }
 
 /**

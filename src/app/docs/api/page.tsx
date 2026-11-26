@@ -288,8 +288,8 @@ function IndicativeEndpoints({
 				curl={`curl -s ${origin}${API_BASE}/indicative/days/${indicative.days.at(-1)?.date ?? '{date}'}`}
 				sample={null}
 				sampleNote='The frozen print of an ET day, in the adi.daily-print/2 schema: its window, freeze time and admission policy are hashed with it. A date from v2’s first day on returns 404 with see: the settlement print.'>
-				One indicative ET day. Reproduce it with{' '}
-				<Mono>npm run reproduce -- --indicative {'{date}'}</Mono>.
+				One indicative ET day. Prove it both ways against the verified v1 attestations with{' '}
+				<Mono>npm run reproduce -- --indicative {'{date}'} --dir attestations</Mono>.
 			</Endpoint>
 		</>
 	);

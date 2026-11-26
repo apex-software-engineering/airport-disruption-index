@@ -10,6 +10,11 @@
  * too; see fetchPublication) is skipped as not yet published; one still unsettled at or after it
  * is overdue, and fails.
  *
+ * Once the indicative series is published, each indicative ET day in the window is then proved
+ * both ways against these same v1 attestations (design §4, `reproduce --indicative`): a MISMATCH
+ * fails the run; PENDING (a v1 reference not verified yet) and a day not frozen yet are reported,
+ * never failed. No indicative file is ever written.
+ *
  * Then every proof in the directory, of any date, is checked offline: invalid proofs are reported
  * apart from pending ones. Exit 0 when every day in the window is attested and matches (a pending
  * proof is fine) or not yet due, and no proof is invalid; 1 otherwise: a day overdue, mismatched
@@ -17,6 +22,7 @@
  */
 import { buildAttestation } from '@/lib/index/attestation';
 import { fetchPublication, reproduceFetchedDay } from '@/lib/reproduce';
+import { indicativeReleaseFor, indicativeSeriesPublished } from '@/lib/index/indicative';
 import { addDays, type UtcDate } from '@/lib/index/time';
 
 import {
@@ -28,6 +34,7 @@ import {
 	writeAttestation,
 	type BranchCheckout,
 } from './lib/attestations';
+import { proveIndicativeDay } from './lib/indicative-proof';
 import {
 	CannotVerify,
 	Mismatch,
@@ -105,6 +112,29 @@ async function main(): Promise<number> {
 		} catch (error) {
 			failures += 1;
 			console.log(`${date}: FAILED: ${describeError(error)}`);
+		}
+	}
+	if (indicativeSeriesPublished(new Date())) {
+		for (let offset = days - 1; offset >= 0; offset -= 1) {
+			const date = addDays(through, -offset);
+			if (indicativeReleaseFor(date) === null) continue;
+			const proof = await proveIndicativeDay(date, baseUrl, checkout, getApi, () => new Date());
+			for (const line of proof.log) console.log(line);
+			switch (proof.kind) {
+				case 'match':
+					console.log(`${date}: indicative MATCH`);
+					break;
+				case 'pending':
+					console.log(`${date}: indicative PENDING: ${proof.reason}`);
+					break;
+				case 'cannot_verify':
+					console.log(`${date}: indicative not checked: ${proof.reason}`);
+					break;
+				case 'mismatch':
+					failures += 1;
+					console.log(`${date}: FAILED: indicative MISMATCH: ${proof.problems.join('; ')}`);
+					break;
+			}
 		}
 	}
 	// Every earlier proof too, reported apart from the days: written files are not stamped yet.
