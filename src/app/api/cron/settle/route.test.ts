@@ -160,6 +160,42 @@ describe('settle route', () => {
 		]);
 	});
 
+	it('settles the days concurrently: a healthy day finishes while a stalled one is still pending (Sol #36 r1)', async () => {
+		await recordAt('2026-11-18T10:00:03Z');
+		await recordAt(`${DAY}T10:00:03Z`);
+		// 2026-11-17's receipt reads wait on a gate this test opens; nothing else is held.
+		let open = () => {};
+		const gate = new Promise<void>((resolve) => (open = resolve));
+		const read = FileStore.prototype.read;
+		vi.spyOn(FileStore.prototype, 'read').mockImplementation(function (this: FileStore, key) {
+			return key.startsWith(`rounds/${DAY}/`)
+				? gate.then(() => read.call(this, key))
+				: read.call(this, key);
+		});
+		vi.useRealTimers();
+		let finished = false;
+		// The stalled day is listed first: a serial run could not reach the healthy one.
+		const run = runSettle(new FileStore(root), new Date('2026-11-19T00:30:00Z'), [
+			DAY,
+			'2026-11-18',
+		]).then((result) => {
+			finished = true;
+			return result;
+		});
+		const healthy = new FileStore(root);
+		for (let waited = 0; (await healthy.read('prints/2026-11-18/r1.json')) === null; waited += 10) {
+			if (waited > 3000) throw new Error('2026-11-18 did not settle while 2026-11-17 was held');
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		expect(finished).toBe(false);
+		expect(await healthy.read(`prints/${DAY}/r1.json`)).toBeNull();
+		open();
+		expect((await run).settled).toEqual([
+			expect.objectContaining({ date: DAY, status: 'settled' }),
+			expect.objectContaining({ date: '2026-11-18', status: 'settled' }),
+		]);
+	});
+
 	it('gives each day its own deadline, so a stalled one never holds up another (Sol 3b r1, finding 3)', async () => {
 		await recordAt('2026-11-18T10:00:03Z');
 		await recordAt(`${DAY}T10:00:03Z`);
